@@ -7,11 +7,14 @@ Usage:
     # Step 1: discover available endpoints
     python collect.py --discover
 
-    # Step 2: run 24-hour collection
-    python collect.py --output data/wednesday.jsonl
+    # Step 2a: fixed-duration run into a single file
+    python collect.py --output data/wednesday.jsonl --hours 24
 
-    # Optional: custom interval and duration
-    python collect.py --output data/saturday.jsonl --interval 45 --hours 24
+    # Step 2b: continuous collection with daily rotation (for long-running
+    # deployments, e.g. under systemd) — writes <output-dir>/<YYYY-MM-DD>.jsonl,
+    # rolling over at local midnight in --timezone. --hours <= 0 means run
+    # until stopped (SIGINT/SIGTERM) instead of a fixed duration.
+    python collect.py --output-dir data/sofia --hours 0
 """
 
 import argparse
@@ -21,6 +24,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from google.transit import gtfs_realtime_pb2
@@ -52,6 +56,7 @@ SOFIA_BBOX = {
 
 DEFAULT_INTERVAL_SEC = 45   # poll every 45 seconds
 DEFAULT_HOURS = 24
+DEFAULT_TIMEZONE = "Europe/Sofia"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +65,12 @@ def is_valid_sofia_coordinate(lat: float, lon: float) -> bool:
         SOFIA_BBOX["lat_min"] <= lat <= SOFIA_BBOX["lat_max"]
         and SOFIA_BBOX["lon_min"] <= lon <= SOFIA_BBOX["lon_max"]
     )
+
+
+def dated_output_path(output_dir: Path, tz: ZoneInfo, when: datetime | None = None) -> Path:
+    """Path for the daily-rotated file covering `when`'s local calendar date in `tz`."""
+    local_date = (when or datetime.now(tz)).astimezone(tz).date()
+    return output_dir / f"{local_date.isoformat()}.jsonl"
 
 
 def fetch_vehicle_positions(url: str, session: requests.Session) -> tuple[list[dict], bool]:
@@ -161,33 +172,73 @@ def discover_endpoint(session: requests.Session) -> None:
 VEHICLE_POSITIONS_URL = BASE_URL + "/api/v1/vehicle-positions"
 
 
-def run_collection(output_path: Path, interval: int, hours: float, url: str) -> None:
-    deadline = time.time() + hours * 3600
+def run_collection(
+    interval: int,
+    hours: float,
+    url: str,
+    *,
+    output_path: Path | None = None,
+    output_dir: Path | None = None,
+    tz_name: str = DEFAULT_TIMEZONE,
+) -> None:
+    """
+    Poll `url` every `interval` seconds until `hours` elapse (or forever if
+    `hours` <= 0), writing newline-delimited JSON records.
+
+    Exactly one of `output_path` (single fixed file) or `output_dir` (daily
+    rotation, file named <YYYY-MM-DD>.jsonl in `tz_name`) must be given.
+    """
+    rotating = output_dir is not None
+    forever = hours <= 0
+    deadline = float("inf") if forever else time.time() + hours * 3600
     total_records = 0
     poll_count = 0
     empty_snapshots = 0
     fetch_errors = 0
 
-    # Graceful shutdown on Ctrl+C
+    # Graceful shutdown on Ctrl+C (SIGINT) or `systemctl stop` (SIGTERM)
     interrupted = False
     def _handler(sig, frame):
         nonlocal interrupted
         interrupted = True
         print("\n[INFO] Interrupted — finishing current snapshot and closing file.")
     signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
     session.headers["User-Agent"] = "sofia-transport-research/1.0"
 
-    print(f"Starting collection → {output_path}")
+    if rotating:
+        tz = ZoneInfo(tz_name)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        current_path = dated_output_path(output_dir, tz)
+    else:
+        tz = None
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path = output_path
+
+    f = current_path.open("a", encoding="utf-8")
+
+    mode_desc = f"daily rotation in {output_dir} ({tz_name})" if rotating else "single file"
+    print(f"Starting collection → {current_path}")
     print(f"Endpoint : {url}")
-    print(f"Interval : {interval}s  |  Duration: {hours}h  |  Started: {datetime.now().isoformat()}")
+    print(
+        f"Interval : {interval}s  |  Duration: {'forever' if forever else f'{hours}h'}  |  "
+        f"Mode: {mode_desc}  |  Started: {datetime.now().isoformat()}"
+    )
     print("Press Ctrl+C to stop early.\n")
 
-    with output_path.open("a", encoding="utf-8") as f:
+    try:
         while time.time() < deadline and not interrupted:
             loop_start = time.time()
+
+            if rotating:
+                fresh_path = dated_output_path(output_dir, tz)
+                if fresh_path != current_path:
+                    f.close()
+                    current_path = fresh_path
+                    f = current_path.open("a", encoding="utf-8")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] rotated → {current_path}")
 
             records, fetch_ok = fetch_vehicle_positions(url, session)
             poll_count += 1
@@ -212,11 +263,13 @@ def run_collection(output_path: Path, interval: int, hours: float, url: str) -> 
             elapsed = time.time() - loop_start
             sleep_for = max(0, interval - elapsed)
             time.sleep(sleep_for)
+    finally:
+        f.close()
+        session.close()
 
-    session.close()
     print(f"\nDone. Polls: {poll_count} | Records: {total_records:,} | "
           f"Empty snapshots: {empty_snapshots} | Fetch errors: {fetch_errors}")
-    print(f"Output: {output_path} ({output_path.stat().st_size / 1024:.1f} KB)")
+    print(f"Last output file: {current_path}")
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
@@ -227,23 +280,41 @@ def main():
                         help="Probe candidate endpoints and exit")
     parser.add_argument("--url", type=str, default=VEHICLE_POSITIONS_URL,
                         help=f"GTFS-RT vehicle positions URL (default: {VEHICLE_POSITIONS_URL})")
-    parser.add_argument("--output", type=Path, default=Path("data/snapshot.jsonl"),
-                        help="Output file (newline-delimited JSON)")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Single output file, no rotation (default: data/snapshot.jsonl "
+                             "if --output-dir is not given)")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Directory for daily-rotated output files named <YYYY-MM-DD>.jsonl "
+                             "(mutually exclusive with --output)")
+    parser.add_argument("--timezone", type=str, default=DEFAULT_TIMEZONE,
+                        help=f"Timezone for day-boundary rotation (default: {DEFAULT_TIMEZONE})")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC,
                         help=f"Poll interval in seconds (default: {DEFAULT_INTERVAL_SEC})")
     parser.add_argument("--hours", type=float, default=DEFAULT_HOURS,
-                        help=f"Collection duration in hours (default: {DEFAULT_HOURS})")
+                        help=f"Collection duration in hours (default: {DEFAULT_HOURS}). "
+                             "0 or negative means run indefinitely until stopped.")
     args = parser.parse_args()
 
-    session = requests.Session()
-    session.headers["User-Agent"] = "sofia-transport-research/1.0"
-
     if args.discover:
+        session = requests.Session()
+        session.headers["User-Agent"] = "sofia-transport-research/1.0"
         discover_endpoint(session)
         session.close()
         return
 
-    run_collection(args.output, args.interval, args.hours, args.url)
+    if args.output and args.output_dir:
+        parser.error("--output and --output-dir are mutually exclusive")
+    if not args.output and not args.output_dir:
+        args.output = Path("data/snapshot.jsonl")
+
+    run_collection(
+        args.interval,
+        args.hours,
+        args.url,
+        output_path=args.output,
+        output_dir=args.output_dir,
+        tz_name=args.timezone,
+    )
 
 
 if __name__ == "__main__":
