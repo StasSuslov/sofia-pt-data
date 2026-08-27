@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+
+# raw collected data — tracked separately (Zenodo / git-lfs), not in main history
+data/
+*.jsonl
