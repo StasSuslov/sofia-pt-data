@@ -136,21 +136,28 @@ def test_fetch_vehicle_positions_reports_parse_failure():
     assert poll.records == []
 
 
-def test_ping_healthcheck_calls_get():
+def test_ping_healthcheck_calls_get(monkeypatch):
     calls = []
+    monkeypatch.setattr(requests, "get", lambda url, timeout: calls.append((url, timeout)))
 
-    class _RecordingSession:
-        def get(self, url, timeout):
-            calls.append((url, timeout))
-
-    ping_healthcheck("https://hc-ping.com/abc", _RecordingSession())
+    ping_healthcheck("https://hc-ping.com/abc")
     assert calls == [("https://hc-ping.com/abc", 5)]
 
 
-def test_ping_healthcheck_swallows_request_errors():
-    class _FailingSession:
-        def get(self, url, timeout):
-            raise requests.RequestException("network unreachable")
+def test_ping_healthcheck_swallows_request_errors(monkeypatch):
+    def _raise(url, timeout):
+        raise requests.RequestException("network unreachable")
 
+    monkeypatch.setattr(requests, "get", _raise)
     # must not raise — a monitoring hiccup can't be allowed to kill the collector
-    ping_healthcheck("https://hc-ping.com/abc", _FailingSession())
+    ping_healthcheck("https://hc-ping.com/abc")
+
+
+def test_ping_healthcheck_swallows_non_request_errors_too(monkeypatch):
+    # the docstring's guarantee is "never raises", not "never raises for
+    # RequestException" — a bug in the ping path itself must not escape either
+    def _raise(url, timeout):
+        raise ValueError("something unrelated to networking went wrong")
+
+    monkeypatch.setattr(requests, "get", _raise)
+    ping_healthcheck("https://hc-ping.com/abc")

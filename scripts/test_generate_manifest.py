@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from generate_manifest import analyze_gaps, build_manifest
+from generate_manifest import analyze_gaps, build_manifest, load_jsonl
 
 
 def write_jsonl(path: Path, records: list[dict]) -> None:
@@ -102,3 +102,52 @@ def test_build_manifest_without_heartbeat_falls_back_to_data_file(tmp_path: Path
     assert manifest["polls_logged"] is None
     assert manifest["total_vehicle_records"] == 2
     assert "data_sha256" in manifest
+
+
+def test_load_jsonl_skips_a_malformed_trailing_line_instead_of_crashing(tmp_path: Path):
+    # Simulates rsync pulling a data file mid-write: the last line is torn.
+    path = tmp_path / "torn.jsonl"
+    path.write_text('{"snapshot_ts": 1000, "vehicle_id": "A1"}\n{"snapshot_ts": 1045, "vehic', encoding="utf-8")
+
+    records, malformed = load_jsonl(path)
+
+    assert records == [{"snapshot_ts": 1000, "vehicle_id": "A1"}]
+    assert malformed == 1
+
+
+def test_build_manifest_reports_malformed_lines_instead_of_crashing(tmp_path: Path):
+    data_path = tmp_path / "2026-08-29.jsonl"
+    polls_path = tmp_path / "2026-08-29.polls.jsonl"
+
+    data_path.write_text('{"snapshot_ts": 1000, "vehicle_id": "A1"}\nnot valid json at all', encoding="utf-8")
+    write_jsonl(polls_path, [
+        {"snapshot_ts": 1000, "fetch_ok": True, "vehicle_count": 1,
+         "entities_total": 1, "vehicles_with_position": 1, "dropped_out_of_bbox": 0},
+    ])
+
+    # must not raise
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0)
+
+    assert manifest["data_malformed_lines"] == 1
+    assert manifest["polls_malformed_lines"] == 0
+    assert manifest["total_vehicle_records"] == 1
+    # the checksum still gets computed over exactly what's on disk, torn line included
+    assert "data_sha256" in manifest
+
+
+def test_build_manifest_aggregates_bbox_pipeline_counts(tmp_path: Path):
+    data_path = tmp_path / "2026-08-30.jsonl"
+    polls_path = tmp_path / "2026-08-30.polls.jsonl"
+
+    write_jsonl(data_path, [{"snapshot_ts": 1000, "vehicle_id": "A1"}])
+    write_jsonl(polls_path, [
+        {"snapshot_ts": 1000, "fetch_ok": True, "vehicle_count": 1,
+         "entities_total": 5, "vehicles_with_position": 4, "dropped_out_of_bbox": 3},
+    ])
+
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0)
+
+    assert manifest["entities_total"] == 5
+    assert manifest["vehicles_with_position"] == 4
+    assert manifest["dropped_out_of_bbox"] == 3
+    assert manifest["dropped_out_of_bbox_pct"] == 75.0  # 3 of 4 positioned vehicles dropped

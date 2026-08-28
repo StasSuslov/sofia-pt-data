@@ -36,14 +36,31 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_jsonl(path: Path) -> list[dict]:
+def load_jsonl(path: Path) -> tuple[list[dict], int]:
+    """
+    Parse a newline-delimited JSON file, tolerating a malformed line instead
+    of crashing on it. Returns (records, malformed_line_count).
+
+    A torn trailing line is routine here, not exotic — scripts/fetch_data.sh
+    can run via scheduled_fetch.sh every couple of hours while collect.py is
+    still actively appending to the file being pulled, so an rsync can land
+    mid-write. A manifest generator whose whole purpose is detecting
+    corruption should report corruption, not die on it or silently drop it
+    without a trace — the malformed count is surfaced in the manifest by
+    build_manifest() below.
+    """
     records = []
+    malformed = 0
     with path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 records.append(json.loads(line))
-    return records
+            except json.JSONDecodeError:
+                malformed += 1
+    return records, malformed
 
 
 def analyze_gaps(timestamps: list[int], gap_threshold_multiplier: float) -> dict:
@@ -82,7 +99,7 @@ def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
     polls_path = data_path.with_name(f"{data_path.stem}.polls.jsonl")
     heartbeat_available = polls_path.exists()
 
-    data_records = load_jsonl(data_path)
+    data_records, data_malformed_lines = load_jsonl(data_path)
     data_timestamps = sorted({r["snapshot_ts"] for r in data_records})
 
     manifest = {
@@ -91,26 +108,44 @@ def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
         "data_sha256": sha256_of(data_path),
         "data_size_bytes": data_path.stat().st_size,
         "total_vehicle_records": len(data_records),
+        # >0 usually means this file was checksummed mid-transfer (e.g. an
+        # rsync pull racing a still-writing collector) rather than corrupt at
+        # the source — the sha256 above is still an honest hash of what was
+        # actually read, just not necessarily of a "final" file.
+        "data_malformed_lines": data_malformed_lines,
         "heartbeat_available": heartbeat_available,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     if heartbeat_available:
-        polls = load_jsonl(polls_path)
+        polls, polls_malformed_lines = load_jsonl(polls_path)
         ok_polls = [p for p in polls if p["fetch_ok"]]
         error_polls = [p for p in polls if not p["fetch_ok"]]
         empty_polls = [p for p in ok_polls if p["vehicle_count"] == 0]
         heartbeat_timestamps = sorted(p["snapshot_ts"] for p in polls)
 
+        # .get() defaults: polls logged before these fields existed don't have them.
+        entities_total = sum(p.get("entities_total", 0) for p in polls)
+        vehicles_with_position = sum(p.get("vehicles_with_position", 0) for p in polls)
+        dropped_out_of_bbox = sum(p.get("dropped_out_of_bbox", 0) for p in polls)
+
         manifest.update({
             "polls_file": polls_path.name,
             "polls_sha256": sha256_of(polls_path),
+            "polls_malformed_lines": polls_malformed_lines,
             "polls_logged": len(polls),
             "successful_polls": len(ok_polls),
             "empty_polls": len(empty_polls),
             "fetch_error_polls": len(error_polls),
-            # .get() default: polls logged before this field existed don't have it.
-            "dropped_out_of_bbox": sum(p.get("dropped_out_of_bbox", 0) for p in polls),
+            "entities_total": entities_total,
+            "vehicles_with_position": vehicles_with_position,
+            "dropped_out_of_bbox": dropped_out_of_bbox,
+            # rate, not just a bare count, so a reader doesn't have to divide
+            # two numbers from different rows to tell if this is significant
+            "dropped_out_of_bbox_pct": (
+                round(100 * dropped_out_of_bbox / vehicles_with_position, 3)
+                if vehicles_with_position else None
+            ),
         })
 
         # collect.py may be deployed/restarted mid-day, so the heartbeat log
@@ -143,10 +178,15 @@ def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
         manifest.update({
             "polls_file": None,
             "polls_sha256": None,
+            "polls_malformed_lines": None,
             "polls_logged": None,
             "successful_polls": None,
             "empty_polls": None,
             "fetch_error_polls": None,
+            "entities_total": None,
+            "vehicles_with_position": None,
+            "dropped_out_of_bbox": None,
+            "dropped_out_of_bbox_pct": None,
         })
 
     manifest.update(analyze_gaps(timestamps, gap_threshold_multiplier))
@@ -180,6 +220,14 @@ def main():
             hb_note = "  [heartbeat started mid-day — coverage before that point is inferred, less reliable]"
         else:
             hb_note = ""
+
+        malformed = manifest["data_malformed_lines"] + (manifest["polls_malformed_lines"] or 0)
+        if malformed:
+            hb_note += (
+                f"  [WARNING: {malformed} malformed line(s) skipped — likely a mid-transfer pull; "
+                "checksum reflects exactly what was read, not necessarily a complete file]"
+            )
+
         print(
             f"{path.name}: {manifest['total_vehicle_records']:,} records | "
             f"coverage {manifest['coverage_pct']}% | {manifest['gap_count']} gap(s) | "

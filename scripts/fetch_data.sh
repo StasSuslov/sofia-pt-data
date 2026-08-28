@@ -29,5 +29,10 @@ fi
 
 LOCAL_DIR="$REPO_ROOT/data/"
 
-echo "Fetching ${VPS_HOST}:${REMOTE_DIR} → ${LOCAL_DIR}"
+# Host masked in the printed/logged line on purpose — this script's own
+# stdout gets redirected into logs/fetch.log by scheduled_fetch.sh, and a log
+# file is exactly the kind of thing that ends up pasted into an issue or
+# shared while debugging. Defeats the point of keeping the address out of
+# git if it leaks back out through the log instead.
+echo "Fetching ${VPS_HOST%%@*}@<vps>:${REMOTE_DIR} → ${LOCAL_DIR}"
 rsync -avz --progress -e "ssh -i ${VPS_KEY}" "${VPS_HOST}:${REMOTE_DIR}" "${LOCAL_DIR}"

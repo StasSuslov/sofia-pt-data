@@ -227,17 +227,21 @@ def discover_endpoint(session: requests.Session) -> None:
 VEHICLE_POSITIONS_URL = BASE_URL + "/api/v1/vehicle-positions"
 
 
-def ping_healthcheck(url: str, session: requests.Session) -> None:
+def ping_healthcheck(url: str) -> None:
     """
     Best-effort ping to a dead-man's-switch URL (e.g. https://healthchecks.io).
     Proves the poll loop is still iterating — independent of whether any given
     fetch succeeds — so a frozen process or a downed VPS gets noticed even
-    when no one is watching the logs. Never raises: a monitoring hiccup must
-    not be able to take down the thing it's monitoring.
+    when no one is watching the logs. Uses its own short-lived request rather
+    than the feed's session, so monitoring and feed cookies never mix.
+
+    Never raises, deliberately catching Exception rather than just
+    requests.RequestException: a monitoring hiccup — of any kind — must not
+    be able to take down the thing it's monitoring.
     """
     try:
-        session.get(url, timeout=5)
-    except requests.RequestException as e:
+        requests.get(url, timeout=5)
+    except Exception as e:  # noqa: BLE001 - intentional, see docstring
         print(f"[WARN] Healthcheck ping failed: {e}", file=sys.stderr)
 
 
@@ -322,7 +326,7 @@ def run_collection(
             poll_count += 1
 
             if healthcheck_url and poll_count % healthcheck_every == 0:
-                ping_healthcheck(healthcheck_url, session)
+                ping_healthcheck(healthcheck_url)
 
             # Data written (and durably flushed) before the heartbeat line
             # that reports it, so the heartbeat can never claim more rows
@@ -406,6 +410,9 @@ def main():
         discover_endpoint(session)
         session.close()
         return
+
+    if args.healthcheck_every < 1:
+        parser.error("--healthcheck-every must be at least 1")
 
     if args.output and args.output_dir:
         parser.error("--output and --output-dir are mutually exclusive")
