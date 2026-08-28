@@ -44,7 +44,7 @@ def test_build_manifest_with_heartbeat_distinguishes_empty_from_error(tmp_path: 
         {"snapshot_ts": 1000, "vehicle_id": "A2"},
     ])
     write_jsonl(polls_path, [
-        {"snapshot_ts": 1000, "fetch_ok": True, "vehicle_count": 2},
+        {"snapshot_ts": 1000, "fetch_ok": True, "vehicle_count": 2, "dropped_out_of_bbox": 1},
         {"snapshot_ts": 1045, "fetch_ok": True, "vehicle_count": 0},   # genuinely empty, not downtime
         {"snapshot_ts": 1090, "fetch_ok": False, "vehicle_count": 0},  # transient fetch error
     ])
@@ -58,6 +58,8 @@ def test_build_manifest_with_heartbeat_distinguishes_empty_from_error(tmp_path: 
     assert manifest["fetch_error_polls"] == 1
     assert manifest["total_vehicle_records"] == 2
     assert manifest["gap_count"] == 0  # all three heartbeats are on schedule, no real downtime
+    # sums across polls, defaulting to 0 for older heartbeat lines without the field
+    assert manifest["dropped_out_of_bbox"] == 1
 
 
 def test_build_manifest_flags_heartbeat_deployed_mid_day(tmp_path: Path):

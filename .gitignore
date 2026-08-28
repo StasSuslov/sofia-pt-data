@@ -5,6 +5,11 @@ venv/
 node_modules/
 .DS_Store
 
-# raw collected data — tracked separately (Zenodo / git-lfs), not in main history
+# server address and other local-only config — never committed, see
+# scripts/fetch_data.sh and CLAUDE.md's infra section
+.env.local
+
+# raw collected data — tracked separately (Zenodo / git-lfs), not in main history.
+# Scoped to the data/ directory specifically — no bare "*.jsonl" here, so a
+# future JSONL test fixture placed elsewhere in the repo isn't silently ignored too.
 data/
-*.jsonl

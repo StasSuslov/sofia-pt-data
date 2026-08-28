@@ -109,6 +109,8 @@ def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
             "successful_polls": len(ok_polls),
             "empty_polls": len(empty_polls),
             "fetch_error_polls": len(error_polls),
+            # .get() default: polls logged before this field existed don't have it.
+            "dropped_out_of_bbox": sum(p.get("dropped_out_of_bbox", 0) for p in polls),
         })
 
         # collect.py may be deployed/restarted mid-day, so the heartbeat log

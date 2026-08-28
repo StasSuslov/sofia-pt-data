@@ -17,8 +17,10 @@ Usage:
     python collect.py --output-dir data/sofia --hours 0
 
 Each data file <name>.jsonl has a companion <name>.polls.jsonl heartbeat log
-with one line per poll attempt (fetch_ok, vehicle_count) — see
-heartbeat_path_for(). Feed both into scripts/generate_manifest.py to get a
+with one line per poll attempt — fetch_ok, vehicle_count (post-bbox-filter),
+and entities_total / vehicles_with_position / dropped_out_of_bbox so the bbox
+filter's own losses are auditable rather than silent. See heartbeat_path_for()
+and PollResult. Feed both files into scripts/generate_manifest.py to get a
 checksummed, gap-annotated coverage report per day.
 """
 
@@ -29,6 +31,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 import requests
@@ -50,13 +53,21 @@ CANDIDATE_PATHS = [
     "/api/v1/alerts",
 ]
 
-# Sofia bounding box — coordinates outside this range are discarded
-# (known GTFS-RT teleportation bug where vehicles appear in the Black Sea etc.)
+# Sofia bounding box — coordinates outside this range are discarded (known
+# GTFS-RT teleportation bug where vehicles appear far outside the service
+# area, e.g. the Black Sea). Derived 2026-08-28 from the actual GTFS Static
+# network extent (data/sofia/static/gtfs_2026-08-27.zip: stops.txt + shapes.txt
+# combined give lat 42.4788-42.8546, lon 23.0778-23.6075) plus a margin for
+# GPS drift near the edges — not hand-picked. The original bbox (lat
+# 42.57-42.80, lon 23.15-23.55) was narrower than the real network on all
+# four sides and silently discarded ~11% of routes serving peripheral
+# settlements (e.g. Kurilo, Zhelyava, Yana, Klisura) as if they were
+# teleportation artifacts — see CLAUDE.md journal, 2026-08-28.
 SOFIA_BBOX = {
-    "lat_min": 42.57,
-    "lat_max": 42.80,
-    "lon_min": 23.15,
-    "lon_max": 23.55,
+    "lat_min": 42.45,
+    "lat_max": 42.90,
+    "lon_min": 23.03,
+    "lon_max": 23.66,
 }
 
 DEFAULT_INTERVAL_SEC = 45   # poll every 45 seconds
@@ -92,46 +103,70 @@ def heartbeat_path_for(data_path: Path) -> Path:
     return data_path.with_name(f"{data_path.stem}.polls.jsonl")
 
 
-def fetch_vehicle_positions(url: str, session: requests.Session) -> tuple[list[dict], bool]:
+class PollResult(NamedTuple):
+    records: list[dict]
+    fetch_ok: bool
+    poll_ts: int
+    entities_total: int            # feed entities that are vehicles at all
+    vehicles_with_position: int    # ...and report a position
+    dropped_out_of_bbox: int       # ...but fell outside SOFIA_BBOX
+
+
+def fetch_vehicle_positions(url: str, session: requests.Session) -> PollResult:
     """
     Fetch and parse one GTFS-RT VehiclePositions snapshot.
-    Returns (records, fetch_ok). fetch_ok is False when the HTTP request or
-    protobuf parse failed; True when the feed was decoded regardless of whether
-    any vehicles fell inside the bounding box.
+
+    `poll_ts` is stamped once, before the request, and used both for any
+    records produced and for the caller's heartbeat entry — a single clock
+    for the whole poll, rather than one timestamp for the attempt and a
+    second, slightly later one only on success.
+
+    `fetch_ok` is False when the HTTP request or protobuf parse failed; True
+    when the feed was decoded regardless of whether any vehicles fell inside
+    the bounding box. The three counts let a caller audit exactly how much
+    the bbox filter is discarding, poll by poll, instead of that being
+    invisible.
     """
+    poll_ts = int(datetime.now(timezone.utc).timestamp())
+
     try:
         response = session.get(url, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
         print(f"[WARN] Fetch failed: {e}", file=sys.stderr)
-        return [], False
+        return PollResult([], False, poll_ts, 0, 0, 0)
 
     feed = gtfs_realtime_pb2.FeedMessage()
     try:
         feed.ParseFromString(response.content)
     except Exception as e:
         print(f"[WARN] Protobuf parse failed: {e}", file=sys.stderr)
-        return [], False
+        return PollResult([], False, poll_ts, 0, 0, 0)
 
-    snapshot_ts = int(datetime.now(timezone.utc).timestamp())
     records = []
+    entities_total = 0
+    vehicles_with_position = 0
+    dropped_out_of_bbox = 0
 
     for entity in feed.entity:
         if not entity.HasField("vehicle"):
             continue
+        entities_total += 1
 
         v = entity.vehicle
         if not v.HasField("position"):
             continue
+        vehicles_with_position += 1
 
         lat = v.position.latitude
         lon = v.position.longitude
 
         if not is_valid_sofia_coordinate(lat, lon):
+            dropped_out_of_bbox += 1
             continue
 
         record = {
-            "snapshot_ts": snapshot_ts,
+            "snapshot_ts": poll_ts,
             "vehicle_id":  v.vehicle.id if v.HasField("vehicle") else None,
             "route_id":    v.trip.route_id if v.HasField("trip") else None,
             "trip_id":     v.trip.trip_id if v.HasField("trip") else None,
@@ -143,7 +178,7 @@ def fetch_vehicle_positions(url: str, session: requests.Session) -> tuple[list[d
         }
         records.append(record)
 
-    return records, True
+    return PollResult(records, True, poll_ts, entities_total, vehicles_with_position, dropped_out_of_bbox)
 
 
 # ─── Discovery ────────────────────────────────────────────────────────────────
@@ -262,32 +297,42 @@ def run_collection(
                     hb_f = heartbeat_path_for(current_path).open("a", encoding="utf-8")
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] rotated → {current_path}")
 
-            poll_ts = int(datetime.now(timezone.utc).timestamp())
-            records, fetch_ok = fetch_vehicle_positions(url, session)
+            poll = fetch_vehicle_positions(url, session)
             poll_count += 1
 
-            hb_f.write(json.dumps(
-                {"snapshot_ts": poll_ts, "fetch_ok": fetch_ok, "vehicle_count": len(records)},
-                ensure_ascii=False,
-            ) + "\n")
-            hb_f.flush()
-
-            if records:
-                for r in records:
+            # Data written (and durably flushed) before the heartbeat line
+            # that reports it, so the heartbeat can never claim more rows
+            # exist than actually landed on disk.
+            if poll.records:
+                for r in poll.records:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
                 f.flush()
-                total_records += len(records)
+                total_records += len(poll.records)
+
+            hb_f.write(json.dumps({
+                "snapshot_ts": poll.poll_ts,
+                "fetch_ok": poll.fetch_ok,
+                "vehicle_count": len(poll.records),
+                "entities_total": poll.entities_total,
+                "vehicles_with_position": poll.vehicles_with_position,
+                "dropped_out_of_bbox": poll.dropped_out_of_bbox,
+            }, ensure_ascii=False) + "\n")
+            hb_f.flush()
+
+            if poll.records:
                 print(
                     f"[{datetime.now().strftime('%H:%M:%S')}] "
-                    f"poll #{poll_count:>4} | {len(records):>4} vehicles | "
+                    f"poll #{poll_count:>4} | {len(poll.records):>4} vehicles"
+                    f"{f' | {poll.dropped_out_of_bbox} dropped (bbox)' if poll.dropped_out_of_bbox else ''} | "
                     f"total rows: {total_records:,}"
                 )
-            elif not fetch_ok:
+            elif not poll.fetch_ok:
                 fetch_errors += 1
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] poll #{poll_count:>4} | fetch error (#{fetch_errors})")
             else:
                 empty_snapshots += 1
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] poll #{poll_count:>4} | empty snapshot (#{empty_snapshots})")
+                note = f" | {poll.dropped_out_of_bbox} dropped (bbox)" if poll.dropped_out_of_bbox else ""
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] poll #{poll_count:>4} | empty snapshot (#{empty_snapshots}){note}")
 
             elapsed = time.time() - loop_start
             sleep_for = max(0, interval - elapsed)
