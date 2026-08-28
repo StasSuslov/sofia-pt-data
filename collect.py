@@ -15,6 +15,11 @@ Usage:
     # rolling over at local midnight in --timezone. --hours <= 0 means run
     # until stopped (SIGINT/SIGTERM) instead of a fixed duration.
     python collect.py --output-dir data/sofia --hours 0
+
+Each data file <name>.jsonl has a companion <name>.polls.jsonl heartbeat log
+with one line per poll attempt (fetch_ok, vehicle_count) — see
+heartbeat_path_for(). Feed both into scripts/generate_manifest.py to get a
+checksummed, gap-annotated coverage report per day.
 """
 
 import argparse
@@ -71,6 +76,20 @@ def dated_output_path(output_dir: Path, tz: ZoneInfo, when: datetime | None = No
     """Path for the daily-rotated file covering `when`'s local calendar date in `tz`."""
     local_date = (when or datetime.now(tz)).astimezone(tz).date()
     return output_dir / f"{local_date.isoformat()}.jsonl"
+
+
+def heartbeat_path_for(data_path: Path) -> Path:
+    """
+    Path for the companion per-poll heartbeat log next to a data file.
+
+    A poll that fetches successfully but finds zero vehicles in the bbox, or
+    one whose HTTP/protobuf fetch fails outright, writes no rows to the data
+    file — from the vehicle data alone those two cases and genuine collector
+    downtime are indistinguishable. The heartbeat log records every poll
+    attempt (outcome and vehicle count) so completeness can be verified
+    independently of the collector's own run-summary counters.
+    """
+    return data_path.with_name(f"{data_path.stem}.polls.jsonl")
 
 
 def fetch_vehicle_positions(url: str, session: requests.Session) -> tuple[list[dict], bool]:
@@ -218,6 +237,7 @@ def run_collection(
         current_path = output_path
 
     f = current_path.open("a", encoding="utf-8")
+    hb_f = heartbeat_path_for(current_path).open("a", encoding="utf-8")
 
     mode_desc = f"daily rotation in {output_dir} ({tz_name})" if rotating else "single file"
     print(f"Starting collection → {current_path}")
@@ -236,12 +256,21 @@ def run_collection(
                 fresh_path = dated_output_path(output_dir, tz)
                 if fresh_path != current_path:
                     f.close()
+                    hb_f.close()
                     current_path = fresh_path
                     f = current_path.open("a", encoding="utf-8")
+                    hb_f = heartbeat_path_for(current_path).open("a", encoding="utf-8")
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] rotated → {current_path}")
 
+            poll_ts = int(datetime.now(timezone.utc).timestamp())
             records, fetch_ok = fetch_vehicle_positions(url, session)
             poll_count += 1
+
+            hb_f.write(json.dumps(
+                {"snapshot_ts": poll_ts, "fetch_ok": fetch_ok, "vehicle_count": len(records)},
+                ensure_ascii=False,
+            ) + "\n")
+            hb_f.flush()
 
             if records:
                 for r in records:
@@ -265,6 +294,7 @@ def run_collection(
             time.sleep(sleep_for)
     finally:
         f.close()
+        hb_f.close()
         session.close()
 
     print(f"\nDone. Polls: {poll_count} | Records: {total_records:,} | "

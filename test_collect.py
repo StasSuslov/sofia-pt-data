@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from collect import dated_output_path, is_valid_sofia_coordinate
+from collect import dated_output_path, heartbeat_path_for, is_valid_sofia_coordinate
 
 SOFIA_TZ = ZoneInfo("Europe/Sofia")
 
@@ -41,3 +41,8 @@ def test_dated_output_path_uses_local_not_utc_date():
     out_dir = Path("data/sofia")
     utc_late = datetime(2026, 8, 27, 23, 30, tzinfo=ZoneInfo("UTC"))
     assert dated_output_path(out_dir, SOFIA_TZ, utc_late) == out_dir / "2026-08-28.jsonl"
+
+
+def test_heartbeat_path_sits_next_to_data_file():
+    data_path = Path("data/sofia/2026-08-27.jsonl")
+    assert heartbeat_path_for(data_path) == Path("data/sofia/2026-08-27.polls.jsonl")
