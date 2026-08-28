@@ -12,7 +12,7 @@ node_modules/
 CLAUDE.md
 
 # server address and other local-only config — never committed, see
-# scripts/fetch_data.sh and CLAUDE.md's infra section
+# scripts/fetch_data.sh
 .env.local
 
 # runtime output from scripts/scheduled_fetch.sh

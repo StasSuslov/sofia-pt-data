@@ -63,7 +63,7 @@ CANDIDATE_PATHS = [
 # 42.57-42.80, lon 23.15-23.55) was narrower than the real network on all
 # four sides and silently discarded ~11% of routes serving peripheral
 # settlements (e.g. Kurilo, Zhelyava, Yana, Klisura) as if they were
-# teleportation artifacts — see CLAUDE.md journal, 2026-08-28.
+# teleportation artifacts — see METHODOLOGY.md.
 SOFIA_BBOX = {
     "lat_min": 42.45,
     "lat_max": 42.90,

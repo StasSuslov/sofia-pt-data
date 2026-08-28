@@ -8,8 +8,8 @@
 #
 # Reads VPS_HOST (and optionally VPS_KEY, REMOTE_DIR) from .env.local at the
 # repo root — that file is gitignored on purpose, so the server's address
-# never ends up in version control (see CLAUDE.md's infra section for why).
-# Copy .env.local.example to .env.local and fill in your own host.
+# never ends up in version control. Copy .env.local.example to .env.local
+# and fill in your own host.
 #
 # Usage: scripts/fetch_data.sh
 

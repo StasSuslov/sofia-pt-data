@@ -6,7 +6,7 @@ auditable and reproducible rather than an assertion in a comment.
 The bbox in collect.py was originally hand-picked and turned out to be
 narrower than the real network on all four sides, silently discarding ~11%
 of routes as if they were the GTFS-RT teleportation bug the filter exists to
-catch (see CLAUDE.md, 2026-08-28). The corrected bbox was derived from this
+catch (see METHODOLOGY.md). The corrected bbox was derived from this
 exact computation; this script exists so that derivation can be re-run and
 checked rather than taken on trust, and re-applied if the network extent
 changes (a new route added far from the current edges, a feed update, a
