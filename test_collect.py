@@ -11,6 +11,7 @@ from collect import (
     fetch_vehicle_positions,
     heartbeat_path_for,
     is_valid_sofia_coordinate,
+    ping_healthcheck,
 )
 
 SOFIA_TZ = ZoneInfo("Europe/Sofia")
@@ -133,3 +134,23 @@ def test_fetch_vehicle_positions_reports_parse_failure():
     poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=b"\xff\xff\xff\xff"))
     assert poll.fetch_ok is False
     assert poll.records == []
+
+
+def test_ping_healthcheck_calls_get():
+    calls = []
+
+    class _RecordingSession:
+        def get(self, url, timeout):
+            calls.append((url, timeout))
+
+    ping_healthcheck("https://hc-ping.com/abc", _RecordingSession())
+    assert calls == [("https://hc-ping.com/abc", 5)]
+
+
+def test_ping_healthcheck_swallows_request_errors():
+    class _FailingSession:
+        def get(self, url, timeout):
+            raise requests.RequestException("network unreachable")
+
+    # must not raise — a monitoring hiccup can't be allowed to kill the collector
+    ping_healthcheck("https://hc-ping.com/abc", _FailingSession())

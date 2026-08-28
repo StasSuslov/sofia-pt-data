@@ -9,6 +9,9 @@ node_modules/
 # scripts/fetch_data.sh and CLAUDE.md's infra section
 .env.local
 
+# runtime output from scripts/scheduled_fetch.sh
+logs/
+
 # raw collected data — tracked separately (Zenodo / git-lfs), not in main history.
 # Scoped to the data/ directory specifically — no bare "*.jsonl" here, so a
 # future JSONL test fixture placed elsewhere in the repo isn't silently ignored too.

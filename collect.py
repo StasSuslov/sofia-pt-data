@@ -26,6 +26,7 @@ checksummed, gap-annotated coverage report per day.
 
 import argparse
 import json
+import os
 import signal
 import sys
 import time
@@ -226,6 +227,20 @@ def discover_endpoint(session: requests.Session) -> None:
 VEHICLE_POSITIONS_URL = BASE_URL + "/api/v1/vehicle-positions"
 
 
+def ping_healthcheck(url: str, session: requests.Session) -> None:
+    """
+    Best-effort ping to a dead-man's-switch URL (e.g. https://healthchecks.io).
+    Proves the poll loop is still iterating — independent of whether any given
+    fetch succeeds — so a frozen process or a downed VPS gets noticed even
+    when no one is watching the logs. Never raises: a monitoring hiccup must
+    not be able to take down the thing it's monitoring.
+    """
+    try:
+        session.get(url, timeout=5)
+    except requests.RequestException as e:
+        print(f"[WARN] Healthcheck ping failed: {e}", file=sys.stderr)
+
+
 def run_collection(
     interval: int,
     hours: float,
@@ -234,6 +249,8 @@ def run_collection(
     output_path: Path | None = None,
     output_dir: Path | None = None,
     tz_name: str = DEFAULT_TIMEZONE,
+    healthcheck_url: str | None = None,
+    healthcheck_every: int = 20,
 ) -> None:
     """
     Poll `url` every `interval` seconds until `hours` elapse (or forever if
@@ -241,6 +258,10 @@ def run_collection(
 
     Exactly one of `output_path` (single fixed file) or `output_dir` (daily
     rotation, file named <YYYY-MM-DD>.jsonl in `tz_name`) must be given.
+
+    If `healthcheck_url` is set, it's pinged every `healthcheck_every`
+    successful loop iterations (default 20, i.e. ~15 min at the default 45s
+    interval) as a dead-man's switch.
     """
     rotating = output_dir is not None
     forever = hours <= 0
@@ -299,6 +320,9 @@ def run_collection(
 
             poll = fetch_vehicle_positions(url, session)
             poll_count += 1
+
+            if healthcheck_url and poll_count % healthcheck_every == 0:
+                ping_healthcheck(healthcheck_url, session)
 
             # Data written (and durably flushed) before the heartbeat line
             # that reports it, so the heartbeat can never claim more rows
@@ -368,6 +392,12 @@ def main():
     parser.add_argument("--hours", type=float, default=DEFAULT_HOURS,
                         help=f"Collection duration in hours (default: {DEFAULT_HOURS}). "
                              "0 or negative means run indefinitely until stopped.")
+    parser.add_argument("--healthcheck-url", type=str, default=os.environ.get("HEALTHCHECK_URL"),
+                        help="Dead-man's-switch URL (e.g. a healthchecks.io check), pinged "
+                             "periodically to prove the loop is still running. Defaults to the "
+                             "HEALTHCHECK_URL env var; omit both to disable.")
+    parser.add_argument("--healthcheck-every", type=int, default=20,
+                        help="Ping the healthcheck URL every N polls (default: 20)")
     args = parser.parse_args()
 
     if args.discover:
@@ -389,6 +419,8 @@ def main():
         output_path=args.output,
         output_dir=args.output_dir,
         tz_name=args.timezone,
+        healthcheck_url=args.healthcheck_url,
+        healthcheck_every=args.healthcheck_every,
     )
 
 

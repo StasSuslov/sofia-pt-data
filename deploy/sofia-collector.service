@@ -1,0 +1,16 @@
+[Unit]
+Description=Sofia PT GTFS-RT collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sofia-pt
+Environment=HEALTHCHECK_URL=
+ExecStart=/opt/sofia-pt/venv/bin/python3 /opt/sofia-pt/collect.py --output-dir /opt/sofia-pt/data/sofia --interval 45 --hours 0
+Restart=on-failure
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

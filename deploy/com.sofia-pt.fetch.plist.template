@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd agent: runs scripts/scheduled_fetch.sh every 2 hours to pull
+  collected data from the VPS onto this machine as a second copy.
+
+  Install:
+    sed "s#__REPO_ROOT__#/absolute/path/to/Sofia_PT#g" \
+      deploy/com.sofia-pt.fetch.plist.template \
+      > ~/Library/LaunchAgents/com.sofia-pt.fetch.plist
+    launchctl load -w ~/Library/LaunchAgents/com.sofia-pt.fetch.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.sofia-pt.fetch.plist
+    rm ~/Library/LaunchAgents/com.sofia-pt.fetch.plist
+
+  Only runs while this machine is on, awake, and the user is logged in —
+  it's a convenience backup copy, not a substitute for the VPS-side
+  dead-man's switch (collect.py --healthcheck-url).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sofia-pt.fetch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO_ROOT__/scripts/scheduled_fetch.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>7200</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/logs/launchd.err.log</string>
+</dict>
+</plist>
