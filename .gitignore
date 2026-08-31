@@ -22,4 +22,13 @@ logs/
 # raw collected data — tracked separately (Zenodo / git-lfs), not in main history.
 # Scoped to the data/ directory specifically — no bare "*.jsonl" here, so a
 # future JSONL test fixture placed elsewhere in the repo isn't silently ignored too.
-data/
+#
+# The per-day manifests are the exception and ARE tracked: they are the
+# published tamper-evidence for data that lives elsewhere (~1 KB/day), and a
+# repo that ships the checksumming code without the checksums proves nothing.
+# Written as "contents excluded, directories re-included" on purpose — git
+# cannot re-include a file whose parent directory is excluded, so a plain
+# "data/" rule would make the negation below silently do nothing.
+data/**
+!data/**/
+!data/**/*.manifest.json

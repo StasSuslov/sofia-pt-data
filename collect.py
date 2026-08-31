@@ -38,6 +38,8 @@ from zoneinfo import ZoneInfo
 import requests
 from google.transit import gtfs_realtime_pb2
 
+from config import DEFAULT_HOURS, DEFAULT_INTERVAL_SEC, DEFAULT_TIMEZONE
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 BASE_URL = "https://gtfs.sofiatraffic.bg"
@@ -71,9 +73,9 @@ SOFIA_BBOX = {
     "lon_max": 23.66,
 }
 
-DEFAULT_INTERVAL_SEC = 45   # poll every 45 seconds
-DEFAULT_HOURS = 24
-DEFAULT_TIMEZONE = "Europe/Sofia"
+# Poll cadence lives in config.py, imported at the top of this file, so
+# scripts/generate_manifest.py can audit coverage against the same numbers
+# without importing this module's network dependencies.
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 

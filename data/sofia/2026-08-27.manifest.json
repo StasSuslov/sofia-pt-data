@@ -1,0 +1,50 @@
+{
+  "date": "2026-08-27",
+  "data_file": "2026-08-27.jsonl",
+  "data_sha256": "4c39ba72d30606f1f70fea02b49fd67bc709e827e760a27b31bd2efc57126042",
+  "data_size_bytes": 92705348,
+  "total_vehicle_records": 445780,
+  "data_malformed_lines": 0,
+  "heartbeat_available": false,
+  "day_in_progress": false,
+  "generated_at": "2026-08-31T09:57:21.088698+00:00",
+  "polls_file": null,
+  "polls_sha256": null,
+  "polls_malformed_lines": null,
+  "polls_logged": null,
+  "successful_polls": null,
+  "empty_polls": null,
+  "fetch_error_polls": null,
+  "entities_total": null,
+  "vehicles_with_position": null,
+  "dropped_out_of_bbox": null,
+  "dropped_out_of_bbox_pct": null,
+  "nominal_interval_sec": 45,
+  "observed_interval_sec": 45.0,
+  "gap_count": 4,
+  "gaps": [
+    {
+      "after_ts": 1787778000,
+      "before_ts": 1787818029,
+      "gap_seconds": 40029
+    },
+    {
+      "after_ts": 1787819424,
+      "before_ts": 1787819645,
+      "gap_seconds": 221
+    },
+    {
+      "after_ts": 1787820590,
+      "before_ts": 1787821308,
+      "gap_seconds": 718
+    },
+    {
+      "after_ts": 1787835890,
+      "before_ts": 1787836116,
+      "gap_seconds": 226
+    }
+  ],
+  "day_seconds": 86400,
+  "expected_polls": 1920.0,
+  "coverage_pct": 52.45
+}

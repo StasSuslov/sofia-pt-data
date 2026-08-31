@@ -33,8 +33,23 @@ log() {
 
 log "starting scheduled fetch"
 
-if ! "$REPO_ROOT/scripts/fetch_data.sh" >> "$LOG_FILE" 2>&1; then
-    log "fetch_data.sh FAILED"
+# Keep in sync with MANIFEST_FAILED_EXIT_CODE in fetch_data.sh: that's the
+# code it returns when rsync succeeded but generate_manifest.py afterwards
+# didn't. Data landed fine in that case — reporting it as a failed pull
+# would be wrong, so it gets its own log line and notification instead of
+# falling into the generic "fetch_data.sh FAILED" branch below.
+MANIFEST_FAILED_EXIT_CODE=42
+manifest_generation_failed=0
+
+"$REPO_ROOT/scripts/fetch_data.sh" >> "$LOG_FILE" 2>&1
+fetch_exit=$?
+
+if [[ "$fetch_exit" -eq "$MANIFEST_FAILED_EXIT_CODE" ]]; then
+    log "fetch_data.sh: data pulled OK, generate_manifest.py FAILED"
+    notify "Sofia PT collector" "Data pulled OK but manifest generation failed — check logs/fetch.log"
+    manifest_generation_failed=1
+elif [[ "$fetch_exit" -ne 0 ]]; then
+    log "fetch_data.sh FAILED (exit $fetch_exit)"
     notify "Sofia PT collector" "Scheduled data pull failed — check logs/fetch.log"
     exit 1
 fi
@@ -73,3 +88,10 @@ else
 fi
 
 log "done"
+
+# Data pulled fine, but exit non-zero (and distinct from a pull failure) so
+# this doesn't silently read as full success in launchd's own job status —
+# the log line and notification above already said what actually failed.
+if [[ "$manifest_generation_failed" -eq 1 ]]; then
+    exit "$MANIFEST_FAILED_EXIT_CODE"
+fi

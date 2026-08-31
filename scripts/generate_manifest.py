@@ -24,8 +24,15 @@ import hashlib
 import json
 import statistics
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+# config.py at the repo root is the single source of truth for the poll
+# cadence collect.py actually runs at. Importing collect.py itself would
+# pull in requests and the protobuf bindings, which this file never needs.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from config import DEFAULT_INTERVAL_SEC, DEFAULT_TIMEZONE  # noqa: E402
 
 
 def sha256_of(path: Path) -> str:
@@ -63,44 +70,119 @@ def load_jsonl(path: Path) -> tuple[list[dict], int]:
     return records, malformed
 
 
-def analyze_gaps(timestamps: list[int], gap_threshold_multiplier: float) -> dict:
-    """Gap/coverage stats derived purely from a sorted, deduplicated timestamp series."""
-    if len(timestamps) < 2:
-        return {
-            "nominal_interval_sec": None,
-            "gap_count": 0,
-            "gaps": [],
-            "span_seconds": 0,
-            "coverage_pct": None,
-        }
+def day_bounds(date_str: str, tz: ZoneInfo, now: datetime | None = None) -> tuple[int, int, bool]:
+    """
+    UTC epoch seconds for the local midnight-to-midnight span of `date_str`
+    in `tz`, so they compare directly against snapshot_ts (UTC epoch).
 
-    deltas = [b - a for a, b in zip(timestamps, timestamps[1:])]
-    nominal_interval = statistics.median(deltas)
-    threshold = nominal_interval * gap_threshold_multiplier
+    For the current in-progress local day, day_end is clamped to `now` and
+    day_in_progress comes back True. Note for callers: a local rsync copy of
+    *today's* file also lags the VPS by up to the fetch interval (see
+    scripts/fetch_data.sh) — low coverage for today alone doesn't necessarily
+    mean the collector is down, it may just mean the pull hasn't run yet.
+    """
+    local_date = date.fromisoformat(date_str)
+    day_start = datetime(local_date.year, local_date.month, local_date.day, tzinfo=tz)
+    day_end = day_start + timedelta(days=1)
+    now = now or datetime.now(timezone.utc)
+
+    day_in_progress = now < day_end
+    if day_in_progress:
+        day_end = now
+
+    return int(day_start.timestamp()), int(day_end.timestamp()), day_in_progress
+
+
+def analyze_gaps(
+    timestamps: list[int],
+    nominal_interval_sec: int,
+    gap_threshold_multiplier: float,
+    day_start_ts: int,
+    day_end_ts: int,
+) -> dict:
+    """
+    Coverage measured against calendar-day boundaries and the *configured*
+    poll interval, never the interval observed in the data. A collector that
+    quietly degrades from 45s to 90s polls would otherwise recalibrate its
+    own "normal" from the degraded data and report ~0 gaps / ~100% coverage
+    — see CLAUDE.md section 9, the coverage_pct defect this rewrite fixes.
+    """
+    day_seconds = day_end_ts - day_start_ts
+    threshold = nominal_interval_sec * gap_threshold_multiplier
+
+    # Diagnostic only, not used for coverage math: how far the actually
+    # observed spacing between polls has drifted from nominal_interval_sec.
+    observed_interval_sec = (
+        statistics.median(b - a for a, b in zip(timestamps, timestamps[1:]))
+        if len(timestamps) >= 2 else None
+    )
+
+    # Day boundaries count as poll opportunities too: a gap between
+    # day_start and the first record, or the last record and day_end, is
+    # exactly as real as one in the middle — and was invisible before. This
+    # is precisely how a mid-day collector start hid as "97% coverage".
+    bounded = [day_start_ts, *timestamps, day_end_ts]
     gaps = [
         {"after_ts": a, "before_ts": b, "gap_seconds": b - a}
-        for a, b in zip(timestamps, timestamps[1:])
+        for a, b in zip(bounded, bounded[1:])
         if (b - a) > threshold
     ]
-    span_seconds = timestamps[-1] - timestamps[0]
-    downtime_seconds = sum(g["gap_seconds"] - nominal_interval for g in gaps)
-    coverage_pct = round(100 * (1 - downtime_seconds / span_seconds), 2) if span_seconds > 0 else None
+
+    expected_polls = (
+        day_seconds / nominal_interval_sec if nominal_interval_sec and day_seconds > 0 else None
+    )
+    coverage_pct = (
+        round(100 * len(timestamps) / expected_polls, 2) if expected_polls else None
+    )
 
     return {
-        "nominal_interval_sec": nominal_interval,
+        "nominal_interval_sec": nominal_interval_sec,
+        "observed_interval_sec": observed_interval_sec,
         "gap_count": len(gaps),
         "gaps": gaps,
-        "span_seconds": span_seconds,
+        "day_seconds": day_seconds,
+        "expected_polls": round(expected_polls, 1) if expected_polls else None,
         "coverage_pct": coverage_pct,
     }
 
 
-def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
+def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) -> bool:
+    """
+    True when an existing manifest is already newer than every input that
+    could change it. A closed past day's data and heartbeat files never
+    change again, so re-hashing them (SHA256 over a file already 100+ MB,
+    on a cadence that runs every couple of hours) is pure waste once this
+    holds — see CLAUDE.md section on why generate_manifest.py needs wiring
+    into the fetch pipeline without regenerating the whole archive each time.
+    """
+    if not manifest_path.exists():
+        return False
+    manifest_mtime = manifest_path.stat().st_mtime
+    if data_path.stat().st_mtime > manifest_mtime:
+        return False
+    if polls_path.exists() and polls_path.stat().st_mtime > manifest_mtime:
+        return False
+    return True
+
+
+def should_skip(manifest_path: Path, data_path: Path, polls_path: Path, force: bool) -> bool:
+    return not force and manifest_is_current(manifest_path, data_path, polls_path)
+
+
+def build_manifest(
+    data_path: Path,
+    gap_threshold_multiplier: float,
+    nominal_interval_sec: int = DEFAULT_INTERVAL_SEC,
+    tz: ZoneInfo = ZoneInfo(DEFAULT_TIMEZONE),
+    now: datetime | None = None,
+) -> dict:
     polls_path = data_path.with_name(f"{data_path.stem}.polls.jsonl")
     heartbeat_available = polls_path.exists()
 
     data_records, data_malformed_lines = load_jsonl(data_path)
     data_timestamps = sorted({r["snapshot_ts"] for r in data_records})
+
+    day_start_ts, day_end_ts, day_in_progress = day_bounds(data_path.stem, tz, now)
 
     manifest = {
         "date": data_path.stem,
@@ -114,6 +196,9 @@ def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
         # actually read, just not necessarily of a "final" file.
         "data_malformed_lines": data_malformed_lines,
         "heartbeat_available": heartbeat_available,
+        # See day_bounds() docstring: for today's own file this being low
+        # doesn't necessarily mean downtime, the local rsync copy lags too.
+        "day_in_progress": day_in_progress,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -189,7 +274,7 @@ def build_manifest(data_path: Path, gap_threshold_multiplier: float) -> dict:
             "dropped_out_of_bbox_pct": None,
         })
 
-    manifest.update(analyze_gaps(timestamps, gap_threshold_multiplier))
+    manifest.update(analyze_gaps(timestamps, nominal_interval_sec, gap_threshold_multiplier, day_start_ts, day_end_ts))
     return manifest
 
 
@@ -200,7 +285,23 @@ def main():
     parser.add_argument("data_dir", type=Path, help="Directory containing <YYYY-MM-DD>.jsonl files")
     parser.add_argument(
         "--gap-threshold", type=float, default=3.0,
-        help="Flag a gap when it exceeds this multiple of the nominal poll interval (default: 3x)",
+        help="Flag a gap when it exceeds this multiple of the *configured* poll interval, "
+             "not the observed one (default: 3x)",
+    )
+    parser.add_argument(
+        "--interval", type=int, default=DEFAULT_INTERVAL_SEC,
+        help=f"Nominal collector poll interval in seconds, must match collect.py's --interval "
+             f"for the run being audited (default: {DEFAULT_INTERVAL_SEC}, collect.py's own default)",
+    )
+    parser.add_argument(
+        "--timezone", type=str, default=DEFAULT_TIMEZONE,
+        help=f"Timezone for calendar-day boundaries, must match collect.py's --timezone "
+             f"(default: {DEFAULT_TIMEZONE})",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Recompute every manifest even if it's already newer than its data and "
+             "heartbeat files (default: skip days whose manifest is already current)",
     )
     args = parser.parse_args()
 
@@ -209,9 +310,16 @@ def main():
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)
 
+    tz = ZoneInfo(args.timezone)
     for path in day_files:
-        manifest = build_manifest(path, args.gap_threshold)
+        polls_path = path.with_name(f"{path.stem}.polls.jsonl")
         manifest_path = path.with_name(f"{path.stem}.manifest.json")
+
+        if should_skip(manifest_path, path, polls_path, args.force):
+            print(f"{path.name}: skipped (manifest already up to date)")
+            continue
+
+        manifest = build_manifest(path, args.gap_threshold, args.interval, tz)
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
         if not manifest["heartbeat_available"]:
