@@ -46,5 +46,7 @@
   ],
   "day_seconds": 86400,
   "expected_polls": 1920.0,
-  "coverage_pct": 52.45
+  "coverage_pct": 52.45,
+  "remote_verified": true,
+  "remote_verified_at": "2026-08-31T11:06:33.553022+00:00"
 }
