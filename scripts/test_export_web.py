@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from export_web import (  # noqa: E402
     COORD_DECIMALS,
+    load_route_info,
     aggregate_day_bins,
     apply_threshold,
     build_geometry,
@@ -14,7 +15,34 @@ from export_web import (  # noqa: E402
     point_along_shape,
     segment_pairs,
 )
-from segment_speeds import build_shape  # noqa: E402
+from segment_speeds import build_shape, load_static  # noqa: E402
+
+SHAPE_ID = "S1"
+ROUTE_ID = "R_BUS"
+
+
+def _write_static_zip(tmp_path: Path, extra_route: tuple | None = None) -> Path:
+    """Minimal GTFS zip: one shape, one bus route, optionally a second route
+    on the same shape so a mixed route_type can be exercised."""
+    import zipfile
+
+    routes = [("route_id,route_short_name,route_type"), f"{ROUTE_ID},9,3"]
+    trips = ["trip_id,route_id,service_id,shape_id", f"T1,{ROUTE_ID},SVC,{SHAPE_ID}"]
+    if extra_route:
+        rid, rtype = extra_route
+        routes.append(f"{rid},11,{rtype}")
+        trips.append(f"T2,{rid},SVC,{SHAPE_ID}")
+
+    shapes = ["shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence"]
+    shapes += [f"{SHAPE_ID},{lat},{lon},{i}" for i, (lat, lon) in enumerate(STRAIGHT_LINE)]
+
+    path = tmp_path / "gtfs.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("routes.txt", "\n".join(routes) + "\n")
+        z.writestr("trips.txt", "\n".join(trips) + "\n")
+        z.writestr("shapes.txt", "\n".join(shapes) + "\n")
+    return path
+
 
 # Same fixture idea as test_segment_speeds.py: a straight north-south line,
 # so "distance along the shape increases" trivially means "latitude increases".
@@ -153,3 +181,35 @@ def test_aggregate_day_bins_tolerates_torn_trailing_line(tmp_path):
     path.write_text(good + "\n" + '{"shape_id": "S1", "segment_index"', encoding="utf-8")
     bins = aggregate_day_bins(path)
     assert bins == {("S1", 0, "00:00"): (4.0, 1)}
+
+
+def test_geometry_carries_route_metadata_per_shape(tmp_path: Path):
+    """
+    Feature 3 (transport-type filter) needs to know a tram from a bus, and
+    shape_id alone cannot say. Metadata rides once per shape, aligned with
+    geometry["shape_ids"], so a filter is one hop through shape_idx.
+    """
+    static_zip = _write_static_zip(tmp_path)
+    route_info = load_route_info(static_zip)
+    _, shapes_by_id = load_static(static_zip)
+    pairs = {(SHAPE_ID, 0), (SHAPE_ID, 1)}
+
+    geometry, index_of, missing = build_geometry(pairs, shapes_by_id, route_info)
+
+    assert missing == 0
+    pos = geometry["shape_ids"].index(SHAPE_ID)
+    assert geometry["shape_route_ids"][pos] == [ROUTE_ID]
+    assert geometry["shape_route_type"][pos] == 3  # bus, from routes.txt
+    assert len(geometry["shape_route_type"]) == len(geometry["shape_ids"])
+
+
+def test_route_type_left_unset_when_a_shape_mixes_types(tmp_path: Path):
+    """
+    A shape served by both a tram and a bus route cannot answer a type filter,
+    so the field is null rather than resolved by picking whichever route came
+    first — a filter that quietly guesses is worse than one that shows nothing.
+    """
+    static_zip = _write_static_zip(tmp_path, extra_route=("R_TRAM", "0"))
+    info = load_route_info(static_zip)
+    assert info[SHAPE_ID]["route_type"] is None
+    assert info[SHAPE_ID]["route_ids"] == sorted([ROUTE_ID, "R_TRAM"])

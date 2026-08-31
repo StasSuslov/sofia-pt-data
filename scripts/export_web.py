@@ -30,6 +30,10 @@ Format decided here:
     scientific record. The float m/s and every sample it came from still
     live in segment_speeds_<date>.jsonl and typical_weekday.json, published
     as-is (D5).
+  - Route metadata (route ids, short names, GTFS route_type) is stored once
+    per shape rather than per segment, so the transport-type filter
+    (Component D feature 3) has something to key on without inflating the
+    per-segment arrays.
   - n_samples ships with every surviving bin, unconditionally. A threshold
     (MIN_SAMPLES_DEFAULT) already throws out the thinnest bins, but n=2 and
     n=48 still look identical on a coloured line unless the client can see
@@ -52,13 +56,16 @@ Usage:
 
 import argparse
 import bisect
+import csv
 import gzip
+import io
 import json
 import math
 import shutil
 import statistics
 import sys
 import time
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,7 +210,44 @@ def point_along_shape(shape: Shape, dist_m: float) -> tuple:
     return round(lat, COORD_DECIMALS), round(lon, COORD_DECIMALS)
 
 
-def build_geometry(retained_pairs: set, shapes_by_id: dict) -> tuple:
+def load_route_info(gtfs_zip_path: Path) -> dict:
+    """
+    shape_id -> {"route_ids": [...], "route_names": [...], "route_type": int}
+
+    Feature 3 in CLAUDE.md's frontend priorities is a transport-type filter,
+    and shape_id alone cannot answer "is this a tram or a bus". Twelve shapes
+    in this feed are served by more than one route, so route_ids is a list
+    rather than a single value; no shape mixes route types (checked against
+    the feed), so route_type stays a single int and a filter can key on it
+    directly. GTFS route_type: 0 tram, 1 metro, 3 bus, 11 trolleybus.
+    """
+    with zipfile.ZipFile(gtfs_zip_path) as z:
+        with z.open("routes.txt") as f:
+            routes = {
+                row["route_id"]: (row.get("route_short_name") or row["route_id"], row["route_type"])
+                for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+            }
+        shape_routes = defaultdict(set)
+        with z.open("trips.txt") as f:
+            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+                if row["shape_id"] and row["route_id"] in routes:
+                    shape_routes[row["shape_id"]].add(row["route_id"])
+
+    info = {}
+    for shape_id, route_ids in shape_routes.items():
+        ids = sorted(route_ids)
+        types = {routes[r][1] for r in ids}
+        info[shape_id] = {
+            "route_ids": ids,
+            "route_names": sorted({routes[r][0] for r in ids}),
+            # A mixed-type shape would make a type filter lie, so it is left
+            # unset rather than resolved by picking a winner.
+            "route_type": int(types.pop()) if len(types) == 1 else None,
+        }
+    return info
+
+
+def build_geometry(retained_pairs: set, shapes_by_id: dict, route_info: dict | None = None) -> tuple:
     """Returns (geometry_dict, index_of, missing_count).
 
     index_of maps (shape_id, segment_index) -> its position in geometry's
@@ -232,9 +276,20 @@ def build_geometry(retained_pairs: set, shapes_by_id: dict) -> tuple:
         end_lon.append(elon)
         index_of[(shape_id, seg_idx)] = i
 
+    # Route metadata is stored per shape (hundreds of entries), not per
+    # segment (tens of thousands): a type filter needs one lookup hop through
+    # shape_idx, and the file stays small enough to keep loading once.
+    route_info = route_info or {}
+    shape_route_ids = [route_info.get(sid, {}).get("route_ids", []) for sid in shape_ids]
+    shape_route_names = [route_info.get(sid, {}).get("route_names", []) for sid in shape_ids]
+    shape_route_type = [route_info.get(sid, {}).get("route_type") for sid in shape_ids]
+
     geometry = {
         "segment_length_m": SEGMENT_LENGTH_M,
         "shape_ids": shape_ids,
+        "shape_route_ids": shape_route_ids,
+        "shape_route_names": shape_route_names,
+        "shape_route_type": shape_route_type,
         "shape_idx": shape_idx,
         "segment_index": segment_index,
         "start_lat": start_lat,
@@ -338,6 +393,10 @@ def build_manifest(
             f"export ({mode}).",
             "The GTFS-RT feed carries no Sofia metro vehicles; this export describes surface "
             "transport only.",
+            "Route metadata is per shape, not per segment. Twelve shapes in this feed serve "
+            "more than one route, so shape_route_ids is a list; no shape mixes route types, "
+            "so shape_route_type is a single GTFS value (0 tram, 1 metro, 3 bus, "
+            "11 trolleybus) and is null if that ever stops holding.",
         ],
     }
 
@@ -407,7 +466,8 @@ def main():
     retained, n_before, n_after = apply_threshold(bins, args.min_samples)
     pairs_after = segment_pairs(retained)
 
-    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_id)
+    route_info = load_route_info(args.static_zip)
+    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_id, route_info)
     timeslot_files = build_timeslot_files(retained, index_of)
 
     # This script owns everything under out_dir once it exists, so rebuild
