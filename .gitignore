@@ -10,6 +10,7 @@ node_modules/
 # for a public audience — see README.md / METHODOLOGY.md for the public
 # version of this project's context.
 CLAUDE.md
+JOURNAL.md
 
 # server address and other local-only config — never committed, see
 # scripts/fetch_data.sh
