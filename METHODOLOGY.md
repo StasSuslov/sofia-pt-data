@@ -78,10 +78,26 @@ Stated here rather than left for a reader to discover independently:
   by construction, even though it is derived from the network's actual
   extent rather than chosen arbitrarily. Any observed drop-out-of-bbox
   rate is published in each day's manifest rather than assumed to be zero.
-- Coverage percentages in early manifests can be inflated if collection
-  started partway through a calendar day; a manifest should be read
-  alongside its underlying start/end timestamps, not as a single number
-  in isolation.
+- Coverage is measured against calendar-day boundaries in local time,
+  using the collector's configured poll interval as the denominator rather
+  than the interval observed in the data. An earlier version measured from
+  the first record to the last one and derived its own baseline interval,
+  which inflated coverage on days where collection started late and could
+  not have detected a collector polling at half its configured rate.
+- The feed reports vehicle speed in km/h, in a field that GTFS-RT specifies
+  as metres per second. The values are whole numbers with a median of 17
+  and a maximum of 87, which as m/s would put a city bus at a 61 km/h
+  median and a 313 km/h maximum. Published figures treat the field as
+  km/h. This is an inference from the data, not a statement from the feed
+  publisher.
+- Speed derived from consecutive positions and the feed's own speed reading
+  disagree by a median of 9.3 km/h, with 15% of samples differing by more
+  than 20 km/h. The two measure different things (an average over the
+  polling interval against an instantaneous reading), so the archive
+  publishes both rather than reconciling them.
+- The feed populates no bearing field at all, so direction of travel comes
+  from the trip's shape_id in GTFS Static. direction_id, the usual field
+  for this, is empty for every trip in the feed.
 
 ## Versioning
 
