@@ -18,6 +18,10 @@ and analytical approach.
 - `scripts/derive_bbox.py` — recomputes the network bounding box from a
   GTFS Static feed's `stops.txt`/`shapes.txt`, so the bbox used for
   filtering is reproducible from data rather than hand-picked.
+- `scripts/archive_static_feed.py` — downloads the GTFS Static feed on a
+  schedule and saves a dated snapshot only when the feed's contents changed,
+  comparing member contents rather than the zip's bytes so a rebuild of
+  identical data is not mistaken for a republish.
 - `scripts/segment_speeds.py` — projects raw GTFS-RT vehicle positions onto
   GTFS Static shapes, derives a speed sample per 200 m segment, and
   aggregates Monday–Friday samples into a "typical weekday" median per
@@ -28,8 +32,9 @@ and analytical approach.
 - `scripts/fetch_data.sh` / `scripts/scheduled_fetch.sh` — pull the archive
   from a remote collector host via `rsync`.
 - `deploy/` — `systemd` units and a `launchd` template for running the
-  collector continuously, gzipping closed day files on the collector host so
-  its disk doesn't fill, and syncing the output on a schedule. Day files are
+  collector continuously, capturing a GTFS Static snapshot when the feed
+  changes, gzipping closed day files on the collector host so its disk
+  doesn't fill, and syncing the output on a schedule. Day files are
   read transparently in either form; a manifest always describes the
   uncompressed bytes, so compression never changes a recorded checksum.
 
@@ -136,9 +141,10 @@ value).
 Both scripts accept either a single GTFS Static zip (one feed for every day
 or bin processed) or a directory of `gtfs_<YYYY-MM-DD>.zip` snapshots. The
 directory form exists because the agency republishes the static feed from
-time to time, and a stale snapshot degrades preprocessing silently. See
-METHODOLOGY.md's Aggregation and Known limitations sections for what that
-did to one 2026-08-31 run and how the fix works.
+time to time, and a stale snapshot degrades preprocessing silently.
+`scripts/archive_static_feed.py` keeps that directory populated. See
+METHODOLOGY.md's Aggregation and Known limitations sections for what a stale
+snapshot did to one 2026-08-31 run and how the fix works.
 
 ## Tests
 

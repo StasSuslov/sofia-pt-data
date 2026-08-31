@@ -8,8 +8,11 @@ drag requests and the protobuf bindings into every tool that only reads files
 off disk, so a manifest could not be generated on a machine without the
 collector's runtime installed.
 
-City-specific constants (BASE_URL, SOFIA_BBOX) still live in collect.py — see
-CLAUDE.md D2, which is a stated goal rather than implemented architecture.
+BASE_URL moved here from collect.py so scripts/archive_static_feed.py can
+build the static feed's URL without importing collect.py and dragging in
+requests and the protobuf bindings, the same reasoning as the day-file
+helpers below. SOFIA_BBOX still lives in collect.py: see CLAUDE.md D2,
+which remains a stated goal, not a fully implemented architecture.
 
 Also holds the day-file helpers shared by generate_manifest.py and
 segment_speeds.py: both need to find a <date>.jsonl day file and its
@@ -25,6 +28,7 @@ from pathlib import Path
 DEFAULT_INTERVAL_SEC = 45   # poll every 45 seconds
 DEFAULT_HOURS = 24
 DEFAULT_TIMEZONE = "Europe/Sofia"
+BASE_URL = "https://gtfs.sofiatraffic.bg"
 
 
 def date_from_path(path: Path) -> str:

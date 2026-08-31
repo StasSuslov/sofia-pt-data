@@ -1,0 +1,31 @@
+[Unit]
+Description=Sofia PT GTFS Static feed snapshot capture
+
+[Service]
+Type=oneshot
+# System python3, not /opt/sofia-pt/venv/bin/python3 like
+# sofia-collector.service uses: scripts/archive_static_feed.py only touches
+# the standard library (urllib for the download, zipfile/hashlib for
+# validation and content hashing, see that script's module docstring), so
+# pointing it at the collector's venv would just be one more thing to keep
+# provisioned in step with the venv for no actual benefit. Ubuntu 24.04
+# ships python3 3.12, well past the 3.10 floor the PEP 604 `X | None`
+# annotations in this script (and the rest of scripts/) already assume.
+#
+# Output directory is /opt/sofia-pt/data/sofia/static/, inside the tree
+# scripts/fetch_data.sh already pulls with a plain, unfiltered rsync, so a
+# new snapshot and its manifest reach the laptop on the next scheduled
+# fetch with no new transport to build. sofia-compress.service's find only
+# matches *.jsonl and *.polls.jsonl, so it never touches these zips.
+#
+# No --url flag: the script's own default already points at the production
+# endpoint (config.BASE_URL + /api/v1/static).
+#
+# A run that finds the feed unchanged exits 0 and writes nothing, so this
+# is safe to run as often as the timer likes. If the feed changes twice in
+# one calendar day the second run exits 3 (SAME_DATE_COLLISION_EXIT_CODE in
+# the script) rather than overwrite the first capture; that shows up in
+# `systemctl status` / journalctl as a failed run and needs a human look,
+# not a retry.
+ExecStart=/usr/bin/python3 /opt/sofia-pt/scripts/archive_static_feed.py /opt/sofia-pt/data/sofia/static
+User=root

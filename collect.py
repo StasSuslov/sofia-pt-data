@@ -38,11 +38,13 @@ from zoneinfo import ZoneInfo
 import requests
 from google.transit import gtfs_realtime_pb2
 
-from config import DEFAULT_HOURS, DEFAULT_INTERVAL_SEC, DEFAULT_TIMEZONE
+from config import BASE_URL, DEFAULT_HOURS, DEFAULT_INTERVAL_SEC, DEFAULT_TIMEZONE
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-BASE_URL = "https://gtfs.sofiatraffic.bg"
+# BASE_URL itself now lives in config.py (see that module's docstring) so
+# scripts/archive_static_feed.py can reuse it without importing this file's
+# network dependencies.
 
 # Candidate paths to try during discovery.
 # Confirmed via urbandata.sofia.bg (Ниво 1 open data, CC BY 4.0) 2026-08-20:

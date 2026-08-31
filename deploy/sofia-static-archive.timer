@@ -1,0 +1,16 @@
+[Unit]
+Description=Run Sofia PT GTFS Static feed snapshot capture daily
+
+[Timer]
+OnCalendar=daily
+# Same reasoning as sofia-compress.timer: a $4/mo droplet is not guaranteed
+# to be up at the exact scheduled instant (reboots for host maintenance,
+# etc.), and archive_feed()'s whole design already tolerates a missed or
+# late run just fine, one snapshot per calendar day is the ceiling either
+# way, and a run that finds the feed unchanged writes nothing. Persistent=true
+# means a run skipped by downtime still happens once at next boot instead of
+# silently vanishing for that day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
