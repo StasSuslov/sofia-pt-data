@@ -20,7 +20,8 @@ Algorithm (given, not reinvented — see the task write-up):
   4. speed = delta(distance along shape) / delta(time) between consecutive
      projected positions.
   5. segment = fixed 200 m bin of distance-along-shape, keyed by
-     (shape_id, segment_index) — shape_id already carries direction, see (1).
+     (shape_key, segment_index) — shape_key already carries direction, see
+     (1) and (10) below.
   6. timeslot = 15-minute local-time bin (timezone from config.py, not
      hardcoded — CLAUDE.md D2).
   7. rejects are counted, never silently dropped — see REJECT_REASONS and
@@ -32,10 +33,34 @@ Algorithm (given, not reinvented — see the task write-up):
      this script derives, as a free end-to-end sanity check of the whole
      pipeline. Both sides are compared in km/h: the feed reports km/h even
      though the field arrives named speed_ms (see METHODOLOGY.md).
+  10. shape identity is content-addressed (build_shape_key/shape_id_from_key
+      below), not just shape_id: the agency republished GTFS Static on
+      2026-08-31 keeping 32 shape_ids but changing their geometry underneath
+      them, which would otherwise make (shape_id, segment_index) silently
+      pool samples from two different stretches of road into one median.
+      Keying on a hash of the geometry instead means byte-identical shapes
+      (98.3% of them, across the two known snapshots) still pool their
+      samples, and the 32 that changed split into two honest series that
+      never merge. See build_shape_key()'s docstring for the collision
+      analysis and CLAUDE.md's 2026-08-31 entry for the finding.
+  11. static feed selection: the static-feed argument is either one zip
+      (one feed for every day processed, unchanged from before this fix) or
+      a directory of gtfs_<YYYY-MM-DD>.zip snapshots, one selected per
+      processed day by find_static_snapshots()/pick_snapshot_for_day() — the
+      latest snapshot whose filename date is <= the day being processed.
+      The filename date is used rather than feed_info.txt's feed_start_date
+      because it is what this archive actually observed the agency serving,
+      not the publisher's own claim about when a schedule took effect; both
+      are recorded in the output so a reader can check one against the
+      other rather than take either on trust.
 
 Outputs (directory created if missing):
     <output-dir>/segment_speeds_<date>.jsonl  — one row per accepted sample
-    <output-dir>/typical_weekday.json         — D4 aggregation + run metadata
+    <output-dir>/typical_weekday.json         — D4 aggregation + run metadata,
+        including which static feed(s) were used, a per-day breakdown (so a
+        snapshot going stale shows up as one day's reject counts climbing,
+        not smeared into a grand total), and how many shape_ids were seen
+        carrying more than one distinct geometry across the feeds loaded.
 
 Usage:
     python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip \\
@@ -44,14 +69,20 @@ Usage:
     # no explicit dates: every <YYYY-MM-DD>.jsonl (or .jsonl.gz, transparently
     # decompressed — see deploy/sofia-compress.service) found in the data dir
     python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip data/sofia
+
+    # a directory of gtfs_<YYYY-MM-DD>.zip snapshots instead of one zip: each
+    # day is matched against the latest snapshot dated on or before it
+    python3 scripts/segment_speeds.py data/sofia/static data/sofia
 """
 
 import argparse
 import bisect
 import csv
+import hashlib
 import io
 import json
 import math
+import re
 import statistics
 import sys
 import time
@@ -240,35 +271,87 @@ def window_bounds(shape: Shape, last_dist: float, max_travel_m: float) -> tuple:
 
 # ─── Static feed loading ────────────────────────────────────────────────────
 
+def build_shape_key(shape_id: str, points: list) -> str:
+    """
+    Content-addressed shape identity: f"{shape_id}@{geom_hash}", where
+    geom_hash is the first 8 hex chars of a sha256 over `points` (ordered
+    (lat, lon) pairs), each formatted "{lat:.6f},{lon:.6f}" and joined with
+    ";". This is the fix for the actual 2026-08-31 bug: the agency
+    republished GTFS Static keeping 32 shape_ids but changing their geometry
+    underneath them, and the aggregation key was (shape_id, segment_index) —
+    a 200 m bin along the polyline — so a plain shape_id silently pooled
+    samples from two different stretches of road into one median. Keying on
+    the geometry itself instead means the 98.3% of shapes that are
+    byte-identical across the two known snapshots still produce the same key
+    and keep pooling, while the 32 that changed produce different keys and
+    are never merged.
+
+    6 decimals (~11 cm at these latitudes) is far below any real geometry
+    change, so it can't split one physical road into two keys just because a
+    feed reformats its numbers, and it's far finer than the accuracy of the
+    GPS-derived shape points themselves, so it can't fail to notice an
+    actual change either. "@" is a safe separator: verified absent from
+    every shape_id in both the 2026-08-27 and 2026-08-31 snapshots.
+    """
+    digest = hashlib.sha256(
+        ";".join(f"{lat:.6f},{lon:.6f}" for lat, lon in points).encode("utf-8")
+    ).hexdigest()
+    return f"{shape_id}@{digest[:8]}"
+
+
+def shape_id_from_key(shape_key: str) -> str:
+    """Recover the bare shape_id a build_shape_key() result was built from —
+    route metadata in routes.txt/trips.txt is keyed by the bare id, not the
+    content-addressed key. rsplit rather than split: geom_hash is a fixed
+    8-hex-char suffix, so this is correct even if a shape_id itself ever
+    contained "@" (checked absent in both known snapshots, but rsplit costs
+    nothing and doesn't depend on that staying true)."""
+    return shape_key.rsplit("@", 1)[0]
+
+
 def load_static(gtfs_zip_path: Path) -> tuple:
     """
-    trip_id -> (route_id, shape_id) from trips.txt, and shape_id -> Shape
+    trip_id -> (route_id, shape_key) from trips.txt, and shape_key -> Shape
     from shapes.txt. direction_id is blank for every trip in this feed (see
-    CLAUDE.md) so it plays no role here — shape_id is the only thing that
-    tells two directions or route variants apart, per task step 1.
+    CLAUDE.md) so it plays no role here — shape_id (folded into shape_key,
+    see build_shape_key) is the only thing that tells two directions or
+    route variants apart, per task step 1.
     """
-    trip_map = {}
     shape_points = defaultdict(list)
 
     with zipfile.ZipFile(gtfs_zip_path) as z:
         with z.open("trips.txt") as f:
-            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")):
-                if row["shape_id"]:
-                    trip_map[row["trip_id"]] = (row["route_id"], row["shape_id"])
+            trip_rows = list(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")))
         with z.open("shapes.txt") as f:
             for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")):
                 shape_points[row["shape_id"]].append(
                     (int(row["shape_pt_sequence"]), float(row["shape_pt_lat"]), float(row["shape_pt_lon"]))
                 )
 
-    shapes_by_id = {}
+    # Every shape_id referenced anywhere gets a key, even one with <2 points
+    # or one missing from shapes.txt entirely (empty coords) — both cases
+    # existed before this change too, and both must still surface downstream
+    # as process_day's "shape_not_found" reject reason rather than silently
+    # changing which counter fires.
+    key_by_shape_id = {}
+    shapes_by_key = {}
     for shape_id, pts in shape_points.items():
         pts.sort(key=lambda p: p[0])
         coords = [(lat, lon) for _, lat, lon in pts]
+        key = build_shape_key(shape_id, coords)
+        key_by_shape_id[shape_id] = key
         if len(coords) >= 2:
-            shapes_by_id[shape_id] = build_shape(coords)
+            shapes_by_key[key] = build_shape(coords)
 
-    return trip_map, shapes_by_id
+    trip_map = {}
+    for row in trip_rows:
+        shape_id = row["shape_id"]
+        if shape_id:
+            if shape_id not in key_by_shape_id:
+                key_by_shape_id[shape_id] = build_shape_key(shape_id, [])
+            trip_map[row["trip_id"]] = (row["route_id"], key_by_shape_id[shape_id])
+
+    return trip_map, shapes_by_key
 
 
 def load_feed_info(gtfs_zip_path: Path) -> dict:
@@ -280,6 +363,73 @@ def load_feed_info(gtfs_zip_path: Path) -> dict:
                 return next(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")), {})
     except (KeyError, zipfile.BadZipFile, StopIteration):
         return {}
+
+
+def sha256_of_file(path: Path) -> str:
+    """Plain sha256 of a static feed zip. Not generate_manifest.py's
+    sha256_of(): that one exists to hash a day file transparently through
+    optional gzip compression (deploy/sofia-compress.service); a static zip
+    is never stored gzipped, so that indirection has nothing to do here."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ─── Static snapshot selection (per-processed-day feed matching) ───────────
+
+SNAPSHOT_NAME_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})\.zip$")
+
+
+def find_static_snapshots(static_dir: Path) -> list:
+    """[(snapshot_date, path), ...] sorted by date, for every file directly
+    under static_dir matching gtfs_<YYYY-MM-DD>.zip exactly. A full-match
+    regex (not a glob or a prefix check) is what keeps this from picking up
+    the unpacked gtfs_2026-08-27/ sibling directory or .DS_Store that live
+    alongside the zips on disk."""
+    snapshots = []
+    for p in static_dir.iterdir():
+        if not p.is_file():
+            continue
+        m = SNAPSHOT_NAME_RE.match(p.name)
+        if m:
+            snapshots.append((m.group(1), p))
+    snapshots.sort(key=lambda pair: pair[0])
+    return snapshots
+
+
+def pick_snapshot_for_day(snapshots: list, date_str: str) -> tuple:
+    """Returns (snapshot_date, path, is_fallback) for the snapshot that
+    should stand in for `date_str`: the latest one dated on or before it —
+    the filename date is when this archive actually observed the agency
+    serving that feed, which feed_start_date only asserts. `snapshots` must
+    already be sorted by date (find_static_snapshots() guarantees this).
+
+    is_fallback is True only when date_str precedes every snapshot — there
+    is no feed on record from before the archive started, so the earliest
+    available one is used, but the caller must record that as a fallback
+    rather than let it look like a real date match.
+    """
+    candidates = [s for s in snapshots if s[0] <= date_str]
+    if candidates:
+        snap_date, path = candidates[-1]
+        return snap_date, path, False
+    snap_date, path = snapshots[0]
+    return snap_date, path, True
+
+
+def count_multi_geometry_shape_ids(shape_keys) -> int:
+    """How many distinct bare shape_ids appear under more than one distinct
+    geometry hash among `shape_keys` (normally the union of every feed's
+    shapes_by_key loaded in one run). This is the number that produced the
+    2026-08-31 finding — 32 shape_ids reused across a republished feed with
+    different geometry underneath them — and it belongs in typical_weekday.
+    json permanently, not only in a one-off investigation."""
+    keys_by_shape_id = defaultdict(set)
+    for key in shape_keys:
+        keys_by_shape_id[shape_id_from_key(key)].add(key)
+    return sum(1 for keys in keys_by_shape_id.values() if len(keys) > 1)
 
 
 # ─── Time helpers ───────────────────────────────────────────────────────────
@@ -306,6 +456,7 @@ def process_group(
     shape: Shape,
     route_id: str,
     shape_id: str,
+    shape_key: str,
     vehicle_id: str,
     trip_id: str,
     tz: ZoneInfo,
@@ -359,7 +510,12 @@ def process_group(
                             "route_id": route_id,
                             "trip_id": trip_id,
                             "vehicle_id": vehicle_id,
+                            # Bare shape_id: a human reading the raw archive
+                            # shouldn't have to strip a geometry hash to
+                            # recognize a shape. shape_key is the same value
+                            # the aggregation below actually groups on.
                             "shape_id": shape_id,
+                            "shape_key": shape_key,
                             "segment_index": segment_index,
                             "timeslot": slot,
                             "speed_ms": round(speed, 3),
@@ -371,7 +527,7 @@ def process_group(
                         }, ensure_ascii=False) + "\n")
                         stats.samples_emitted += 1
                         if agg is not None:
-                            agg[(shape_id, segment_index, slot)].append(speed)
+                            agg[(shape_key, segment_index, slot)].append(speed)
                         if feed_speed is not None:
                             # Both sides in km/h. The feed's field is `speed` in
                             # GTFS-RT and lands in the raw archive as `speed_ms`,
@@ -392,7 +548,7 @@ def process_day(
     day_path: Path,
     out_path: Path,
     trip_map: dict,
-    shapes_by_id: dict,
+    shapes_by_key: dict,
     tz: ZoneInfo,
     agg: Optional[dict],
     diff_kmh_all: list,
@@ -426,13 +582,14 @@ def process_day(
     date_str = date_from_path(day_path)
     with out_path.open("w", encoding="utf-8") as out_f:
         for (vehicle_id, trip_id), recs in groups.items():
-            route_id, shape_id = trip_map[trip_id]
-            shape = shapes_by_id.get(shape_id)
+            route_id, shape_key = trip_map[trip_id]
+            shape = shapes_by_key.get(shape_key)
             if shape is None:
                 stats.reject_counts["shape_not_found"] += len(recs)
                 continue
             recs.sort(key=lambda r: r[0])
-            process_group(recs, shape, route_id, shape_id, vehicle_id, trip_id, tz, out_f, agg, diff_kmh_all, stats, date_str)
+            shape_id = shape_id_from_key(shape_key)
+            process_group(recs, shape, route_id, shape_id, shape_key, vehicle_id, trip_id, tz, out_f, agg, diff_kmh_all, stats, date_str)
 
     return stats
 
@@ -443,28 +600,40 @@ def build_typical_weekday(
     agg: dict,
     processed_days: list,
     weekday_days: list,
-    static_feed_name: str,
-    feed_info: dict,
+    static_feeds: list,
+    day_breakdown: list,
     reject_totals: Counter,
     validation_summary: dict,
+    multi_geometry_shape_id_count: int,
 ) -> dict:
     segments = {}
-    for (shape_id, segment_index, slot), speeds in agg.items():
-        segments[f"{shape_id}|{segment_index}|{slot}"] = {
+    for (shape_key, segment_index, slot), speeds in agg.items():
+        # Deliberately still a 3-field "<field>|<segment_index>|<timeslot>"
+        # string, shape_key occupying the first field — export_web.py does
+        # key.split("|") and that call site keeps working untouched.
+        # shape_key contains "@" (see build_shape_key) but never "|", so
+        # this doesn't silently become a 4-field key; don't "clean up" the
+        # separator to "@" or fold shape_id/geom_hash into two fields here.
+        segments[f"{shape_key}|{segment_index}|{slot}"] = {
             "median_speed_ms": round(statistics.median(speeds), 3),
             "n_samples": len(speeds),
         }
 
     return {
         "generated_at": datetime.now(dt_timezone.utc).isoformat(),
-        "static_feed_file": static_feed_name,
-        "static_feed_version": feed_info.get("feed_version"),
-        "static_feed_valid": {
-            "start": feed_info.get("feed_start_date"),
-            "end": feed_info.get("feed_end_date"),
-        },
+        # Replaces the old scalar static_feed_file/version/valid fields: with
+        # more than one static feed potentially in play across the days
+        # processed, a single scalar can't describe them, and a run that
+        # only ever loads one feed still gets a (one-element) list here
+        # rather than two different shapes depending on how many were used.
+        "static_feeds": static_feeds,
         "days_processed": processed_days,
         "days_in_median_mon_fri": weekday_days,
+        # Per-day breakdown, because a grand total hides exactly the signal
+        # that matters here: a snapshot going stale shows up as *one day's*
+        # trip_not_in_static climbing, which reject_counts_total below
+        # averages away across every other day.
+        "day_breakdown": day_breakdown,
         "thresholds": {
             "segment_length_m": SEGMENT_LENGTH_M,
             "timeslot_minutes": TIMESLOT_MINUTES,
@@ -476,6 +645,11 @@ def build_typical_weekday(
         },
         "reject_counts_total": dict(reject_totals),
         "validation_vs_feed_speed_ms": validation_summary,
+        # How many shape_ids carried more than one distinct geometry hash
+        # across the feeds loaded this run — the number that surfaced the
+        # 2026-08-31 republished-feed finding (see CLAUDE.md). Kept in the
+        # output permanently rather than left as a one-off chat finding.
+        "multi_geometry_shape_id_count": multi_geometry_shape_id_count,
         "segment_count": len(segments),
         "segments": segments,
     }
@@ -485,7 +659,9 @@ def build_typical_weekday(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("static_zip", type=Path, help="GTFS static zip (needs trips.txt, shapes.txt, feed_info.txt)")
+    parser.add_argument("static_source", type=Path,
+                        help="GTFS static zip (one feed for every day processed), or a directory of "
+                             "gtfs_<YYYY-MM-DD>.zip snapshots to pick from per day (see pick_snapshot_for_day)")
     parser.add_argument("data_dir", type=Path, help="Directory containing <YYYY-MM-DD>.jsonl RT snapshot files")
     parser.add_argument("dates", nargs="*", help="Specific YYYY-MM-DD days to process (default: every "
                                                    "<YYYY-MM-DD>.jsonl file found in data_dir)")
@@ -499,19 +675,44 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     tz = ZoneInfo(args.timezone)
 
-    print(f"Loading static feed {args.static_zip} ...")
-    t0 = time.time()
-    trip_map, shapes_by_id = load_static(args.static_zip)
-    feed_info = load_feed_info(args.static_zip)
-    print(f"  {len(trip_map):,} trips, {len(shapes_by_id):,} shapes ({time.time() - t0:.1f}s)")
+    # None (single zip, same feed for every day -- unchanged prior behaviour)
+    # or a date-sorted [(snapshot_date, path), ...] to pick from per day.
+    if args.static_source.is_dir():
+        snapshots = find_static_snapshots(args.static_source)
+        if not snapshots:
+            print(f"No gtfs_<YYYY-MM-DD>.zip snapshots found in {args.static_source}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        snapshots = None
+
+    # Cache keyed by path rather than reloaded per day. shapes_by_key is
+    # content-addressed (build_shape_key), so merging several feeds' shapes
+    # into one dict is safe and self-deduplicating -- two feeds sharing 98.3%
+    # of their geometry (the observed 2026-08-27/2026-08-31 case) cost barely
+    # more to hold in memory than one.
+    loaded_feeds = {}       # path -> (trip_map, shapes_by_key, feed_info)
+    all_shapes_by_key = {}  # union across every feed loaded this run
+
+    def load_feed(path: Path) -> tuple:
+        if path not in loaded_feeds:
+            print(f"Loading static feed {path} ...")
+            t0 = time.time()
+            trip_map, shapes_by_key = load_static(path)
+            feed_info = load_feed_info(path)
+            print(f"  {len(trip_map):,} trips, {len(shapes_by_key):,} shapes ({time.time() - t0:.1f}s)")
+            loaded_feeds[path] = (trip_map, shapes_by_key, feed_info)
+            all_shapes_by_key.update(shapes_by_key)
+        return loaded_feeds[path]
 
     if args.dates:
         # resolve_day_file() picks whichever of <date>.jsonl / <date>.jsonl.gz
         # actually exists (uncompressed preferred), same as find_day_files()
-        # below does for the no-explicit-dates case.
-        day_files = [resolve_day_file(args.data_dir, d, ".jsonl") for d in args.dates]
+        # below does for the no-explicit-dates case. Sorted here too, to
+        # match find_day_files()'s ordering -- a day_breakdown or a snapshot
+        # cache shouldn't depend on the order dates were typed on the CLI.
+        day_files = [resolve_day_file(args.data_dir, d, ".jsonl") for d in sorted(args.dates)]
     else:
-        day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date
+        day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date, sorted
     if not day_files:
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)
@@ -521,6 +722,8 @@ def main():
     reject_totals = Counter()
     processed_days = []
     weekday_days = []
+    day_breakdown = []
+    feed_days_used = defaultdict(list)  # path -> [date_str, ...]
 
     for day_path in day_files:
         if not day_path.exists():
@@ -528,11 +731,23 @@ def main():
             continue
 
         date_str = date_from_path(day_path)
+
+        if snapshots is None:
+            static_path = args.static_source
+            snapshot_date, is_fallback = None, False
+        else:
+            snapshot_date, static_path, is_fallback = pick_snapshot_for_day(snapshots, date_str)
+            if is_fallback:
+                print(f"{date_str}: precedes every static snapshot on record, "
+                      f"falling back to the earliest one ({static_path.name})", file=sys.stderr)
+
+        trip_map, shapes_by_key, _ = load_feed(static_path)
+
         is_weekday = date.fromisoformat(date_str).weekday() < 5  # Mon-Fri, per D4
         out_path = output_dir / f"segment_speeds_{date_str}.jsonl"
 
         t0 = time.time()
-        stats = process_day(day_path, out_path, trip_map, shapes_by_id, tz,
+        stats = process_day(day_path, out_path, trip_map, shapes_by_key, tz,
                              agg if is_weekday else None, diff_kmh_all)
         elapsed = time.time() - t0
 
@@ -540,10 +755,19 @@ def main():
         if is_weekday:
             weekday_days.append(date_str)
         reject_totals.update(stats.reject_counts)
+        feed_days_used[static_path].append(date_str)
+        day_breakdown.append({
+            "date": date_str,
+            "static_feed_file": static_path.name,
+            "static_feed_is_fallback": is_fallback,
+            "records": stats.total_records,
+            "samples_emitted": stats.samples_emitted,
+            "reject_counts": dict(stats.reject_counts),
+        })
 
         rejected = sum(stats.reject_counts.values())
         print(
-            f"{date_str} ({'weekday' if is_weekday else 'weekend'}): "
+            f"{date_str} ({'weekday' if is_weekday else 'weekend'}, static={static_path.name}): "
             f"{stats.total_records:,} records | {stats.total_pairs:,} pairs | "
             f"{stats.samples_emitted:,} samples emitted | {rejected:,} rejected | "
             f"{elapsed:.1f}s"
@@ -561,8 +785,22 @@ def main():
         ),
     }
 
+    static_feeds_meta = []
+    for path, (_, _, feed_info) in loaded_feeds.items():
+        static_feeds_meta.append({
+            "file": path.name,
+            "sha256": sha256_of_file(path),
+            "feed_version": feed_info.get("feed_version"),
+            "feed_start_date": feed_info.get("feed_start_date"),
+            "feed_end_date": feed_info.get("feed_end_date"),
+            "days_processed": feed_days_used[path],
+        })
+
+    multi_geometry_shape_id_count = count_multi_geometry_shape_ids(all_shapes_by_key.keys())
+
     typical = build_typical_weekday(
-        agg, processed_days, weekday_days, args.static_zip.name, feed_info, reject_totals, validation_summary,
+        agg, processed_days, weekday_days, static_feeds_meta, day_breakdown,
+        reject_totals, validation_summary, multi_geometry_shape_id_count,
     )
     typical_path = output_dir / "typical_weekday.json"
     typical_path.write_text(json.dumps(typical, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -570,6 +808,9 @@ def main():
     print(f"\n{typical_path}: {typical['segment_count']:,} (segment, timeslot) bins "
           f"from {len(weekday_days)} weekday day(s)")
     print(f"Validation vs feed speed_ms: {validation_summary}")
+    if multi_geometry_shape_id_count:
+        print(f"WARNING: {multi_geometry_shape_id_count} shape_id(s) carried more than one distinct "
+              f"geometry across the {len(loaded_feeds)} static feed(s) loaded this run", file=sys.stderr)
 
 
 if __name__ == "__main__":

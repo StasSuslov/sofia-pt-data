@@ -116,7 +116,7 @@ def test_timeslot_segment_index_resolves_back_to_same_shape_and_segment():
 
 
 def test_build_geometry_counts_missing_shapes_instead_of_crashing():
-    geometry, index_of, missing = build_geometry({("GHOST", 0)}, shapes_by_id={})
+    geometry, index_of, missing = build_geometry({("GHOST", 0)}, shapes_by_key={})
     assert missing == 1
     assert geometry["shape_ids"] == []
     assert index_of == {}
@@ -167,20 +167,20 @@ def test_manifest_has_required_fields_and_correct_derived_counts():
 def test_aggregate_day_bins_computes_median_and_count(tmp_path):
     path = tmp_path / "segment_speeds_2026-08-28.jsonl"
     rows = [
-        {"shape_id": "S1", "segment_index": 0, "timeslot": "00:00", "speed_ms": 1.0},
-        {"shape_id": "S1", "segment_index": 0, "timeslot": "00:00", "speed_ms": 3.0},
+        {"shape_id": "S1", "shape_key": "S1@abc12345", "segment_index": 0, "timeslot": "00:00", "speed_ms": 1.0},
+        {"shape_id": "S1", "shape_key": "S1@abc12345", "segment_index": 0, "timeslot": "00:00", "speed_ms": 3.0},
     ]
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     bins = aggregate_day_bins(path)
-    assert bins == {("S1", 0, "00:00"): (2.0, 2)}
+    assert bins == {("S1@abc12345", 0, "00:00"): (2.0, 2)}
 
 
 def test_aggregate_day_bins_tolerates_torn_trailing_line(tmp_path):
     path = tmp_path / "segment_speeds_2026-08-28.jsonl"
-    good = json.dumps({"shape_id": "S1", "segment_index": 0, "timeslot": "00:00", "speed_ms": 4.0})
+    good = json.dumps({"shape_id": "S1", "shape_key": "S1@abc12345", "segment_index": 0, "timeslot": "00:00", "speed_ms": 4.0})
     path.write_text(good + "\n" + '{"shape_id": "S1", "segment_index"', encoding="utf-8")
     bins = aggregate_day_bins(path)
-    assert bins == {("S1", 0, "00:00"): (4.0, 1)}
+    assert bins == {("S1@abc12345", 0, "00:00"): (4.0, 1)}
 
 
 def test_geometry_carries_route_metadata_per_shape(tmp_path: Path):
@@ -191,10 +191,11 @@ def test_geometry_carries_route_metadata_per_shape(tmp_path: Path):
     """
     static_zip = _write_static_zip(tmp_path)
     route_info = load_route_info(static_zip)
-    _, shapes_by_id = load_static(static_zip)
-    pairs = {(SHAPE_ID, 0), (SHAPE_ID, 1)}
+    _, shapes_by_key = load_static(static_zip)
+    shape_key = next(iter(shapes_by_key))  # only one shape in this fixture
+    pairs = {(shape_key, 0), (shape_key, 1)}
 
-    geometry, index_of, missing = build_geometry(pairs, shapes_by_id, route_info)
+    geometry, index_of, missing = build_geometry(pairs, shapes_by_key, route_info)
 
     assert missing == 0
     pos = geometry["shape_ids"].index(SHAPE_ID)

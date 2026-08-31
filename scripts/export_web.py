@@ -44,14 +44,36 @@ Two source shapes converge on one internal shape: `--day YYYY-MM-DD`
 re-aggregates that day's own segment_speeds_<date>.jsonl (median per bin,
 one day) instead of loading typical_weekday.json, for the day switcher
 (Component D feature 2). Both paths produce the same
-{(shape_id, segment_index, timeslot): (median_speed_ms, n_samples)} mapping
+{(shape_key, segment_index, timeslot): (median_speed_ms, n_samples)} mapping
 before threshold/geometry/writing — there is exactly one code path for
 turning that mapping into files.
+
+shape_key, not shape_id: segment_speeds.py keys everything by a
+content-addressed shape_key (shape_id plus a geometry hash — see its
+build_shape_key()) since a republished static feed can keep a shape_id
+while changing its geometry, and this script inherits that identity so a
+bin's geometry always resolves against the *correct* polyline version, not
+whichever one happened to load last. Route metadata (routes.txt/trips.txt)
+is still keyed by the bare shape_id, so build_geometry() converts back via
+shape_id_from_key() at that one lookup, not by treating shape_key as if it
+were the bare id.
+
+Static feed argument: either one zip (one feed for every bin, unchanged
+prior behaviour) or a directory of gtfs_<YYYY-MM-DD>.zip snapshots — see
+load_static_sources(). Unlike segment_speeds.py this script doesn't need to
+pick one snapshot per calendar day (that selection already happened
+upstream, when segment_speeds.py produced the bins this script reads); it
+only needs every shape_key that could appear in its input to resolve to a
+geometry and a route, so a directory's snapshots are all loaded and merged
+up front.
 
 Usage:
     python3 scripts/export_web.py data/sofia/static/gtfs_2026-08-27.zip data/sofia
     python3 scripts/export_web.py data/sofia/static/gtfs_2026-08-27.zip data/sofia \\
         --day 2026-08-28
+
+    # a directory of gtfs_<YYYY-MM-DD>.zip snapshots instead of one zip
+    python3 scripts/export_web.py data/sofia/static data/sofia
 """
 
 import argparse
@@ -84,7 +106,9 @@ from segment_speeds import (  # noqa: E402
     SEGMENT_LENGTH_M,
     TIMESLOT_MINUTES,
     Shape,
+    find_static_snapshots,
     load_static,
+    shape_id_from_key,
 )
 
 # ─── Constants: web export decisions (this file's job to pick, per task) ───
@@ -124,24 +148,29 @@ INCOMPLETE_COVERAGE_PCT = 99.0
 # ─── Loading the two possible sources into one shape ────────────────────────
 
 def load_typical_weekday_bins(path: Path) -> tuple:
-    """typical_weekday.json's "shape_id|segment_index|timeslot" string keys
-    -> {(shape_id, segment_index, timeslot): (median_speed_ms, n_samples)}.
-    Returns (bins, raw_json) so the caller can also pull provenance fields
-    (days_processed, static_feed_file, ...) out of the same file."""
+    """typical_weekday.json's "shape_key|segment_index|timeslot" string keys
+    -> {(shape_key, segment_index, timeslot): (median_speed_ms, n_samples)}.
+    shape_key contains "@" (see segment_speeds.build_shape_key) but never
+    "|", so split("|") still yields exactly 3 fields. Returns (bins,
+    raw_json) so the caller can also pull provenance fields (days_processed,
+    static_feeds, ...) out of the same file."""
     raw = json.loads(path.read_text(encoding="utf-8"))
     bins = {}
     for key, v in raw["segments"].items():
-        shape_id, seg_idx, slot = key.split("|")
-        bins[(shape_id, int(seg_idx), slot)] = (v["median_speed_ms"], v["n_samples"])
+        shape_key, seg_idx, slot = key.split("|")
+        bins[(shape_key, int(seg_idx), slot)] = (v["median_speed_ms"], v["n_samples"])
     return bins, raw
 
 
 def aggregate_day_bins(segment_speeds_path: Path) -> dict:
-    """Median speed_ms + sample count per (shape_id, segment_index,
+    """Median speed_ms + sample count per (shape_key, segment_index,
     timeslot) for one day's own raw samples. segment_speeds.py only ever
     pools Mon-Fri days into typical_weekday.json — a single day's own
     aggregate doesn't exist on disk anywhere, so the day switcher (Component
-    D feature 2) needs this computed here."""
+    D feature 2) needs this computed here. Keyed on shape_key, not the
+    bare shape_id also present in each row: the day switcher must not
+    re-introduce the exact bug typical_weekday.json's aggregation was fixed
+    for by pooling two different geometries under one shape_id."""
     agg = defaultdict(list)
     with segment_speeds_path.open(encoding="utf-8") as f:
         for line in f:
@@ -152,13 +181,16 @@ def aggregate_day_bins(segment_speeds_path: Path) -> dict:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue  # torn line from a mid-write rsync pull, same tolerance as the rest of the pipeline
-            key = (rec["shape_id"], rec["segment_index"], rec["timeslot"])
+            key = (rec["shape_key"], rec["segment_index"], rec["timeslot"])
             agg[key].append(rec["speed_ms"])
     return {k: (statistics.median(v), len(v)) for k, v in agg.items()}
 
 
 def segment_pairs(bins: dict) -> set:
-    return {(shape_id, seg_idx) for shape_id, seg_idx, _ in bins}
+    """(shape_key, segment_index) pairs referenced by `bins` — shape_key, not
+    the bare shape_id, so two geometry versions of what was once one
+    shape_id stay two distinct segments here too."""
+    return {(shape_key, seg_idx) for shape_key, seg_idx, _ in bins}
 
 
 def apply_threshold(bins: dict, min_samples: int) -> tuple:
@@ -185,7 +217,7 @@ def incomplete_day_notes(data_dir: Path, days: list) -> dict:
     return notes
 
 
-# ─── Geometry: one chord per (shape_id, segment_index) ──────────────────────
+# ─── Geometry: one chord per (shape_key, segment_index) ─────────────────────
 
 def point_along_shape(shape: Shape, dist_m: float) -> tuple:
     """(lat, lon), rounded to COORD_DECIMALS, at along-shape distance
@@ -247,46 +279,100 @@ def load_route_info(gtfs_zip_path: Path) -> dict:
     return info
 
 
-def build_geometry(retained_pairs: set, shapes_by_id: dict, route_info: dict | None = None) -> tuple:
+def load_static_sources(static_source: Path) -> tuple:
+    """Merges every static feed relevant to `static_source` into one
+    (shapes_by_key, route_info, loaded_paths) triple.
+
+    A single zip behaves exactly as before (one feed). A directory loads
+    every gtfs_<YYYY-MM-DD>.zip snapshot found in it (find_static_snapshots,
+    shared with segment_speeds.py) and merges them: shapes_by_key is
+    content-addressed (segment_speeds.build_shape_key), so the union is safe
+    and self-deduplicating, and route_info is keyed by bare shape_id, which
+    CLAUDE.md's 2026-08-31 finding confirms is stable across the known
+    snapshots (routes.txt/trips.txt route associations didn't change, only
+    32 shapes' geometry did) — a later snapshot's entry simply overwrites an
+    identical earlier one.
+
+    Unlike segment_speeds.py, this script doesn't pick one snapshot per
+    calendar day (that selection already happened upstream, producing the
+    bins this script reads) — it only needs every shape_key that could
+    appear in its input to resolve to a geometry and a route, so loading
+    every available snapshot up front is simpler than trying to work out in
+    advance which ones a given run's bins actually reference.
+    """
+    if static_source.is_dir():
+        snapshots = find_static_snapshots(static_source)
+        if not snapshots:
+            print(f"No gtfs_<YYYY-MM-DD>.zip snapshots found in {static_source}", file=sys.stderr)
+            sys.exit(1)
+        paths = [p for _, p in snapshots]
+    else:
+        paths = [static_source]
+
+    shapes_by_key = {}
+    route_info = {}
+    for path in paths:
+        print(f"Loading static feed {path} ...")
+        t0 = time.time()
+        _, shapes = load_static(path)
+        shapes_by_key.update(shapes)
+        route_info.update(load_route_info(path))
+        print(f"  {len(shapes):,} shapes ({time.time() - t0:.1f}s)")
+
+    return shapes_by_key, route_info, paths
+
+
+def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | None = None) -> tuple:
     """Returns (geometry_dict, index_of, missing_count).
 
-    index_of maps (shape_id, segment_index) -> its position in geometry's
+    index_of maps (shape_key, segment_index) -> its position in geometry's
     parallel arrays, so build_timeslot_files() can turn a bin into an index
-    reference. Pairs whose shape_id isn't in `shapes_by_id` (the static zip
-    passed on this run doesn't match whatever produced the speed data) are
+    reference. Pairs whose shape_key isn't in `shapes_by_key` (this run's
+    static feed(s) don't cover whatever produced the speed data) are
     counted and skipped, never silently dropped without a trace.
-    """
-    ordered = sorted(p for p in retained_pairs if p[0] in shapes_by_id)
-    missing = sum(1 for p in retained_pairs if p[0] not in shapes_by_id)
 
-    shape_ids = sorted({sid for sid, _ in ordered})
-    shape_pos = {sid: i for i, sid in enumerate(shape_ids)}
+    Route metadata (shape_ids/shape_route_*) is grouped by the *bare*
+    shape_id (via shape_id_from_key), not the full shape_key:
+    routes.txt/trips.txt know nothing about a geometry hash, and two
+    geometry versions of the same shape_id are genuinely the same route
+    (CLAUDE.md's 2026-08-31 finding: the republished feed changed geometry,
+    not route associations) — treating them as separate route-metadata rows
+    would only inflate the export for no benefit. Segment *coordinates*
+    still resolve through the full shape_key below, so a bin is never drawn
+    against the wrong geometry version even when it shares a route-metadata
+    row with one that came from a different snapshot.
+    """
+    ordered = sorted(p for p in retained_pairs if p[0] in shapes_by_key)
+    missing = sum(1 for p in retained_pairs if p[0] not in shapes_by_key)
+
+    bare_ids = sorted({shape_id_from_key(shape_key) for shape_key, _ in ordered})
+    shape_pos = {bare_id: i for i, bare_id in enumerate(bare_ids)}
 
     shape_idx, segment_index, start_lat, start_lon, end_lat, end_lon = [], [], [], [], [], []
     index_of = {}
-    for i, (shape_id, seg_idx) in enumerate(ordered):
-        shape = shapes_by_id[shape_id]
+    for i, (shape_key, seg_idx) in enumerate(ordered):
+        shape = shapes_by_key[shape_key]
         slat, slon = point_along_shape(shape, seg_idx * SEGMENT_LENGTH_M)
         elat, elon = point_along_shape(shape, (seg_idx + 1) * SEGMENT_LENGTH_M)
-        shape_idx.append(shape_pos[shape_id])
+        shape_idx.append(shape_pos[shape_id_from_key(shape_key)])
         segment_index.append(seg_idx)
         start_lat.append(slat)
         start_lon.append(slon)
         end_lat.append(elat)
         end_lon.append(elon)
-        index_of[(shape_id, seg_idx)] = i
+        index_of[(shape_key, seg_idx)] = i
 
     # Route metadata is stored per shape (hundreds of entries), not per
     # segment (tens of thousands): a type filter needs one lookup hop through
     # shape_idx, and the file stays small enough to keep loading once.
     route_info = route_info or {}
-    shape_route_ids = [route_info.get(sid, {}).get("route_ids", []) for sid in shape_ids]
-    shape_route_names = [route_info.get(sid, {}).get("route_names", []) for sid in shape_ids]
-    shape_route_type = [route_info.get(sid, {}).get("route_type") for sid in shape_ids]
+    shape_route_ids = [route_info.get(sid, {}).get("route_ids", []) for sid in bare_ids]
+    shape_route_names = [route_info.get(sid, {}).get("route_names", []) for sid in bare_ids]
+    shape_route_type = [route_info.get(sid, {}).get("route_type") for sid in bare_ids]
 
     geometry = {
         "segment_length_m": SEGMENT_LENGTH_M,
-        "shape_ids": shape_ids,
+        "shape_ids": bare_ids,
         "shape_route_ids": shape_route_ids,
         "shape_route_names": shape_route_names,
         "shape_route_type": shape_route_type,
@@ -411,7 +497,9 @@ def gzip_size(path: Path) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("static_zip", type=Path, help="GTFS static zip (needs shapes.txt); shape_ids must match the speed data")
+    parser.add_argument("static_source", type=Path,
+                        help="GTFS static zip (needs shapes.txt), or a directory of gtfs_<YYYY-MM-DD>.zip "
+                             "snapshots -- every snapshot found is loaded and merged (see load_static_sources)")
     parser.add_argument("data_dir", type=Path, help="Directory with <YYYY-MM-DD>.jsonl/.manifest.json and segment_speeds.py's processed/ output")
     parser.add_argument("--processed-dir", type=Path, default=None,
                         help="Where segment_speeds.py wrote its output (default: <data_dir>/processed)")
@@ -427,10 +515,8 @@ def main():
     processed_dir = args.processed_dir or (args.data_dir / "processed")
     output_root = args.output_dir or (args.data_dir / "web")
 
-    print(f"Loading static feed {args.static_zip} ...")
-    t0 = time.time()
-    _, shapes_by_id = load_static(args.static_zip)
-    print(f"  {len(shapes_by_id):,} shapes ({time.time() - t0:.1f}s)")
+    shapes_by_key, route_info, static_paths = load_static_sources(args.static_source)
+    static_feed_names = [p.name for p in static_paths]
 
     if args.day:
         mode = args.day
@@ -441,7 +527,7 @@ def main():
         t0 = time.time()
         bins = aggregate_day_bins(segment_speeds_path)
         print(f"  aggregated {segment_speeds_path.name}: {len(bins):,} bins ({time.time() - t0:.1f}s)")
-        source = {"segment_speeds_file": segment_speeds_path.name, "static_feed_file": args.static_zip.name}
+        source = {"segment_speeds_file": segment_speeds_path.name, "static_feeds_used": static_feed_names}
         days_processed = [args.day]
         days_in_median = [args.day]
     else:
@@ -451,11 +537,18 @@ def main():
             print(f"{typical_path}: not found -- run segment_speeds.py first", file=sys.stderr)
             sys.exit(1)
         bins, typical_data = load_typical_weekday_bins(typical_path)
-        recorded_feed = typical_data.get("static_feed_file")
-        if recorded_feed and recorded_feed != args.static_zip.name:
-            print(f"WARNING: typical_weekday.json was built from {recorded_feed}, "
-                  f"this run was given {args.static_zip.name} -- shape_ids may not line up", file=sys.stderr)
-        source = {"typical_weekday_file": typical_path.name, "static_feed_file": args.static_zip.name}
+        # typical_weekday.json now records a list of feeds (one per day it
+        # potentially spans, see segment_speeds.py's day_breakdown) rather
+        # than one scalar file -- warn only if this run's loaded feeds don't
+        # cover everything segment_speeds.py actually used, since a
+        # directory source naturally loads every snapshot anyway.
+        recorded_feeds = {f["file"] for f in typical_data.get("static_feeds", [])}
+        missing_feeds = recorded_feeds - set(static_feed_names)
+        if missing_feeds:
+            print(f"WARNING: typical_weekday.json was built using {sorted(missing_feeds)}, "
+                  f"not loaded by this run ({static_feed_names}) -- some shape_ids may not resolve",
+                  file=sys.stderr)
+        source = {"typical_weekday_file": typical_path.name, "static_feeds_used": static_feed_names}
         days_processed = typical_data.get("days_processed", [])
         days_in_median = typical_data.get("days_in_median_mon_fri", [])
 
@@ -466,8 +559,7 @@ def main():
     retained, n_before, n_after = apply_threshold(bins, args.min_samples)
     pairs_after = segment_pairs(retained)
 
-    route_info = load_route_info(args.static_zip)
-    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_id, route_info)
+    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_key, route_info)
     timeslot_files = build_timeslot_files(retained, index_of)
 
     # This script owns everything under out_dir once it exists, so rebuild
@@ -504,7 +596,7 @@ def main():
         days_in_median=days_in_median,
         incomplete_days=incomplete,
         shapes_observed=len({sid for sid, _ in pairs_before}),
-        total_static_shapes=len(shapes_by_id),
+        total_static_shapes=len(shapes_by_key),
     )
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -529,8 +621,8 @@ def main():
     print(f"  bins: {n_before:,} -> {n_after:,} retained (min_samples={args.min_samples}), "
           f"segments: {len(pairs_before):,} -> {len(pairs_after):,}")
     if missing_shapes:
-        print(f"  WARNING: {missing_shapes} (shape,segment) pair(s) referenced a shape_id absent "
-              f"from {args.static_zip.name} -- dropped from geometry and every timeslot file", file=sys.stderr)
+        print(f"  WARNING: {missing_shapes} (shape,segment) pair(s) referenced a shape_key absent "
+              f"from {static_feed_names} -- dropped from geometry and every timeslot file", file=sys.stderr)
 
 
 if __name__ == "__main__":
