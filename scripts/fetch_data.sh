@@ -41,6 +41,13 @@ LOCAL_DIR="$REPO_ROOT/data/"
 # (0-255, with well-known meanings like 23/30) so scheduled_fetch.sh can tell
 # "the pull failed" apart from "the pull was fine, manifests didn't update".
 MANIFEST_FAILED_EXIT_CODE=42
+# Keep in sync with MISMATCH_EXIT_CODE in scripts/verify_remote_checksums.py
+# and with the matching constant in scheduled_fetch.sh. A real checksum
+# mismatch means the local archive may not be what the collector actually
+# wrote — that must never be reported through the same code as "the pull
+# script had a bug" (42) or "rsync itself failed", both of which are routine
+# next to a possible data-integrity problem.
+CHECKSUM_MISMATCH_EXIT_CODE=43
 
 # Host masked in the printed/logged line on purpose — this script's own
 # stdout gets redirected into logs/fetch.log by scheduled_fetch.sh, and a log
@@ -70,6 +77,25 @@ for city_dir in "$LOCAL_DIR"*/; do
         exit "$MANIFEST_FAILED_EXIT_CODE"
     fi
     manifested=$((manifested + 1))
+
+    # Remote checksum verification, once per closed day for the lifetime of
+    # its file — see scripts/verify_remote_checksums.py for why this isn't
+    # `rsync --checksum` (that re-hashes the whole archive on both ends every
+    # two hours; this hashes only what's never been checked before). City dir
+    # mirrors 1:1 under REMOTE_DIR the same way it does under LOCAL_DIR, so
+    # the remote path is just REMOTE_DIR plus this city's directory name.
+    remote_city_dir="${REMOTE_DIR%/}/$(basename "$city_dir")/"
+    verify_exit=0
+    "$PYTHON3" "$REPO_ROOT/scripts/verify_remote_checksums.py" "$city_dir" \
+        --vps-host "$VPS_HOST" --vps-key "$VPS_KEY" --remote-dir "$remote_city_dir" || verify_exit=$?
+
+    if [[ "$verify_exit" -eq "$CHECKSUM_MISMATCH_EXIT_CODE" ]]; then
+        echo "CHECKSUM MISMATCH for ${city_dir} — a locally archived day no longer matches what's on the VPS, see remote_verify_note in that day's manifest" >&2
+        exit "$CHECKSUM_MISMATCH_EXIT_CODE"
+    elif [[ "$verify_exit" -ne 0 ]]; then
+        echo "verify_remote_checksums.py failed for ${city_dir} (exit $verify_exit) — data pulled fine, remote verification just didn't run this time" >&2
+        exit "$MANIFEST_FAILED_EXIT_CODE"
+    fi
 done
 
 # Finding nothing to checksum after a successful pull is itself a failure:

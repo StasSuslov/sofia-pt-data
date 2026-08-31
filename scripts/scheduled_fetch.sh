@@ -39,12 +39,23 @@ log "starting scheduled fetch"
 # would be wrong, so it gets its own log line and notification instead of
 # falling into the generic "fetch_data.sh FAILED" branch below.
 MANIFEST_FAILED_EXIT_CODE=42
+# Keep in sync with CHECKSUM_MISMATCH_EXIT_CODE in fetch_data.sh /
+# MISMATCH_EXIT_CODE in verify_remote_checksums.py. This is the loud one:
+# the local archive may not be what the collector wrote on the VPS. An
+# unreachable VPS during verification is NOT this code — it's routine
+# network noise that verify_remote_checksums.py just logs and retries next
+# run, so it never reaches this branch at all.
+CHECKSUM_MISMATCH_EXIT_CODE=43
 manifest_generation_failed=0
 
 "$REPO_ROOT/scripts/fetch_data.sh" >> "$LOG_FILE" 2>&1
 fetch_exit=$?
 
-if [[ "$fetch_exit" -eq "$MANIFEST_FAILED_EXIT_CODE" ]]; then
+if [[ "$fetch_exit" -eq "$CHECKSUM_MISMATCH_EXIT_CODE" ]]; then
+    log "fetch_data.sh: REMOTE CHECKSUM MISMATCH — a locally archived day no longer matches the VPS copy"
+    notify "Sofia PT collector" "Checksum mismatch: a locally archived day does not match the VPS — check logs/fetch.log and that day's manifest before publishing anything"
+    exit 1
+elif [[ "$fetch_exit" -eq "$MANIFEST_FAILED_EXIT_CODE" ]]; then
     log "fetch_data.sh: data pulled OK, generate_manifest.py FAILED"
     notify "Sofia PT collector" "Data pulled OK but manifest generation failed — check logs/fetch.log"
     manifest_generation_failed=1
