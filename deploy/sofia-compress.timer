@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily trigger for sofia-compress.service
+
+[Timer]
+OnCalendar=daily
+# The $4/mo droplet is not guaranteed to be up at the scheduled instant
+# (reboot, host maintenance) — Persistent=true makes systemd run the missed
+# job once at next boot instead of silently skipping a whole day, the same
+# reasoning as the dead-man's-switch healthcheck already in
+# sofia-collector.service: a job that only "usually" runs isn't one you can
+# reason about the disk-fill date from (CLAUDE.md section 9).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

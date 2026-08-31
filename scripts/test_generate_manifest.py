@@ -1,3 +1,4 @@
+import gzip
 import json
 import os
 import sys
@@ -7,7 +8,15 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from generate_manifest import analyze_gaps, build_manifest, day_bounds, load_jsonl, manifest_is_current, should_skip
+from generate_manifest import (
+    analyze_gaps,
+    build_manifest,
+    day_bounds,
+    find_day_files,
+    load_jsonl,
+    manifest_is_current,
+    should_skip,
+)
 
 SOFIA = ZoneInfo("Europe/Sofia")
 
@@ -284,6 +293,85 @@ def test_load_jsonl_skips_a_malformed_trailing_line_instead_of_crashing(tmp_path
 
     assert records == [{"snapshot_ts": 1000, "vehicle_id": "A1"}]
     assert malformed == 1
+
+
+# ─── gzip transparency (deploy/sofia-compress.service on the VPS) ──────────
+
+def gzip_copy(src: Path, dst: Path) -> None:
+    with src.open("rb") as f_in, gzip.open(dst, "wb") as f_out:
+        f_out.write(f_in.read())
+
+
+def test_gzipped_day_file_matches_its_uncompressed_twin(tmp_path: Path):
+    """
+    The provenance invariant this whole feature exists to hold: a manifest
+    must describe the same uncompressed bytes whether the local copy is
+    plain or gzipped. Two directories, same content, one plain and one
+    gzipped after the fact — the resulting manifests must be identical
+    except for the one field that's allowed (required, even) to differ.
+    """
+    date_str = "2026-08-29"
+    plain_dir, gz_dir = tmp_path / "plain", tmp_path / "gz"
+    plain_dir.mkdir()
+    gz_dir.mkdir()
+
+    start = midnight_ts(date_str, SOFIA)
+    records = [{"snapshot_ts": start, "vehicle_id": "A1"}, {"snapshot_ts": start + 45, "vehicle_id": "A1"}]
+    polls = [{"snapshot_ts": start, "fetch_ok": True, "vehicle_count": 1},
+             {"snapshot_ts": start + 45, "fetch_ok": True, "vehicle_count": 1}]
+
+    data_path = plain_dir / f"{date_str}.jsonl"
+    polls_path = plain_dir / f"{date_str}.polls.jsonl"
+    write_jsonl(data_path, records)
+    write_jsonl(polls_path, polls)
+
+    gzip_copy(data_path, gz_dir / f"{date_str}.jsonl.gz")
+    gzip_copy(polls_path, gz_dir / f"{date_str}.polls.jsonl.gz")
+
+    now = datetime.fromtimestamp(start + 200_000, tz=timezone.utc)
+    plain_manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+    gz_manifest = build_manifest(gz_dir / f"{date_str}.jsonl.gz", gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+
+    assert plain_manifest["compressed"] is False
+    assert gz_manifest["compressed"] is True
+    # data_sha256/data_size_bytes in particular must be over the UNCOMPRESSED
+    # bytes — this is where a naive .stat().st_size on the .gz would show up.
+    assert gz_manifest["data_sha256"] == plain_manifest["data_sha256"]
+    assert gz_manifest["data_size_bytes"] == plain_manifest["data_size_bytes"]
+    assert gz_manifest["data_file"] == plain_manifest["data_file"] == f"{date_str}.jsonl"
+
+    ignore = {"compressed", "generated_at"}
+    assert {k: v for k, v in gz_manifest.items() if k not in ignore} == \
+           {k: v for k, v in plain_manifest.items() if k not in ignore}
+
+
+def test_gzipped_heartbeat_is_found_and_parsed(tmp_path: Path):
+    date_str = "2026-08-30"
+    start = midnight_ts(date_str, SOFIA)
+    data_path = tmp_path / f"{date_str}.jsonl"
+    write_jsonl(data_path, [{"snapshot_ts": start, "vehicle_id": "A1"}])
+
+    polls_path_gz = tmp_path / f"{date_str}.polls.jsonl.gz"
+    with gzip.open(polls_path_gz, "wt", encoding="utf-8") as f:
+        f.write(json.dumps({"snapshot_ts": start, "fetch_ok": True, "vehicle_count": 1}) + "\n")
+
+    now = datetime.fromtimestamp(start + 100, tz=timezone.utc)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+
+    assert manifest["heartbeat_available"] is True
+    assert manifest["polls_logged"] == 1
+    assert manifest["polls_file"] == f"{date_str}.polls.jsonl"  # always the uncompressed name
+    assert manifest["polls_sha256"] is not None
+
+
+def test_find_day_files_prefers_uncompressed_and_dedupes_by_date(tmp_path: Path):
+    (tmp_path / "2026-08-27.jsonl").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "2026-08-27.jsonl.gz").write_bytes(gzip.compress(b"{}\n"))  # both exist: plain wins
+    (tmp_path / "2026-08-28.jsonl.gz").write_bytes(gzip.compress(b"{}\n"))  # gz-only day
+
+    found = [p.name for p in find_day_files(tmp_path)]
+
+    assert found == ["2026-08-27.jsonl", "2026-08-28.jsonl.gz"]
 
 
 # ─── manifest_is_current / should_skip (fetch-pipeline wiring) ─────────────

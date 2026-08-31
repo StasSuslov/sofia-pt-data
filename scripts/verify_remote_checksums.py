@@ -62,18 +62,36 @@ class RemoteUnreachable(Exception):
 
 def ssh_remote_sha256sums(vps_host: str, vps_key: str, remote_dir: str, filenames: list[str]) -> dict[str, str]:
     """
-    One ssh call, one remote `sha256sum` over every requested filename —
+    One ssh call, one remote `for` loop over every requested filename —
     verifying N pending days costs one round trip, not N. Returns
     {filename: hexdigest} for whichever of the requested files still exist
-    on the remote side; a name simply absent from the result means that file
-    wasn't found there (manual cleanup, or a transfer that hasn't happened
-    yet), which the caller treats as "can't verify yet", not as a mismatch.
+    on the remote side (plain or gzipped); a name simply absent from the
+    result means that file wasn't found there in either form (manual
+    cleanup, or a transfer that hasn't happened yet), which the caller
+    treats as "can't verify yet", not as a mismatch.
+
+    `filenames` are always the UNCOMPRESSED names — manifest["data_file"] /
+    manifest["polls_file"] never carry a .gz suffix, per CLAUDE.md's
+    provenance invariant. deploy/sofia-compress.service may have gzipped
+    that day on the VPS after the manifest was written and before this runs,
+    so each name is checked plain first, falling back to decompress-then-
+    hash of "<name>.gz" — either way the digest is over the same
+    uncompressed bytes generate_manifest.py hashed locally, and the emitted
+    line always names the uncompressed path so parsing below can't tell
+    which branch ran.
     """
     remote_dir = remote_dir.rstrip("/")
-    # stderr redirected on the remote side: a missing file makes sha256sum
-    # print "No such file" to stderr and exit non-zero, but must not abort
-    # the batch or leak a remote path into our own stderr.
-    remote_cmd = "sha256sum " + " ".join(f"{remote_dir}/{name}" for name in filenames) + " 2>/dev/null"
+    names_quoted = " ".join(f'"{name}"' for name in filenames)
+    # stderr redirected on the remote side: nothing here should print to it
+    # given the -f guards, but a permission error or a corrupt .gz must not
+    # abort the batch or leak a remote path into our own stderr.
+    remote_cmd = (
+        f"for f in {names_quoted}; do "
+        f'p="{remote_dir}/$f"; '
+        f'if [ -f "$p" ]; then sha256sum "$p"; '
+        f'elif [ -f "$p.gz" ]; then h=$(gzip -dc "$p.gz" | sha256sum | cut -d\' \' -f1); echo "$h  $p"; '
+        f"fi; done 2>/dev/null"
+    )
     try:
         result = subprocess.run(
             ["ssh", "-i", vps_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", vps_host, remote_cmd],

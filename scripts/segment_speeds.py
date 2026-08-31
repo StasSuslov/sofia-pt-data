@@ -41,7 +41,8 @@ Usage:
     python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip \\
         data/sofia --output-dir data/sofia/processed 2026-08-28 2026-08-31
 
-    # no explicit dates: every <YYYY-MM-DD>.jsonl found in the data dir
+    # no explicit dates: every <YYYY-MM-DD>.jsonl (or .jsonl.gz, transparently
+    # decompressed — see deploy/sofia-compress.service) found in the data dir
     python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip data/sofia
 """
 
@@ -64,9 +65,12 @@ from zoneinfo import ZoneInfo
 
 # config.py at the repo root is the single source of truth for timezone,
 # same pattern as scripts/generate_manifest.py — importing collect.py itself
-# would pull in requests/protobuf this script never needs.
+# would pull in requests/protobuf this script never needs. find_day_files/
+# resolve_day_file/open_maybe_gzip are the same day-file helpers
+# generate_manifest.py uses, so a <date>.jsonl.gz produced by
+# deploy/sofia-compress.service is read transparently here too.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import DEFAULT_TIMEZONE  # noqa: E402
+from config import DEFAULT_TIMEZONE, date_from_path, find_day_files, open_maybe_gzip, resolve_day_file  # noqa: E402
 
 # ─── Constants: segmentation & aggregation (task spec) ─────────────────────
 
@@ -396,7 +400,7 @@ def process_day(
     stats = DayStats()
     groups = defaultdict(list)
 
-    with day_path.open(encoding="utf-8") as f:
+    with open_maybe_gzip(day_path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -419,7 +423,7 @@ def process_day(
                 (rec["snapshot_ts"], rec["lat"], rec["lon"], rec.get("speed_ms"))
             )
 
-    date_str = day_path.stem
+    date_str = date_from_path(day_path)
     with out_path.open("w", encoding="utf-8") as out_f:
         for (vehicle_id, trip_id), recs in groups.items():
             route_id, shape_id = trip_map[trip_id]
@@ -502,9 +506,12 @@ def main():
     print(f"  {len(trip_map):,} trips, {len(shapes_by_id):,} shapes ({time.time() - t0:.1f}s)")
 
     if args.dates:
-        day_files = [args.data_dir / f"{d}.jsonl" for d in args.dates]
+        # resolve_day_file() picks whichever of <date>.jsonl / <date>.jsonl.gz
+        # actually exists (uncompressed preferred), same as find_day_files()
+        # below does for the no-explicit-dates case.
+        day_files = [resolve_day_file(args.data_dir, d, ".jsonl") for d in args.dates]
     else:
-        day_files = sorted(args.data_dir.glob("????-??-??.jsonl"))
+        day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date
     if not day_files:
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)
@@ -520,7 +527,7 @@ def main():
             print(f"{day_path.name}: not found, skipping", file=sys.stderr)
             continue
 
-        date_str = day_path.stem
+        date_str = date_from_path(day_path)
         is_weekday = date.fromisoformat(date_str).weekday() < 5  # Mon-Fri, per D4
         out_path = output_dir / f"segment_speeds_{date_str}.jsonl"
 

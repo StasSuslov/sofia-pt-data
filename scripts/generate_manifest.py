@@ -2,7 +2,9 @@
 """
 Generate a per-day integrity/coverage manifest for collected GTFS-RT data.
 
-For each <YYYY-MM-DD>.jsonl in a data directory, writes a <YYYY-MM-DD>.manifest.json
+For each <YYYY-MM-DD>.jsonl (or, once deploy/sofia-compress.service has run on
+the VPS, <YYYY-MM-DD>.jsonl.gz — both are read transparently, see
+config.open_maybe_gzip) in a data directory, writes a <YYYY-MM-DD>.manifest.json
 with:
   - SHA256 checksums of the data file and its heartbeat log (tamper-evidence —
     anyone re-checksumming a published file can confirm it matches).
@@ -32,15 +34,33 @@ from zoneinfo import ZoneInfo
 # cadence collect.py actually runs at. Importing collect.py itself would
 # pull in requests and the protobuf bindings, which this file never needs.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import DEFAULT_INTERVAL_SEC, DEFAULT_TIMEZONE  # noqa: E402
+from config import (  # noqa: E402
+    DEFAULT_INTERVAL_SEC,
+    DEFAULT_TIMEZONE,
+    date_from_path,
+    find_day_files,
+    open_maybe_gzip,
+    resolve_day_file,
+)
 
 
-def sha256_of(path: Path) -> str:
+def sha256_of(path: Path) -> tuple[str, int]:
+    """
+    Returns (hexdigest, byte_count) of the file's UNCOMPRESSED content — a
+    manifest describes the uncompressed day file even when the local copy is
+    stored gzipped (deploy/sofia-compress.service may have run on the VPS
+    before scripts/fetch_data.sh pulled it). The byte count is taken from the
+    same streaming read used to hash, rather than a second full read (or a
+    bare .stat().st_size, which for a .gz file would report the *compressed*
+    size — exactly the number this must not report).
+    """
     h = hashlib.sha256()
-    with path.open("rb") as f:
+    size = 0
+    with open_maybe_gzip(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
-    return h.hexdigest()
+            size += len(chunk)
+    return h.hexdigest(), size
 
 
 def load_jsonl(path: Path) -> tuple[list[dict], int]:
@@ -58,7 +78,7 @@ def load_jsonl(path: Path) -> tuple[list[dict], int]:
     """
     records = []
     malformed = 0
-    with path.open(encoding="utf-8") as f:
+    with open_maybe_gzip(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -154,6 +174,11 @@ def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) 
     on a cadence that runs every couple of hours) is pure waste once this
     holds — see CLAUDE.md section on why generate_manifest.py needs wiring
     into the fetch pipeline without regenerating the whole archive each time.
+
+    data_path/polls_path must already be resolved to whichever copy (plain
+    or .gz) actually exists on disk — see config.resolve_day_file() — so a
+    day whose only change was being gzipped in place still compares against
+    a real mtime instead of a nonexistent uncompressed path.
     """
     if not manifest_path.exists():
         return False
@@ -176,19 +201,26 @@ def build_manifest(
     tz: ZoneInfo = ZoneInfo(DEFAULT_TIMEZONE),
     now: datetime | None = None,
 ) -> dict:
-    polls_path = data_path.with_name(f"{data_path.stem}.polls.jsonl")
+    date_str = date_from_path(data_path)
+    polls_path = resolve_day_file(data_path.parent, date_str, ".polls.jsonl")
     heartbeat_available = polls_path.exists()
 
     data_records, data_malformed_lines = load_jsonl(data_path)
     data_timestamps = sorted({r["snapshot_ts"] for r in data_records})
 
-    day_start_ts, day_end_ts, day_in_progress = day_bounds(data_path.stem, tz, now)
+    day_start_ts, day_end_ts, day_in_progress = day_bounds(date_str, tz, now)
+
+    data_sha256, data_size_bytes = sha256_of(data_path)
 
     manifest = {
-        "date": data_path.stem,
-        "data_file": data_path.name,
-        "data_sha256": sha256_of(data_path),
-        "data_size_bytes": data_path.stat().st_size,
+        "date": date_str,
+        # Always the uncompressed name, regardless of what's actually on disk
+        # locally — see "compressed" below for the storage detail, and
+        # CLAUDE.md's manifest-describes-uncompressed-bytes invariant.
+        "data_file": f"{date_str}.jsonl",
+        "data_sha256": data_sha256,
+        "data_size_bytes": data_size_bytes,
+        "compressed": data_path.suffix == ".gz",
         "total_vehicle_records": len(data_records),
         # >0 usually means this file was checksummed mid-transfer (e.g. an
         # rsync pull racing a still-writing collector) rather than corrupt at
@@ -213,10 +245,11 @@ def build_manifest(
         entities_total = sum(p.get("entities_total", 0) for p in polls)
         vehicles_with_position = sum(p.get("vehicles_with_position", 0) for p in polls)
         dropped_out_of_bbox = sum(p.get("dropped_out_of_bbox", 0) for p in polls)
+        polls_sha256, _ = sha256_of(polls_path)  # size not tracked for the heartbeat file
 
         manifest.update({
-            "polls_file": polls_path.name,
-            "polls_sha256": sha256_of(polls_path),
+            "polls_file": f"{date_str}.polls.jsonl",  # uncompressed name, same reasoning as data_file
+            "polls_sha256": polls_sha256,
             "polls_malformed_lines": polls_malformed_lines,
             "polls_logged": len(polls),
             "successful_polls": len(ok_polls),
@@ -305,15 +338,16 @@ def main():
     )
     args = parser.parse_args()
 
-    day_files = sorted(args.data_dir.glob("????-??-??.jsonl"))
+    day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date
     if not day_files:
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)
 
     tz = ZoneInfo(args.timezone)
     for path in day_files:
-        polls_path = path.with_name(f"{path.stem}.polls.jsonl")
-        manifest_path = path.with_name(f"{path.stem}.manifest.json")
+        date_str = date_from_path(path)
+        polls_path = resolve_day_file(args.data_dir, date_str, ".polls.jsonl")
+        manifest_path = args.data_dir / f"{date_str}.manifest.json"
 
         if should_skip(manifest_path, path, polls_path, args.force):
             print(f"{path.name}: skipped (manifest already up to date)")

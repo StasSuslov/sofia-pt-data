@@ -1,0 +1,31 @@
+[Unit]
+Description=Sofia PT archive compaction (gzip closed day files)
+
+[Service]
+Type=oneshot
+# No shell involved: systemd execs ExecStart directly, and a bare
+# `find ... -exec gzip {} +` needs no shell — no wrapper script to keep in
+# sync with this unit, no quoting-through-a-shell surprises.
+#
+# -mtime +2 is the safety margin, not +0 or +1. GNU find truncates the age to
+# whole days before comparing, so this actually matches files at least THREE
+# days old, one day more conservative than it reads: verified on the VPS at
+# 2026-08-31 14:22 UTC, where it selected only 2026-08-27.jsonl and left
+# 2026-08-28.jsonl (2.7 days old) alone. collect.py
+# rotates at local Sofia midnight but this box's clock and the timer's own
+# schedule are both UTC, and scheduled_fetch.sh / fetch_data.sh can still be
+# mid-pull on the laptop side. Two full days of slack guarantees this never
+# gzips a file collect.py could still be appending to — see CLAUDE.md's
+# manifest-describes-uncompressed-bytes invariant, which depends on a day
+# file being genuinely closed before anything touches it.
+#
+# gzip rewrites the file in place (drops the original, keeps the same
+# basename plus .gz) — nothing downstream needs to know which form a given
+# day is in, see config.resolve_day_file() on the fetch side.
+#
+# -6 is spelled out rather than relying on gzip's own default (which is
+# also 6) so this unit still does the right thing if that default is ever
+# overridden system-wide via the GZIP env var — this is the ratio the disk
+# math in CLAUDE.md section 9 (~102 MB/day -> ~12 MB/day) was measured with.
+ExecStart=/usr/bin/find /opt/sofia-pt/data -type f ( -name '*.jsonl' -o -name '*.polls.jsonl' ) -mtime +2 -exec /usr/bin/gzip -6 {} +
+User=root

@@ -20,8 +20,11 @@ and analytical approach.
   filtering is reproducible from data rather than hand-picked.
 - `scripts/fetch_data.sh` / `scripts/scheduled_fetch.sh` — pull the archive
   from a remote collector host via `rsync`.
-- `deploy/` — a `systemd` unit and a `launchd` template for running the
-  collector continuously and syncing its output on a schedule.
+- `deploy/` — `systemd` units and a `launchd` template for running the
+  collector continuously, gzipping closed day files on the collector host so
+  its disk doesn't fill, and syncing the output on a schedule. Day files are
+  read transparently in either form; a manifest always describes the
+  uncompressed bytes, so compression never changes a recorded checksum.
 
 ## Data sources
 

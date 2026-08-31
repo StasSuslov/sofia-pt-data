@@ -70,7 +70,15 @@ rsync -avz --progress -e "ssh -i ${VPS_KEY}" "${VPS_HOST}:${REMOTE_DIR}" "${LOCA
 # macOS still ships bash 3.2, where ${#arr[@]} on an empty array trips set -u.
 manifested=0
 for city_dir in "$LOCAL_DIR"*/; do
-    ls "${city_dir}"????-??-??.jsonl >/dev/null 2>&1 || continue
+    # Either form counts as a day file. deploy/sofia-compress.service gzips
+    # closed days on the VPS, so a directory whose every day has aged past
+    # that threshold arrives here holding nothing but .jsonl.gz. Testing only
+    # the plain glob would skip such a directory silently and then surface it
+    # through the "nothing to checksum" exit at the bottom, which claims stale
+    # manifests when the truth is a fully compressed archive.
+    ls "${city_dir}"????-??-??.jsonl >/dev/null 2>&1 \
+        || ls "${city_dir}"????-??-??.jsonl.gz >/dev/null 2>&1 \
+        || continue
 
     if ! "$PYTHON3" "$REPO_ROOT/scripts/generate_manifest.py" "$city_dir"; then
         echo "generate_manifest.py failed for ${city_dir} — data pulled fine, manifests are stale" >&2

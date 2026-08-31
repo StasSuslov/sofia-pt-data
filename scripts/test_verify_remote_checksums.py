@@ -198,6 +198,46 @@ def test_ssh_remote_sha256sums_raises_unreachable_on_ssh_connection_failure(monk
         assert "203.0.113.5" not in str(exc)
 
 
+def test_ssh_remote_sha256sums_remote_command_falls_back_to_gzip(monkeypatch):
+    """
+    A day sofia-compress.service has already gzipped on the VPS only has
+    "<name>.gz" there, not "<name>" — the remote command must decompress
+    before hashing, or the digest would be over gzip bytes and never match
+    manifest["data_sha256"] (always computed over uncompressed content).
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["remote_cmd"] = cmd[-1]  # last argv element is the remote command string
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ssh_remote_sha256sums("root@vps", "/tmp/key", REMOTE_DIR, ["2026-08-27.jsonl"])
+
+    remote_cmd = captured["remote_cmd"]
+    assert '"2026-08-27.jsonl"' in remote_cmd  # the requested (uncompressed) name feeds the loop
+    assert "gzip -dc" in remote_cmd            # decompress-then-hash fallback, not a bare sha256sum of the .gz
+    assert '"$p.gz"' in remote_cmd             # checked against the SAME base path as the plain-file branch
+
+
+def test_ssh_remote_sha256sums_parses_the_gzip_fallback_branchs_output(monkeypatch):
+    """Whatever the remote for-loop's gzip-fallback branch prints for an
+    already-compressed day, it's the same "<digest>  <path>" shape as a
+    plain sha256sum line and names the uncompressed path — parsing must not
+    care which branch produced it."""
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args, returncode=0,
+            stdout=f"{DATA_SHA}  {REMOTE_DIR.rstrip('/')}/2026-08-27.jsonl\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = ssh_remote_sha256sums("root@vps", "/tmp/key", REMOTE_DIR, ["2026-08-27.jsonl"])
+
+    assert result == {"2026-08-27.jsonl": DATA_SHA}
+
+
 def test_ssh_remote_sha256sums_raises_unreachable_on_timeout(monkeypatch):
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=30)
