@@ -52,6 +52,26 @@ without confirmation from a feed.
 - A "typical weekday" is defined as the median value per network segment
   and time slot, computed across Monday–Friday observations. Median rather
   than mean, for robustness to feed dropouts and one-off anomalies.
+- A segment is a fixed 200 m bin of distance travelled along a trip's GTFS
+  Static shape, not a stretch of physical road: each raw vehicle position
+  is projected onto its trip's shape polyline, and segment identity is
+  that shape plus `distance along it // 200 m`. A time slot is a
+  15-minute local-time bin. `direction_id` is empty for every trip in this
+  feed, so `shape_id`, distinct per direction and route variant, is what
+  separates two directions of the same route; there is no `direction_id`
+  to fall back on.
+- Shape identity used for aggregation is content-addressed, not the bare
+  GTFS `shape_id`: a shape's key is its `shape_id` plus the first 8 hex
+  characters of a SHA256 hash over its ordered points. The agency
+  republished GTFS Static on 2026-08-31, and 32 `shape_id`s kept their
+  identifier while the geometry underneath them changed (see Known
+  limitations). Keying purely on `shape_id` would let two feed versions of
+  the same segment index silently pool speed samples from two different
+  stretches of road into one median. With the geometry hash folded in,
+  shapes whose points are unchanged between feed versions produce the same
+  key and keep pooling samples across them: 98.3% of shapes, across the
+  two snapshots collected so far. The 32 that changed produce different
+  keys instead, starting a new series that never merges with the old one.
 - Raw daily observations are published alongside the median, not replaced
   by it, to preserve real day-to-day variability.
 
@@ -98,6 +118,33 @@ Stated here rather than left for a reader to discover independently:
 - The feed populates no bearing field at all, so direction of travel comes
   from the trip's shape_id in GTFS Static. direction_id, the usual field
   for this, is empty for every trip in the feed.
+- GTFS Static is republished by the agency from time to time, and
+  `feed_version` reads `1.0` in every snapshot collected so far, so it
+  cannot be used to tell one version from another. Each processed day is
+  matched to the latest static snapshot dated on or before it; that date
+  reflects when this archive observed the agency serving the feed, not the
+  publisher's own `feed_start_date`, which is recorded alongside it so the
+  two can be checked against each other. No single snapshot fits the whole
+  archive: processing 2026-08-31 against the snapshot dated 2026-08-27
+  rejects 26,289 records (7.013%) as unmatched to any known trip; against
+  the snapshot dated 2026-08-31 itself, 64 records (0.017%). Both figures
+  come from the same copy of that day's file, taken while collection for
+  the day was still running, so the percentages are of a partial day.
+  Against that same 2026-08-31 snapshot, 2026-08-27 and 2026-08-28, both
+  complete days, together lose 2.342%.
+  Of the 32 `shape_id`s the 2026-08-31 republish changed underneath (see
+  Aggregation), 20 were actually observed under two distinct geometries in
+  the median built from 2026-08-28 and 2026-08-31. This is not a
+  hypothetical edge case in the days collected so far. Per-day reject
+  counts are kept in the output rather than only an archive-wide total, so
+  a stale snapshot shows up as one day's count climbing instead of being
+  averaged away against every other day.
+- Capturing GTFS Static snapshots on a schedule is not yet automated;
+  every snapshot in the archive so far has been taken by hand. Until that
+  changes, a feed republish that nobody notices means a day can get
+  processed against a superseded snapshot. That is visible in principle,
+  since that day's rejected-record count in the per-day breakdown climbs,
+  but not yet caught automatically.
 
 ## Versioning
 

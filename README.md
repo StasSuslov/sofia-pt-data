@@ -18,6 +18,13 @@ and analytical approach.
 - `scripts/derive_bbox.py` — recomputes the network bounding box from a
   GTFS Static feed's `stops.txt`/`shapes.txt`, so the bbox used for
   filtering is reproducible from data rather than hand-picked.
+- `scripts/segment_speeds.py` — projects raw GTFS-RT vehicle positions onto
+  GTFS Static shapes, derives a speed sample per 200 m segment, and
+  aggregates Monday–Friday samples into a "typical weekday" median per
+  segment and 15-minute time slot.
+- `scripts/export_web.py` — turns that aggregation into the small,
+  timeslot-sliced static JSON files a browser fetches directly, with no
+  backend.
 - `scripts/fetch_data.sh` / `scripts/scheduled_fetch.sh` — pull the archive
   from a remote collector host via `rsync`.
 - `deploy/` — `systemd` units and a `launchd` template for running the
@@ -72,6 +79,66 @@ python3 scripts/generate_manifest.py data/sofia/2026-08-27.jsonl
 Produces a manifest with file checksums and a gap analysis derived from the
 heartbeat log (or, for files collected before heartbeat logging existed,
 from the data file alone — marked as lower-confidence).
+
+## Preprocessing
+
+Two scripts turn a day's raw vehicle-position archive into what a map can
+render.
+
+`scripts/segment_speeds.py` projects each vehicle position onto its trip's
+GTFS Static shape, turns consecutive same-trip positions into a speed
+sample for a 200 m segment of that shape, and aggregates Monday–Friday
+samples into a per-segment, per-15-minute-timeslot median (the "typical
+weekday", see METHODOLOGY.md's Aggregation section). Every rejected sample
+is counted by reason (unknown trip, implausible speed, a time gap too
+large to bridge, backward movement) rather than dropped silently.
+
+```bash
+# one static feed for every day, three specific days
+python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip \
+    data/sofia --output-dir data/sofia/processed 2026-08-28 2026-08-31
+
+# no explicit dates: every day file found in data/sofia
+python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip data/sofia
+
+# a directory of gtfs_<YYYY-MM-DD>.zip snapshots instead of one file: each
+# day is matched to the latest snapshot dated on or before it
+python3 scripts/segment_speeds.py data/sofia/static data/sofia
+```
+
+Writes `segment_speeds_<date>.jsonl` (one row per accepted sample) and
+`typical_weekday.json` (the median aggregation, with a per-day reject-count
+breakdown and which static snapshot matched which day) under `--output-dir`
+(default `<data_dir>/processed`).
+
+`scripts/export_web.py` reads that output and writes the static files a
+browser fetches directly: one small JSON per 15-minute time slot,
+referencing a shared `geometry.json` by index rather than repeating
+coordinates in every bin.
+
+```bash
+python3 scripts/export_web.py data/sofia/static/gtfs_2026-08-27.zip data/sofia
+
+# one specific day's own median instead of the Monday-Friday typical weekday
+python3 scripts/export_web.py data/sofia/static/gtfs_2026-08-27.zip data/sofia \
+    --day 2026-08-28
+
+# a directory of snapshots: every one found is loaded and merged
+python3 scripts/export_web.py data/sofia/static data/sofia
+```
+
+Writes `geometry.json`, one `timeslots/<HHMM>.json` per surviving time
+slot, and a `manifest.json` (thresholds applied, bins dropped, and the
+export's own known limitations) under `--output-dir` (default
+`<data_dir>/web/<mode>`, where `<mode>` is `typical_weekday` or the `--day`
+value).
+
+Both scripts accept either a single GTFS Static zip (one feed for every day
+or bin processed) or a directory of `gtfs_<YYYY-MM-DD>.zip` snapshots. The
+directory form exists because the agency republishes the static feed from
+time to time, and a stale snapshot degrades preprocessing silently. See
+METHODOLOGY.md's Aggregation and Known limitations sections for what that
+did to one 2026-08-31 run and how the fix works.
 
 ## Tests
 
