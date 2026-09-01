@@ -1,0 +1,13 @@
+{
+  "file": "gtfs_2026-08-27.zip",
+  "captured_by_hand": true,
+  "local_file_mtime": "2026-08-27T07:57:34.745101+00:00",
+  "zip_sha256": "7719dbabdb45dcd5ad3196c14766204a72210cd914a2126da8db3a7790bd1087",
+  "content_hash": "e537fb3a4adf2d49adbd162c0dcc31eee1a6d132f97b0ad3217cb5becd1fedd5",
+  "size_bytes": 18716390,
+  "member_count": 13,
+  "feed_version": "1.0",
+  "feed_start_date": "20260827",
+  "feed_end_date": "20270827",
+  "feed_publisher_name": "Theoremus"
+}
