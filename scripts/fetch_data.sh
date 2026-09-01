@@ -4,7 +4,9 @@
 # Uses rsync so re-running is cheap: only new/changed bytes transfer, safe to
 # run repeatedly while the collector is still writing today's file. Remote
 # files are never deleted — clean them up on the server manually once you've
-# verified the local copy.
+# verified the local copy. Locally, the one file this script does remove is a
+# <day>.jsonl whose own <day>.jsonl.gz has arrived and decompresses to the
+# identical bytes.
 #
 # Reads VPS_HOST (and optionally VPS_KEY, REMOTE_DIR) from .env.local at the
 # repo root — that file is gitignored on purpose, so the server's address
@@ -56,6 +58,27 @@ CHECKSUM_MISMATCH_EXIT_CODE=43
 # git if it leaks back out through the log instead.
 echo "Fetching ${VPS_HOST%%@*}@<vps>:${REMOTE_DIR} → ${LOCAL_DIR}"
 rsync -avz --progress -e "ssh -i ${VPS_KEY}" "${VPS_HOST}:${REMOTE_DIR}" "${LOCAL_DIR}"
+
+# deploy/sofia-compress.service replaces <day>.jsonl with <day>.jsonl.gz in
+# place on the VPS, but rsync deletes nothing on this side, so the superseded
+# plain file lingers and every compressed day costs local disk twice (238 MB
+# by the time this was noticed). Drop the plain copy only once its .gz
+# decompresses to the very same bytes: cmp reads both streams directly, so the
+# rm rests on the data itself rather than on a matching filename. A truncated
+# or corrupt .gz fails the pipeline and keeps the plain file, which is the safe
+# way round. Readers already take whichever form is present (config.py's
+# resolve_day_file / open_maybe_gzip), so no downstream output changes.
+for gz in "$LOCAL_DIR"*/*.jsonl.gz; do
+    [[ -f "$gz" ]] || continue  # an unmatched glob stays literal under set -u
+    plain="${gz%.gz}"
+    [[ -f "$plain" ]] || continue
+    if gzip -cd "$gz" | cmp -s - "$plain"; then
+        rm "$plain"
+        echo "Dropped ${plain#"$REPO_ROOT"/}: identical to its .gz"
+    else
+        echo "Kept ${plain#"$REPO_ROOT"/}: its .gz holds different bytes" >&2
+    fi
+done
 
 # Data is safely on disk from here on — a manifest-generation failure past
 # this point is a different problem than a failed pull and must be reported
