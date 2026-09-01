@@ -11,6 +11,7 @@ node_modules/
 # version of this project's context.
 CLAUDE.md
 JOURNAL.md
+FINDINGS.md
 
 # server address and other local-only config — never committed, see
 # scripts/fetch_data.sh
