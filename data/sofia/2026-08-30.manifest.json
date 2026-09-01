@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "date": "2026-08-30",
   "data_file": "2026-08-30.jsonl",
   "data_sha256": "98cb5d02654995c76046caeb0d5c43aa92b45e6df69996084326883c90456c12",
@@ -9,7 +9,7 @@
   "data_malformed_lines": 0,
   "heartbeat_available": true,
   "day_in_progress": false,
-  "generated_at": "2026-09-01T12:24:12.327737+00:00",
+  "generated_at": "2026-09-01T12:48:50.058740+00:00",
   "polls_file": "2026-08-30.polls.jsonl",
   "polls_sha256": "93b24b38cd3785ad3671dfb0df1773d404364fdcc6f5b9bb1f430ed430d1b7f8",
   "polls_malformed_lines": 0,
@@ -27,6 +27,7 @@
   "gap_count": 0,
   "gaps": [],
   "day_seconds": 86400,
+  "local_lag_sec": null,
   "expected_polls": 1920.0,
   "coverage_pct": 100.0,
   "remote_verified": true,

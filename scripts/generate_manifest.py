@@ -56,7 +56,7 @@ from config import (  # noqa: E402
 #
 # 1: first explicitly versioned format. A manifest with no schema_version at
 #    all predates this and is regenerated on sight.
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 # Written by scripts/verify_remote_checksums.py after the fact, not by
 # build_manifest(), so a regeneration would otherwise silently drop a
@@ -119,8 +119,9 @@ def day_bounds(date_str: str, tz: ZoneInfo, now: datetime | None = None) -> tupl
     For the current in-progress local day, day_end is clamped to `now` and
     day_in_progress comes back True. Note for callers: a local rsync copy of
     *today's* file also lags the VPS by up to the fetch interval (see
-    scripts/fetch_data.sh) — low coverage for today alone doesn't necessarily
-    mean the collector is down, it may just mean the pull hasn't run yet.
+    scripts/fetch_data.sh), so `now` is later than the last poll on disk even
+    when the collector never missed one. analyze_gaps() takes day_in_progress
+    for exactly that reason and reports the remainder as local_lag_sec.
     """
     local_date = date.fromisoformat(date_str)
     day_start = datetime(local_date.year, local_date.month, local_date.day, tzinfo=tz)
@@ -140,6 +141,7 @@ def analyze_gaps(
     gap_threshold_multiplier: float,
     day_start_ts: int,
     day_end_ts: int,
+    day_in_progress: bool = False,
 ) -> dict:
     """
     Coverage measured against calendar-day boundaries and the *configured*
@@ -148,6 +150,23 @@ def analyze_gaps(
     own "normal" from the degraded data and report ~0 gaps / ~100% coverage
     — see CLAUDE.md section 9, the coverage_pct defect this rewrite fixes.
     """
+    # On a day still in progress, everything after the last poll we hold is
+    # the age of this local copy, not a hole in the collector's coverage:
+    # fetch_data.sh pulls on a 2-hour cadence, so today's file always ends
+    # where the last rsync landed. Counting that stretch as a gap reported
+    # 32 minutes of "downtime" on 2026-09-01 while the VPS journal showed an
+    # unbroken 45s cadence and healthchecks.io stayed green. Measure against
+    # the last poll and name the remainder local_lag_sec. Closed days keep
+    # the calendar boundary, where a trailing gap is real downtime.
+    if day_in_progress and timestamps:
+        local_lag_sec = day_end_ts - timestamps[-1]
+        # +interval because the last poll covers its own interval; ending the
+        # window on the poll itself leaves N polls in N-1 intervals and reads
+        # back as 100.01% coverage.
+        day_end_ts = timestamps[-1] + nominal_interval_sec
+    else:
+        local_lag_sec = None
+
     day_seconds = day_end_ts - day_start_ts
     threshold = nominal_interval_sec * gap_threshold_multiplier
 
@@ -189,6 +208,10 @@ def analyze_gaps(
         "gap_count": len(gaps),
         "gaps": gaps,
         "day_seconds": day_seconds,
+        # How stale this local copy is: seconds between its last poll and
+        # generation time. None on a closed day. Not a coverage defect —
+        # whether the collector is alive is the dead-man's switch's job.
+        "local_lag_sec": local_lag_sec,
         "expected_polls": round(expected_polls, 1) if expected_polls else None,
         "coverage_pct": coverage_pct,
     }
@@ -378,7 +401,8 @@ def build_manifest(
             "dropped_out_of_bbox_pct": None,
         })
 
-    manifest.update(analyze_gaps(timestamps, nominal_interval_sec, gap_threshold_multiplier, day_start_ts, day_end_ts))
+    manifest.update(analyze_gaps(timestamps, nominal_interval_sec, gap_threshold_multiplier,
+                                 day_start_ts, day_end_ts, day_in_progress))
     return manifest
 
 

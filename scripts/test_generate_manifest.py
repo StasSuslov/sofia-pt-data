@@ -83,6 +83,30 @@ def test_analyze_gaps_detects_a_downtime_gap():
     assert result["coverage_pct"] < 100.0
 
 
+def test_analyze_gaps_in_progress_day_reports_lag_not_downtime():
+    # Today's file ends where the last rsync landed; the manifest is
+    # generated 30 minutes later. That stretch is the age of the local copy,
+    # not an outage — 2026-09-01 reported it as a 1954s gap while the VPS
+    # journal showed an unbroken 45s cadence.
+    timestamps = [1000, 1045, 1090, 1135, 1180]
+    result = analyze_gaps(timestamps, nominal_interval_sec=45, gap_threshold_multiplier=3.0,
+                           day_start_ts=1000, day_end_ts=1180 + 1800, day_in_progress=True)
+    assert result["gap_count"] == 0
+    assert result["local_lag_sec"] == 1800
+    assert result["coverage_pct"] == 100.0
+
+
+def test_analyze_gaps_closed_day_still_counts_the_trailing_gap():
+    # Same shape of input, but the day is over: silence between the last
+    # poll and midnight is real downtime and must stay a gap.
+    timestamps = [1000, 1045, 1090, 1135, 1180]
+    result = analyze_gaps(timestamps, nominal_interval_sec=45, gap_threshold_multiplier=3.0,
+                           day_start_ts=1000, day_end_ts=1180 + 1800)
+    assert result["gap_count"] == 1
+    assert result["gaps"][0]["gap_seconds"] == 1800
+    assert result["local_lag_sec"] is None
+
+
 def test_analyze_gaps_empty_shows_zero_coverage_not_none():
     # Previously this returned coverage_pct=None, which reads as "not
     # applicable" and could hide a genuine full-day outage. A day with zero
