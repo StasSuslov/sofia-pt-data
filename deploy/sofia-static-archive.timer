@@ -2,7 +2,20 @@
 Description=Run Sofia PT GTFS Static feed snapshot capture daily
 
 [Timer]
-OnCalendar=daily
+# 05:00 UTC, not OnCalendar=daily (which is midnight UTC). The agency
+# rebuilds its feed export on a fixed daily schedule at 03:33 by the
+# member timestamps inside the zip, identical to the second across the
+# 2026-08-27, 08-31 and 09-01 snapshots. Those timestamps are naive, so
+# 03:33 is either 00:33 or 03:33 UTC depending on the build box's clock,
+# and midnight UTC lands before the build under either reading: the run
+# would find yesterday's build, report no change, and the day's real
+# feed would not be captured until the next midnight, filed under a date
+# one day after the build it holds. pick_snapshot_for_day() in
+# segment_speeds.py takes the latest snapshot dated on or before a day,
+# so every day would then be matched to the feed that preceded it, which
+# is the exact silent mismatch this whole unit exists to prevent. 05:00
+# clears the later reading by 1.4 hours and the earlier one by 4.4.
+OnCalendar=*-*-* 05:00:00
 # Same reasoning as sofia-compress.timer: a $4/mo droplet is not guaranteed
 # to be up at the exact scheduled instant (reboots for host maintenance,
 # etc.), and archive_feed()'s whole design already tolerates a missed or

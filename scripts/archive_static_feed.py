@@ -296,6 +296,24 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
     feed_info = load_feed_info(tmp_path)
 
     os.replace(tmp_path, target_path)
+    # mkstemp() creates at 0600 and os.replace() carries that mode over, which
+    # would leave the snapshot the one file under data/ that only its writer
+    # can read. Day files land at the umask default.
+    os.chmod(target_path, 0o644)
+
+    declared = (feed_info.get("feed_start_date") or "").strip()
+    if declared and declared != today_str.replace("-", ""):
+        # The name records when this archive observed the feed, deliberately,
+        # rather than trusting the publisher's own date (see METHODOLOGY.md).
+        # The two agree only while the capture runs after the agency's daily
+        # build. When they stop agreeing the build schedule moved, and every
+        # snapshot from here on holds the previous day's feed under today's
+        # name. Not fatal: the file is still a real snapshot worth keeping,
+        # and refusing it would lose data over a scheduling problem.
+        print(f"Warning: {target_path.name} declares feed_start_date={declared}. "
+              "This capture ran before the agency's daily build; check the "
+              "schedule in deploy/sofia-static-archive.timer against the member "
+              "timestamps inside the zip.", file=sys.stderr)
 
     manifest = build_manifest(target_path, source_url, now, zip_sha256, new_hash,
                                size_bytes, len(member_pairs), feed_info)

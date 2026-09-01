@@ -220,3 +220,23 @@ def test_snapshot_date_comes_from_sofia_local_time_not_utc(tmp_path):
     assert (output_dir / "gtfs_2026-09-01.zip").exists()
     assert (output_dir / "gtfs_2026-09-01.manifest.json").exists()
     assert not (output_dir / "gtfs_2026-08-31.zip").exists()
+
+
+def test_warns_when_captured_feed_predates_the_snapshot_date(tmp_path, capsys):
+    output_dir = tmp_path / "static"
+    output_dir.mkdir()
+    _gtfs_zip(output_dir / "gtfs_2026-08-27.zip")
+    # A capture that ran before the agency's daily build gets yesterday's feed
+    # filed under today's date, and pick_snapshot_for_day() would then hand a
+    # day the feed that preceded it.
+    stale = ("feed_publisher_name,feed_start_date,feed_end_date,feed_version\n"
+             "Theoremus,20260831,20270831,1.0\n")
+    candidate = _gtfs_zip(tmp_path / "download.zip", shapes_extra_point=True, feed_info=stale)
+
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    assert archive_feed(output_dir, candidate, "https://example.test/static", SOFIA, now=now) == 0
+
+    saved = output_dir / "gtfs_2026-09-01.zip"
+    assert saved.exists()  # kept, not refused: a scheduling fault is not a bad file
+    assert "20260831" in capsys.readouterr().err
+    assert saved.stat().st_mode & 0o777 == 0o644
