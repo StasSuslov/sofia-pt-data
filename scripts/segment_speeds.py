@@ -15,8 +15,15 @@ Algorithm (given, not reinvented — see the task write-up):
   2. same-day snapshots grouped by (vehicle_id, trip_id), sorted by time.
   3. each raw lat/lon projected onto its trip's shape as a distance along
      the shape, searching only a window of segments around the previous
-     match — a full rescan of a ~300-point shape on every one of ~2.4M
-     snapshots does not finish in a reasonable time.
+     match. A full rescan of the whole shape on every position terminates;
+     it is just wasteful. Measured on 200,000 real positions from
+     2026-08-31, projected against the shapes of the 2026-08-31 snapshot
+     (median 316 points per shape, longest 2,219): 177 us per position for
+     the full rescan against 27 us windowed, 6.5x. Over the 2,625,503
+     positions of the five-day run recorded in typical_weekday.json that is
+     roughly 8 minutes of projection instead of roughly 70 seconds. The
+     earlier text here claimed a full rescan "does not finish in a
+     reasonable time", which was an impression rather than a measurement.
   4. speed = delta(distance along shape) / delta(time) between consecutive
      projected positions.
   5. segment = fixed 200 m bin of distance-along-shape, keyed by

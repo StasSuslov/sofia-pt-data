@@ -118,14 +118,20 @@ from segment_speeds import (  # noqa: E402
 # be robust *to* with one point, which is the entire justification D4 gives
 # for using a median at all. n>=2 is the smallest cutoff that means "more
 # than one observation agreed", not the smallest cutoff that looks tidy.
-# With three weekdays of archive, n>=3 (the smallest count where a median
-# actually insulates against either extreme) already drops to 26.5% of
-# bins, n>=5 to 7.6% — both defensible choices, but on this little history
-# they gut most of the network. n_samples still ships with every surviving
-# bin (see module docstring), so a thin median is the client's problem to
-# render distinctly, not this cutoff's problem to hide. Revisit the default
-# as more weekdays accumulate; nothing about the file format below needs to
-# change to raise it later.
+# The cost of raising it is worth stating with the archive it was measured
+# against, because it moves as weekdays accumulate. Counted 2026-09-01 over
+# the 687,014 bins in data/sofia/processed/typical_weekday.json, built from
+# the three weekdays 2026-08-27, 2026-08-28 and 2026-08-31: n>=2 keeps
+# 422,687 bins (61.5%), n>=3 keeps 220,975 (32.2%), n>=5 keeps 72,027
+# (10.5%). n>=3 is the smallest count where a median actually insulates
+# against either extreme, and both it and n>=5 are defensible choices, but
+# on this little history they discard most of the network. Re-count before
+# quoting these; an earlier version of this comment carried 26.5% and 7.6%
+# from a smaller archive and drifted out of date without saying so.
+# n_samples still ships with every surviving bin (see module docstring), so
+# a thin median is the client's problem to render distinctly, not this
+# cutoff's problem to hide. Revisit the default as more weekdays accumulate;
+# nothing about the file format below needs to change to raise it later.
 MIN_SAMPLES_DEFAULT = 2
 
 # ~1.11 m of latitude and ~0.82 m of longitude at Sofia's ~42.7 deg N — below
