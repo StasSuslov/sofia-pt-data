@@ -720,6 +720,18 @@ def main():
         day_files = [resolve_day_file(args.data_dir, d, ".jsonl") for d in sorted(args.dates)]
     else:
         day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date, sorted
+        # Today's file is still being written and its local copy only reaches
+        # the last rsync, so folding it into the median produces an aggregate
+        # that changes under a reader who re-runs this an hour later. The
+        # first typical_weekday.json was built this way, over 551,016 of the
+        # 730,167 records its own day eventually held. Name a date explicitly
+        # to process the day in progress anyway.
+        today = datetime.now(tz).date().isoformat()
+        skipped = [p for p in day_files if date_from_path(p) >= today]
+        day_files = [p for p in day_files if date_from_path(p) < today]
+        for p in skipped:
+            print(f"{p.name}: skipped, the day is still in progress "
+                  f"(pass {date_from_path(p)} explicitly to include it)", file=sys.stderr)
     if not day_files:
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)

@@ -123,11 +123,11 @@ match. 100 km/h is a wide margin over anything this network runs.
 
 The two denominators are kept apart, since totalling the six counters
 against one of them would misstate every rate in the table. The run on
-record covers five days and 2,625,503 records, of which 7,348 (0.280%) were
+record covers five days and 2,804,654 records, of which 7,348 (0.262%) were
 rejected as `trip_not_in_static` and none as `shape_not_found`. It yielded
-2,566,958 consecutive pairs, of which 2,561,080 became samples and 5,878
-(0.229%) were rejected: `moved_backward` 4,850, `speed_too_high` 567,
-`gap_too_large` 461, `non_positive_time_delta` none.
+2,742,870 consecutive pairs, of which 2,736,587 became samples and 6,283
+(0.229%) were rejected: `moved_backward` 5,209, `speed_too_high` 608,
+`gap_too_large` 466, `non_positive_time_delta` none.
 
 The distribution matters more than the total. Of the 7,348 unmatched trips,
 7,284 fall on 2026-08-29 and 2026-08-30, the two days processed against a
@@ -180,7 +180,7 @@ references it by index from one file per 15-minute slot, so a timeline
 scrubs without downloading the whole corpus. Bins below the `--min-samples`
 threshold (default 2, the smallest count at which a median is an aggregate
 rather than one relabelled raw reading) are dropped: on the current archive
-that retains 422,687 of 687,014 bins. `n_samples` ships with every surviving
+that retains 458,260 of 718,042 bins. `n_samples` ships with every surviving
 bin. Speed ships as an integer km/h for map colouring, with the float m/s
 and every sample behind it left in `segment_speeds_<date>.jsonl` and
 `typical_weekday.json`. A segment's drawn geometry is the straight chord
@@ -234,16 +234,17 @@ coverage is incomplete, rather than take completeness on trust.
 
 Stated here rather than left for a reader to discover independently:
 
-- The "typical weekday" currently rests on three weekdays, and two of them
-  are not full days. The aggregation on record covers 2026-08-27,
-  2026-08-28 and 2026-08-31: the first covers 52.45% of its calendar day
-  (collection began at 11:07 local), and the third was read while collection
-  for it was still running, 551,016 records against the 730,167 that day
-  eventually held. Both were flagged as incomplete in the web export's own
-  `manifest.json` when it was written, rather than only here. The median it
-  produces spans 687,014 (segment, timeslot) bins over 27,220 distinct
-  segments and 96 time slots, and 264,327 of those bins, 38.5%, rest on a
-  single observation; 32.2% have three or more. This is an archive early in
+- The "typical weekday" currently rests on three weekdays, one of them a
+  partial day. The aggregation on record covers 2026-08-27, 2026-08-28 and
+  2026-08-31; the first covers 52.45% of its calendar day, because
+  collection began at 11:07 local. That day is flagged as incomplete in the
+  web export's own `manifest.json`, rather than only here. Days still being
+  collected are left out of the aggregate entirely: their local copy reaches
+  only as far as the last pull, so folding one in would give a median that
+  changes under a reader who re-runs the pipeline an hour later. The median
+  spans 718,042 (segment, timeslot) bins over 27,542 distinct segments and
+  96 time slots, and 259,782 of those bins, 36.2%, rest on a single
+  observation; 36.4% have three or more. This is an archive early in
   its life, and the numbers above should be read as a working pipeline's
   output rather than as a description of how Sofia's network behaves.
 - The GTFS-RT feed does not include Sofia's metro — findings from this
