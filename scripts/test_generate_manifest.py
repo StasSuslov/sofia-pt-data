@@ -9,8 +9,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).parent))
 
 from generate_manifest import (
+    MANIFEST_SCHEMA_VERSION,
     analyze_gaps,
     build_manifest,
+    carry_remote_verification,
     day_bounds,
     find_day_files,
     load_jsonl,
@@ -385,13 +387,22 @@ def touch(path: Path, mtime: float) -> None:
     os.utime(path, (mtime, mtime))
 
 
+def touch_manifest(path: Path, mtime: float, version=MANIFEST_SCHEMA_VERSION) -> None:
+    """A manifest file has to be real JSON carrying a schema_version, because
+    mtime is not the only thing manifest_is_current() reads any more. Pass a
+    different `version` to stand in for one written by an older format."""
+    payload = {} if version is None else {"schema_version": version}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.utime(path, (mtime, mtime))
+
+
 def test_manifest_is_current_true_when_manifest_newer_than_data_and_polls(tmp_path: Path):
     data_path = tmp_path / "2026-08-27.jsonl"
     polls_path = tmp_path / "2026-08-27.polls.jsonl"
     manifest_path = tmp_path / "2026-08-27.manifest.json"
     touch(data_path, 100)
     touch(polls_path, 110)
-    touch(manifest_path, 200)  # generated after both inputs last changed
+    touch_manifest(manifest_path, 200)  # generated after both inputs last changed
 
     assert manifest_is_current(manifest_path, data_path, polls_path) is True
 
@@ -402,7 +413,7 @@ def test_manifest_is_current_false_when_data_file_is_newer(tmp_path: Path):
     data_path = tmp_path / "2026-08-31.jsonl"
     polls_path = tmp_path / "2026-08-31.polls.jsonl"
     manifest_path = tmp_path / "2026-08-31.manifest.json"
-    touch(manifest_path, 100)
+    touch_manifest(manifest_path, 100)
     touch(polls_path, 90)
     touch(data_path, 150)  # data appended after the manifest was written
 
@@ -414,7 +425,7 @@ def test_manifest_is_current_false_when_polls_file_is_newer(tmp_path: Path):
     polls_path = tmp_path / "2026-08-31.polls.jsonl"
     manifest_path = tmp_path / "2026-08-31.manifest.json"
     touch(data_path, 90)
-    touch(manifest_path, 100)
+    touch_manifest(manifest_path, 100)
     touch(polls_path, 150)  # heartbeat log grew after the manifest was written
 
     assert manifest_is_current(manifest_path, data_path, polls_path) is False
@@ -437,9 +448,51 @@ def test_manifest_is_current_ignores_missing_polls_file(tmp_path: Path):
     polls_path = tmp_path / "2026-08-20.polls.jsonl"  # deliberately not created
     manifest_path = tmp_path / "2026-08-20.manifest.json"
     touch(data_path, 100)
-    touch(manifest_path, 200)
+    touch_manifest(manifest_path, 200)
 
     assert manifest_is_current(manifest_path, data_path, polls_path) is True
+
+
+def test_manifest_is_current_false_when_stored_schema_version_is_older(tmp_path: Path):
+    # The defect the schema version exists for: gzip preserves the day file's
+    # original mtime, so a day compressed on the VPS looks untouched forever
+    # and every field added to the manifest format after it closed misses it.
+    # Here the mtimes say "current" and only the stored version disagrees.
+    data_path = tmp_path / "2026-08-27.jsonl"
+    polls_path = tmp_path / "2026-08-27.polls.jsonl"
+    manifest_path = tmp_path / "2026-08-27.manifest.json"
+    touch(data_path, 100)
+    touch(polls_path, 100)
+    touch_manifest(manifest_path, 200, version=MANIFEST_SCHEMA_VERSION - 1)
+
+    assert manifest_is_current(manifest_path, data_path, polls_path) is False
+    assert should_skip(manifest_path, data_path, polls_path, force=False) is False
+
+
+def test_manifest_is_current_false_when_manifest_predates_versioning(tmp_path: Path):
+    # Every manifest written before MANIFEST_SCHEMA_VERSION existed: no
+    # version field at all, so it can never match and is rewritten once.
+    data_path = tmp_path / "2026-08-28.jsonl"
+    polls_path = tmp_path / "2026-08-28.polls.jsonl"
+    manifest_path = tmp_path / "2026-08-28.manifest.json"
+    touch(data_path, 100)
+    touch(polls_path, 100)
+    touch_manifest(manifest_path, 200, version=None)
+
+    assert manifest_is_current(manifest_path, data_path, polls_path) is False
+
+
+def test_manifest_is_current_false_when_manifest_is_unreadable(tmp_path: Path):
+    # A manifest that won't parse can't state its version either. Treating it
+    # as current would leave the corruption on disk indefinitely.
+    data_path = tmp_path / "2026-08-29.jsonl"
+    polls_path = tmp_path / "2026-08-29.polls.jsonl"
+    manifest_path = tmp_path / "2026-08-29.manifest.json"
+    touch(data_path, 100)
+    touch(polls_path, 100)
+    touch(manifest_path, 200)  # writes "x", not JSON
+
+    assert manifest_is_current(manifest_path, data_path, polls_path) is False
 
 
 def test_should_skip_true_for_a_current_manifest_without_force(tmp_path: Path):
@@ -448,7 +501,7 @@ def test_should_skip_true_for_a_current_manifest_without_force(tmp_path: Path):
     manifest_path = tmp_path / "2026-08-27.manifest.json"
     touch(data_path, 100)
     touch(polls_path, 100)
-    touch(manifest_path, 200)
+    touch_manifest(manifest_path, 200)
 
     assert should_skip(manifest_path, data_path, polls_path, force=False) is True
 
@@ -457,11 +510,44 @@ def test_should_skip_false_for_a_stale_manifest(tmp_path: Path):
     data_path = tmp_path / "2026-08-31.jsonl"
     polls_path = tmp_path / "2026-08-31.polls.jsonl"
     manifest_path = tmp_path / "2026-08-31.manifest.json"
-    touch(manifest_path, 100)
+    touch_manifest(manifest_path, 100)
     touch(polls_path, 100)
     touch(data_path, 150)
 
     assert should_skip(manifest_path, data_path, polls_path, force=False) is False
+
+
+# ─── carry_remote_verification (survives a schema-driven rewrite) ──────────
+# A version bump rewrites closed days, and verify_remote_checksums.py's
+# fields live only in the file being replaced. Losing them would silently
+# discard a recorded VPS comparison and make it look never done.
+
+def test_carry_remote_verification_keeps_the_record_when_hashes_match():
+    previous = {
+        "data_sha256": "aa", "polls_sha256": "bb",
+        "remote_verified": True, "remote_verified_at": "2026-08-31T11:06:33+00:00",
+    }
+    fresh = {"data_sha256": "aa", "polls_sha256": "bb"}
+
+    result = carry_remote_verification(fresh, previous)
+
+    assert result["remote_verified"] is True
+    assert result["remote_verified_at"] == "2026-08-31T11:06:33+00:00"
+
+
+def test_carry_remote_verification_drops_the_record_when_a_hash_moved():
+    # "matches the VPS" is a claim about specific bytes. If the hash moved,
+    # the claim is about bytes this manifest no longer describes, so drop it and
+    # let the next verify run answer again for the new content.
+    previous = {"data_sha256": "aa", "polls_sha256": "bb", "remote_verified": True}
+    fresh = {"data_sha256": "cc", "polls_sha256": "bb"}
+
+    assert "remote_verified" not in carry_remote_verification(fresh, previous)
+
+
+def test_carry_remote_verification_no_previous_manifest_is_a_no_op():
+    fresh = {"data_sha256": "aa", "polls_sha256": None}
+    assert carry_remote_verification(fresh, None) == fresh
 
 
 def test_should_skip_false_when_forced_even_if_manifest_is_current(tmp_path: Path):
@@ -470,6 +556,6 @@ def test_should_skip_false_when_forced_even_if_manifest_is_current(tmp_path: Pat
     manifest_path = tmp_path / "2026-08-27.manifest.json"
     touch(data_path, 100)
     touch(polls_path, 100)
-    touch(manifest_path, 200)  # would be skipped without --force
+    touch_manifest(manifest_path, 200)  # would be skipped without --force
 
     assert should_skip(manifest_path, data_path, polls_path, force=True) is False

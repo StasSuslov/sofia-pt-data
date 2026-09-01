@@ -43,6 +43,27 @@ from config import (  # noqa: E402
     resolve_day_file,
 )
 
+# Bump whenever the set of fields build_manifest() writes changes, so old
+# manifests are rewritten once instead of keeping a format nothing produces
+# any more. Without this the only staleness signal is mtime, and mtime does
+# not move when a format changes: it does not even move when the day file
+# itself is gzipped on the VPS, because gzip preserves the original's
+# timestamp. That is how "compressed" reached the 2026-08-31 manifest and
+# never reached 2026-08-27's or 2026-08-28's, which had already been
+# compressed and so looked untouched forever. A one-off --force clears that
+# symptom for one field; a version the writer and the reader both know
+# clears it for every future field.
+#
+# 1: first explicitly versioned format. A manifest with no schema_version at
+#    all predates this and is regenerated on sight.
+MANIFEST_SCHEMA_VERSION = 1
+
+# Written by scripts/verify_remote_checksums.py after the fact, not by
+# build_manifest(), so a regeneration would otherwise silently drop a
+# recorded VPS comparison and force it to be redone. Carried over only when
+# the checksums it vouched for are unchanged (see carry_remote_verification()).
+REMOTE_VERIFICATION_FIELDS = ("remote_verified", "remote_verified_at", "remote_verify_note")
+
 
 def sha256_of(path: Path) -> tuple[str, int]:
     """
@@ -132,8 +153,15 @@ def analyze_gaps(
 
     # Diagnostic only, not used for coverage math: how far the actually
     # observed spacing between polls has drifted from nominal_interval_sec.
+    # float() because statistics.median() returns whichever type the middle
+    # of the sample happens to be: an int for an odd count of intervals, a
+    # float for an even one, so the same unchanged 45 s cadence serialised
+    # as 45 on one day and 45.0 on the next purely from parity, and every
+    # manifest diff carried that noise. The honest type is the float: this
+    # is a measured median of durations and a genuinely fractional value
+    # (45.5) is a normal outcome, not a rounding artifact to be hidden.
     observed_interval_sec = (
-        statistics.median(b - a for a, b in zip(timestamps, timestamps[1:]))
+        float(statistics.median(b - a for a, b in zip(timestamps, timestamps[1:])))
         if len(timestamps) >= 2 else None
     )
 
@@ -166,21 +194,59 @@ def analyze_gaps(
     }
 
 
+def read_manifest(manifest_path: Path) -> dict | None:
+    """The manifest already on disk, or None if it is missing or unreadable
+    as JSON. A manifest that will not parse is not a manifest to build on:
+    both callers treat None as "regenerate"."""
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def carry_remote_verification(manifest: dict, previous: dict | None) -> dict:
+    """
+    Move scripts/verify_remote_checksums.py's fields from the manifest being
+    replaced onto the freshly built one, but only while the checksums they
+    vouched for still hold. "This day matched the VPS" is a claim about a
+    specific pair of SHA256s; carrying it across a manifest whose hashes
+    moved would restate it about bytes it never saw. When the hashes differ,
+    the fields are left off and the next verify run records the answer again.
+    """
+    if not previous:
+        return manifest
+    if any(previous.get(k) != manifest.get(k) for k in ("data_sha256", "polls_sha256")):
+        return manifest
+    for field in REMOTE_VERIFICATION_FIELDS:
+        if field in previous:
+            manifest[field] = previous[field]
+    return manifest
+
+
 def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) -> bool:
     """
     True when an existing manifest is already newer than every input that
-    could change it. A closed past day's data and heartbeat files never
-    change again, so re-hashing them (SHA256 over a file already 100+ MB,
-    on a cadence that runs every couple of hours) is pure waste once this
-    holds — see CLAUDE.md section on why generate_manifest.py needs wiring
-    into the fetch pipeline without regenerating the whole archive each time.
+    could change it AND was written by the current schema version. A closed
+    past day's data and heartbeat files never change again, so re-hashing
+    them (SHA256 over a file already 100+ MB, on a cadence that runs every
+    couple of hours) is pure waste once this holds (see CLAUDE.md section
+    on why generate_manifest.py needs wiring into the fetch pipeline without
+    regenerating the whole archive each time).
+
+    The version check is what makes that skip safe. mtime alone answers "did
+    the inputs change", never "did the output format change", and the two
+    are not the same question. See MANIFEST_SCHEMA_VERSION for the field
+    that reached one day's manifest and no other because of it.
 
     data_path/polls_path must already be resolved to whichever copy (plain
     or .gz) actually exists on disk — see config.resolve_day_file() — so a
     day whose only change was being gzipped in place still compares against
     a real mtime instead of a nonexistent uncompressed path.
     """
-    if not manifest_path.exists():
+    existing = read_manifest(manifest_path)
+    if existing is None:
+        return False
+    if existing.get("schema_version") != MANIFEST_SCHEMA_VERSION:
         return False
     manifest_mtime = manifest_path.stat().st_mtime
     if data_path.stat().st_mtime > manifest_mtime:
@@ -213,6 +279,7 @@ def build_manifest(
     data_sha256, data_size_bytes = sha256_of(data_path)
 
     manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "date": date_str,
         # Always the uncompressed name, regardless of what's actually on disk
         # locally — see "compressed" below for the storage detail, and
@@ -281,7 +348,11 @@ def build_manifest(
         if heartbeat_partial:
             manifest["pre_heartbeat_note"] = (
                 f"Heartbeat logging only starts at snapshot_ts {heartbeat_start} "
-                f"({polls_path.name} was deployed partway through the day). Coverage "
+                # The uncompressed name, like polls_file above: whether the VPS
+                # has gzipped this day yet is a storage detail, and letting it
+                # into the note made the same day's manifest read differently
+                # before and after compression for no change in the data.
+                f"({date_str}.polls.jsonl was deployed partway through the day). Coverage "
                 "before that point is inferred from the data file alone and cannot "
                 "distinguish a genuinely empty poll, a fetch error, or real downtime."
             )
@@ -354,6 +425,7 @@ def main():
             continue
 
         manifest = build_manifest(path, args.gap_threshold, args.interval, tz)
+        manifest = carry_remote_verification(manifest, read_manifest(manifest_path))
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
         if not manifest["heartbeat_available"]:
