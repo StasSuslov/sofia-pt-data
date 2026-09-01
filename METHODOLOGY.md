@@ -137,6 +137,44 @@ processed against a snapshot of its own date, contributes 64. A stale
 snapshot surfaces as one day's counter climbing, which is why the per-day
 breakdown sits next to the total instead of being averaged into it.
 
+Those 7,284 records are not spread across the network. Every one of them
+belongs to one of two bus routes, `A109` (short name 30) and `A75` (short
+name 10), and on both days they account for 100% of those two routes'
+records: 2,367 and 1,266 on 2026-08-29, 2,403 and 1,248 on 2026-08-30, over
+77 and 78 distinct `trip_id`s. They spread evenly across the service day,
+roughly 200 records an hour from 05:00 to 23:00 local, so nothing about the
+pattern points at a peak-hour or school-hour addition. No other route
+contributes a single unmatched record on either day.
+
+The mechanism is the agency's `trip_id` format. A `trip_id` reads
+`<route_id>-<shape_id>-<direction>-<sequence>-<service_id>`, so renumbering
+a `service_id` renames every trip that uses it, and the agency renumbers
+service identifiers between its nightly rebuilds when it re-plans a route.
+Both routes were being re-planned that week: their `route_long_name` differs
+across all three snapshots held. For `A109` the change is visible end to end.
+Its weekend service is `3059595690` in the 2026-08-27 snapshot and
+`30231557250` from the 2026-08-31 snapshot onward, both covering 20260829 and
+20260830, and all 48 `trip_id`s the real-time feed broadcast on those two
+days appear verbatim in the 2026-08-31 and 2026-09-01 snapshots. For `A75`
+it cannot be traced the same way: the identifier it broadcast, `21012561760`,
+appears in no snapshot this archive holds. In the 2026-08-27 snapshot that
+route's weekend service is `22609987460` covering both days; by the
+2026-08-31 snapshot the same identifier begins on 20260905 instead. The
+build that carried `21012561760` was one of 2026-08-28, 2026-08-29 or
+2026-08-30, none of which was captured (see Known limitations), so which one
+introduced it cannot be recovered.
+
+Weekday service identifiers for the same two routes, `34695955721` and
+`41453276541`, are identical in all three snapshots, which is why 2026-08-27
+and 2026-08-28 reject nothing while the two weekend days reject 0.778% and
+0.788%. The counter is therefore measuring snapshot age, not a defect in the
+real-time feed and not anything specific to weekends: the feed was internally
+consistent with the static build in force on each of those days, and this
+archive is missing that build. A reader should treat routes 30 and 10 as
+absent from the processed output for 2026-08-29 and 2026-08-30 rather than as
+having run at an unusual speed. Both days are weekends and so fall outside
+the Monday to Friday median in any case.
+
 **Export.** `scripts/export_web.py` writes segment geometry once and
 references it by index from one file per 15-minute slot, so a timeline
 scrubs without downloading the whole corpus. Bins below the `--min-samples`
@@ -290,7 +328,11 @@ Stated here rather than left for a reader to discover independently:
   or schedule change the agency made inside that window is attributed to the
   older shape. Of the 32 `shape_id`s whose geometry differs between the
   2026-08-27 and 2026-08-31 snapshots, an unknown share changed during those
-  three unobserved days rather than on the 31st.
+  three unobserved days rather than on the 31st. The gap costs more than
+  geometry: the 7,284 records rejected on 2026-08-29 and 2026-08-30 carry
+  trip identifiers minted by a build in that window and held by no snapshot
+  here, which removes routes 30 and 10 from the processed output for both
+  days (see Preprocessing for the full trace).
 
 ## Versioning
 
