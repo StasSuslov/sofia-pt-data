@@ -10,33 +10,33 @@ from collect import (
     dated_output_path,
     fetch_vehicle_positions,
     heartbeat_path_for,
-    is_valid_sofia_coordinate,
+    is_in_network_bbox,
     ping_healthcheck,
 )
 
 SOFIA_TZ = ZoneInfo("Europe/Sofia")
 
 
-def test_valid_sofia_coordinate_inside_bbox():
-    assert is_valid_sofia_coordinate(42.6977, 23.3219)  # central Sofia
+def test_coordinate_inside_bbox():
+    assert is_in_network_bbox(42.6977, 23.3219)  # central Sofia
 
 
-def test_valid_sofia_coordinate_peripheral_settlement():
+def test_coordinate_in_peripheral_settlement():
     # Zhelyava (lon 23.605) — real ЦГМ-served village, sat outside the old,
     # too-narrow bbox (lon_max 23.55) and was silently discarded as if it
     # were a teleportation artifact. Must be valid under the corrected bbox.
-    assert is_valid_sofia_coordinate(42.745, 23.605)
+    assert is_in_network_bbox(42.745, 23.605)
 
 
 def test_invalid_coordinate_outside_bbox():
-    assert not is_valid_sofia_coordinate(43.2141, 27.9147)  # Varna — known teleportation case
+    assert not is_in_network_bbox(43.2141, 27.9147)  # Varna — known teleportation case
 
 
 def test_invalid_coordinate_just_outside_each_edge():
-    assert not is_valid_sofia_coordinate(42.44, 23.30)   # below lat_min
-    assert not is_valid_sofia_coordinate(42.91, 23.30)   # above lat_max
-    assert not is_valid_sofia_coordinate(42.65, 23.02)   # below lon_min
-    assert not is_valid_sofia_coordinate(42.65, 23.67)   # above lon_max
+    assert not is_in_network_bbox(42.44, 23.30)   # below lat_min
+    assert not is_in_network_bbox(42.91, 23.30)   # above lat_max
+    assert not is_in_network_bbox(42.65, 23.02)   # below lon_min
+    assert not is_in_network_bbox(42.65, 23.67)   # above lon_max
 
 
 def test_dated_output_path_same_day():

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Derive collect.py's SOFIA_BBOX from a GTFS Static feed, so the bounds are
+Derive config.py's NETWORK_BBOX from a GTFS Static feed, so the bounds are
 auditable and reproducible rather than an assertion in a comment.
 
-The bbox in collect.py was originally hand-picked and turned out to be
+The bbox was originally hand-picked and turned out to be
 narrower than the real network on all four sides, silently discarding ~11%
 of routes as if they were the GTFS-RT teleportation bug the filter exists to
 catch (see METHODOLOGY.md). The corrected bbox was derived from this
@@ -16,7 +16,7 @@ Usage:
     python scripts/derive_bbox.py data/sofia/static/gtfs_2026-08-27.zip
     python scripts/derive_bbox.py data/sofia/static/gtfs_2026-08-27.zip --margin 0.04
 
-Note: the values actually committed in collect.py's SOFIA_BBOX were rounded
+Note: the values actually committed in config.py's NETWORK_BBOX were rounded
 by hand from an earlier run of this same computation for readability — don't
 expect this script's suggested values to match it to the decimal place, only
 to be in the same ballpark and to cover the same measured extent.
@@ -72,7 +72,7 @@ def main():
     print(f"Measured network extent (no margin): lat {lat_min:.4f}-{lat_max:.4f}, lon {lon_min:.4f}-{lon_max:.4f}")
 
     m = args.margin
-    print(f"\nWith {m}° margin, suggested SOFIA_BBOX:")
+    print(f"\nWith {m}° margin, suggested NETWORK_BBOX:")
     print(f'    "lat_min": {lat_min - m:.2f},')
     print(f'    "lat_max": {lat_max + m:.2f},')
     print(f'    "lon_min": {lon_min - m:.2f},')

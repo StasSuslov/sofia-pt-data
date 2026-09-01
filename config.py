@@ -11,8 +11,9 @@ collector's runtime installed.
 BASE_URL moved here from collect.py so scripts/archive_static_feed.py can
 build the static feed's URL without importing collect.py and dragging in
 requests and the protobuf bindings, the same reasoning as the day-file
-helpers below. SOFIA_BBOX still lives in collect.py: see CLAUDE.md D2,
-which remains a stated goal, not a fully implemented architecture.
+helpers below. NETWORK_BBOX followed it on 2026-09-01, for the separate
+reason that the bounds are configuration for whichever city the pipeline is
+pointed at, not collector logic.
 
 Also holds the day-file helpers shared by generate_manifest.py and
 segment_speeds.py: both need to find a <date>.jsonl day file and its
@@ -29,6 +30,24 @@ DEFAULT_INTERVAL_SEC = 45   # poll every 45 seconds
 DEFAULT_HOURS = 24
 DEFAULT_TIMEZONE = "Europe/Sofia"
 BASE_URL = "https://gtfs.sofiatraffic.bg"
+
+# Bounding box of the configured city's network (currently Sofia). Coordinates
+# outside it are discarded at collection time (known GTFS-RT teleportation bug
+# where vehicles appear far outside the service area, e.g. the Black Sea).
+# Derived 2026-08-28 from the actual GTFS Static network extent
+# (data/sofia/static/gtfs_2026-08-27.zip: stops.txt + shapes.txt combined give
+# lat 42.4788-42.8546, lon 23.0778-23.6075) plus a margin for GPS drift near
+# the edges, not hand-picked; scripts/derive_bbox.py re-runs that derivation.
+# The original bbox (lat 42.57-42.80, lon 23.15-23.55) was narrower than the
+# real network on all four sides and silently discarded ~11% of routes serving
+# peripheral settlements (e.g. Kurilo, Zhelyava, Yana, Klisura) as if they
+# were teleportation artifacts, see METHODOLOGY.md.
+NETWORK_BBOX = {
+    "lat_min": 42.45,
+    "lat_max": 42.90,
+    "lon_min": 23.03,
+    "lon_max": 23.66,
+}
 
 
 def date_from_path(path: Path) -> str:

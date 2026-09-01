@@ -38,13 +38,23 @@ from zoneinfo import ZoneInfo
 import requests
 from google.transit import gtfs_realtime_pb2
 
-from config import BASE_URL, DEFAULT_HOURS, DEFAULT_INTERVAL_SEC, DEFAULT_TIMEZONE
+from config import (
+    BASE_URL,
+    DEFAULT_HOURS,
+    DEFAULT_INTERVAL_SEC,
+    DEFAULT_TIMEZONE,
+    NETWORK_BBOX,
+)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 # BASE_URL itself now lives in config.py (see that module's docstring) so
 # scripts/archive_static_feed.py can reuse it without importing this file's
-# network dependencies.
+# network dependencies. NETWORK_BBOX lives there too, with the comment
+# recording how its bounds were measured: the bounds are configuration for
+# whichever city the pipeline is pointed at, not collector logic. The filter
+# itself stays here, in the collection path, where it drops a bad coordinate
+# before it can reach the archive.
 
 # Candidate paths to try during discovery.
 # Confirmed via urbandata.sofia.bg (Ниво 1 open data, CC BY 4.0) 2026-08-20:
@@ -58,33 +68,16 @@ CANDIDATE_PATHS = [
     "/api/v1/alerts",
 ]
 
-# Sofia bounding box — coordinates outside this range are discarded (known
-# GTFS-RT teleportation bug where vehicles appear far outside the service
-# area, e.g. the Black Sea). Derived 2026-08-28 from the actual GTFS Static
-# network extent (data/sofia/static/gtfs_2026-08-27.zip: stops.txt + shapes.txt
-# combined give lat 42.4788-42.8546, lon 23.0778-23.6075) plus a margin for
-# GPS drift near the edges — not hand-picked. The original bbox (lat
-# 42.57-42.80, lon 23.15-23.55) was narrower than the real network on all
-# four sides and silently discarded ~11% of routes serving peripheral
-# settlements (e.g. Kurilo, Zhelyava, Yana, Klisura) as if they were
-# teleportation artifacts — see METHODOLOGY.md.
-SOFIA_BBOX = {
-    "lat_min": 42.45,
-    "lat_max": 42.90,
-    "lon_min": 23.03,
-    "lon_max": 23.66,
-}
-
 # Poll cadence lives in config.py, imported at the top of this file, so
 # scripts/generate_manifest.py can audit coverage against the same numbers
 # without importing this module's network dependencies.
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def is_valid_sofia_coordinate(lat: float, lon: float) -> bool:
+def is_in_network_bbox(lat: float, lon: float) -> bool:
     return (
-        SOFIA_BBOX["lat_min"] <= lat <= SOFIA_BBOX["lat_max"]
-        and SOFIA_BBOX["lon_min"] <= lon <= SOFIA_BBOX["lon_max"]
+        NETWORK_BBOX["lat_min"] <= lat <= NETWORK_BBOX["lat_max"]
+        and NETWORK_BBOX["lon_min"] <= lon <= NETWORK_BBOX["lon_max"]
     )
 
 
@@ -114,7 +107,7 @@ class PollResult(NamedTuple):
     poll_ts: int
     entities_total: int            # feed entities that are vehicles at all
     vehicles_with_position: int    # ...and report a position
-    dropped_out_of_bbox: int       # ...but fell outside SOFIA_BBOX
+    dropped_out_of_bbox: int       # ...but fell outside NETWORK_BBOX
 
 
 def fetch_vehicle_positions(url: str, session: requests.Session) -> PollResult:
@@ -166,7 +159,7 @@ def fetch_vehicle_positions(url: str, session: requests.Session) -> PollResult:
         lat = v.position.latitude
         lon = v.position.longitude
 
-        if not is_valid_sofia_coordinate(lat, lon):
+        if not is_in_network_bbox(lat, lon):
             dropped_out_of_bbox += 1
             continue
 
