@@ -47,6 +47,107 @@ without confirmation from a feed.
 - Vehicle speed between consecutive snapshots is interpolated from
   position and elapsed time, not measured directly by the feed.
 
+## Preprocessing
+
+Two scripts stand between the raw archive and anything a reader sees.
+`scripts/segment_speeds.py` turns vehicle positions into speed samples
+attached to a piece of network; `scripts/export_web.py` turns the
+aggregate into the files a map fetches. Every threshold named below is
+written into the output itself (`thresholds` in `typical_weekday.json`,
+`preprocessing_thresholds` in the web export's `manifest.json`), so the
+figures a reader checks come from the run rather than from this document.
+
+**Pairing.** Records are grouped by `(vehicle_id, trip_id)` and sorted by
+`snapshot_ts`. A speed sample always comes from two consecutive positions
+within one such group, never from two vehicles and never across two
+separate runs of the same vehicle over the same road.
+
+**Projection.** `trips.txt` maps `trip_id` to a `shape_id`, and `shapes.txt`
+gives that shape as an ordered polyline carrying the cumulative haversine
+distance at every vertex. A raw position is projected onto the nearest
+polyline segment and recorded as a distance along the shape. That
+nearest-segment search runs in a local equirectangular projection, because
+projecting a point onto a line segment needs planar geometry; every distance
+that reaches the output is the cumulative haversine value, so the planar
+approximation only decides which segment is closest, never how far a vehicle
+travelled.
+
+**Sliding window.** The search is confined to the vertices around the
+previous match: from 350 m behind it (a 50 m backward tolerance plus a 300 m
+margin) to `100 km/h × dt` ahead of it plus the same margin, located by
+binary search over the cumulative distances. The window is anchored on
+distance rather than on a count of vertices, because vertex spacing in this
+feed is uneven: a median of 12.7 m and a 99th percentile of 174.6 m in the
+2026-08-27 snapshot. A fixed vertex count would be wastefully wide on the
+dense stretches and too narrow to contain a plausible match on the sparse
+ones.
+
+The window exists for cost. The 2026-08-27 snapshot carries 785,972 shape
+points across 1,868 shapes, a median of 316 points per shape, and a position
+with no previous match to search around has to be tested against its own
+shape end to end. Measured over 200,000 positions from 2026-08-31 projected
+against the 2026-08-31 snapshot, the full scan cost 180 µs per position
+against 28 µs for the windowed search on the same records, a factor of 6.5.
+The full scan is still used in the three cases where a window is
+unavailable or meaningless: the first position of a group, a pair whose
+timestamps do not advance, and a pair separated by more than the maximum
+gap.
+
+**Sample.** Speed is the change in along-shape distance divided by the
+change in timestamp. The sample is attributed to the 200 m bin the later of
+the two positions falls in (`distance // 200`), and to the 15-minute
+local-time slot of the later timestamp. Every accepted sample is written to
+`segment_speeds_<date>.jsonl` with both timestamps, the distance and the
+elapsed time behind it, so a reader can recompute the number rather than
+accept it.
+
+**Rejections.** Six named counters, reported per day and in total in
+`typical_weekday.json`. No record is discarded without one of them moving:
+
+| Counter | Meaning |
+|---|---|
+| `trip_not_in_static` | the record's `trip_id` has no row in the matched snapshot's `trips.txt` |
+| `shape_not_found` | the trip resolves, but its shape has fewer than two usable points |
+| `non_positive_time_delta` | duplicate or out-of-order timestamps inside one group |
+| `gap_too_large` | more than 600 s between the two positions |
+| `moved_backward` | along-shape distance fell by more than 50 m |
+| `speed_too_high` | derived speed above 100 km/h |
+
+The first two count records, the other four count consecutive pairs. The
+600 s gap cutoff is several times the 45 s poll interval, far enough out
+that a straight line drawn across it would more likely hide a layover, a
+missed poll run or a detour than describe a slow stretch. The 50 m backward
+tolerance absorbs GPS wobble and a position snapping onto the wrong branch
+near a shape self-crossing, while a larger reversal is treated as a failed
+match. 100 km/h is a wide margin over anything this network runs.
+
+The two denominators are kept apart, since totalling the six counters
+against one of them would misstate every rate in the table. The run on
+record covers five days and 2,625,503 records, of which 7,348 (0.280%) were
+rejected as `trip_not_in_static` and none as `shape_not_found`. It yielded
+2,566,958 consecutive pairs, of which 2,561,080 became samples and 5,878
+(0.229%) were rejected: `moved_backward` 4,850, `speed_too_high` 567,
+`gap_too_large` 461, `non_positive_time_delta` none.
+
+The distribution matters more than the total. Of the 7,348 unmatched trips,
+7,284 fall on 2026-08-29 and 2026-08-30, the two days processed against a
+static snapshot two and three days old by then. 2026-08-27 and 2026-08-28,
+processed against the 2026-08-27 snapshot, contribute none; 2026-08-31,
+processed against a snapshot of its own date, contributes 64. A stale
+snapshot surfaces as one day's counter climbing, which is why the per-day
+breakdown sits next to the total instead of being averaged into it.
+
+**Export.** `scripts/export_web.py` writes segment geometry once and
+references it by index from one file per 15-minute slot, so a timeline
+scrubs without downloading the whole corpus. Bins below the `--min-samples`
+threshold (default 2, the smallest count at which a median is an aggregate
+rather than one relabelled raw reading) are dropped: on the current archive
+that retains 422,687 of 687,014 bins. `n_samples` ships with every surviving
+bin. Speed ships as an integer km/h for map colouring, with the float m/s
+and every sample behind it left in `segment_speeds_<date>.jsonl` and
+`typical_weekday.json`. A segment's drawn geometry is the straight chord
+between its two 200 m endpoints, not the true curve inside the bin.
+
 ## Aggregation
 
 - A "typical weekday" is defined as the median value per network segment
@@ -69,9 +170,17 @@ without confirmation from a feed.
   the same segment index silently pool speed samples from two different
   stretches of road into one median. With the geometry hash folded in,
   shapes whose points are unchanged between feed versions produce the same
-  key and keep pooling samples across them: 98.3% of shapes, across the
-  two snapshots collected so far. The 32 that changed produce different
-  keys instead, starting a new series that never merges with the old one.
+  key and keep pooling samples across them: 1,836 of the 1,868 shapes in
+  the 2026-08-27 snapshot, 98.3%, hash identically to their counterpart in
+  the 2026-08-31 one. The 32 that changed produce different keys instead,
+  starting a new series that never merges with the old one. The pattern
+  recurs rather than being confined to that one republish: between the
+  2026-08-31 and 2026-09-01 snapshots, another 9 `shape_id`s kept their
+  identifier and changed geometry underneath it.
+- Every median ships with the number of samples it was computed from
+  (`n_samples`), in `typical_weekday.json` and in the web export alike. A
+  median of two observations and a median of two hundred are otherwise
+  indistinguishable once rendered as one coloured line.
 - Raw daily observations are published alongside the median, not replaced
   by it, to preserve real day-to-day variability.
 
@@ -87,6 +196,18 @@ coverage is incomplete, rather than take completeness on trust.
 
 Stated here rather than left for a reader to discover independently:
 
+- The "typical weekday" currently rests on three weekdays, and two of them
+  are not full days. The aggregation on record covers 2026-08-27,
+  2026-08-28 and 2026-08-31: the first covers 52.45% of its calendar day
+  (collection began at 11:07 local), and the third was read while collection
+  for it was still running, 551,016 records against the 730,167 that day
+  eventually held. Both were flagged as incomplete in the web export's own
+  `manifest.json` when it was written, rather than only here. The median it
+  produces spans 687,014 (segment, timeslot) bins over 27,220 distinct
+  segments and 96 time slots, and 264,327 of those bins, 38.5%, rest on a
+  single observation; 32.2% have three or more. This is an archive early in
+  its life, and the numbers above should be read as a working pipeline's
+  output rather than as a description of how Sofia's network behaves.
 - The GTFS-RT feed does not include Sofia's metro — findings from this
   archive describe surface transport only.
 - Interpolated speed carries uncertainty proportional to the polling
@@ -98,6 +219,18 @@ Stated here rather than left for a reader to discover independently:
   by construction, even though it is derived from the network's actual
   extent rather than chosen arbitrarily. Any observed drop-out-of-bbox
   rate is published in each day's manifest rather than assumed to be zero.
+- That risk was realised at the start of the archive. The box in force
+  until 2026-08-28 17:04 local time was hand-picked and narrower than the
+  network on all four sides: checked against the 2026-08-27 static
+  snapshot, it excluded 281 of the feed's 4,468 stops (6.29%) and 83,664 of
+  its 785,972 shape points (10.64%), so vehicles serving the outlying
+  settlements were discarded as the teleport artifact the filter exists to
+  catch. The filter drops a record before it reaches disk, so nothing
+  survives to reconstruct: 2026-08-27, and 2026-08-28 up to that hour, are
+  incomplete at the edges of the network and cannot be repaired. The box in
+  use since (lat 42.45 to 42.90, lon 23.03 to 23.66) contains every stop and
+  shape point in that snapshot, whose own extent is lat 42.4788 to 42.8546,
+  lon 23.0778 to 23.6075.
 - Coverage is measured against calendar-day boundaries in local time,
   using the collector's configured poll interval as the denominator rather
   than the interval observed in the data. An earlier version measured from
@@ -142,7 +275,7 @@ Stated here rather than left for a reader to discover independently:
   complete days, together lose 2.342%.
   Of the 32 `shape_id`s the 2026-08-31 republish changed underneath (see
   Aggregation), 20 were actually observed under two distinct geometries in
-  the median built from 2026-08-28 and 2026-08-31. This is not a
+  the median built from 2026-08-27, 2026-08-28 and 2026-08-31. This is not a
   hypothetical edge case in the days collected so far. Per-day reject
   counts are kept in the output rather than only an archive-wide total, so
   a stale snapshot shows up as one day's count climbing instead of being

@@ -94,9 +94,12 @@ render.
 GTFS Static shape, turns consecutive same-trip positions into a speed
 sample for a 200 m segment of that shape, and aggregates Monday–Friday
 samples into a per-segment, per-15-minute-timeslot median (the "typical
-weekday", see METHODOLOGY.md's Aggregation section). Every rejected sample
-is counted by reason (unknown trip, implausible speed, a time gap too
-large to bridge, backward movement) rather than dropped silently.
+weekday", see METHODOLOGY.md's Aggregation section). Nothing is dropped
+silently: six named counters (`trip_not_in_static`, `shape_not_found`,
+`non_positive_time_delta`, `gap_too_large`, `moved_backward`,
+`speed_too_high`) are reported per day and in total, next to the thresholds
+that produced them. METHODOLOGY.md's Preprocessing section explains the
+projection, the thresholds and what each counter means.
 
 ```bash
 # one static feed for every day, three specific days
@@ -138,6 +141,15 @@ export's own known limitations) under `--output-dir` (default
 `<data_dir>/web/<mode>`, where `<mode>` is `typical_weekday` or the `--day`
 value).
 
+`--min-samples N` (default 2) drops bins built from fewer than N
+observations before anything is written. The count survives the threshold:
+`n_samples` ships with every retained bin, so a thin median stays visible to
+the client instead of being hidden by the cutoff. `--processed-dir` points
+the export at `segment_speeds.py`'s output if it was written somewhere other
+than `<data_dir>/processed`; `segment_speeds.py` itself takes `--timezone`
+(default `Europe/Sofia`), which fixes both the time-slot bins and which days
+count as Monday to Friday.
+
 Both scripts accept either a single GTFS Static zip (one feed for every day
 or bin processed) or a directory of `gtfs_<YYYY-MM-DD>.zip` snapshots. The
 directory form exists because the agency republishes the static feed from
@@ -149,7 +161,7 @@ snapshot did to one 2026-08-31 run and how the fix works.
 ## Tests
 
 ```bash
-python3 -m pytest test_collect.py scripts/test_generate_manifest.py
+python3 -m pytest
 ```
 
 ## Known limitations
@@ -162,7 +174,17 @@ python3 -m pytest test_collect.py scripts/test_generate_manifest.py
 - Coordinates outside Sofia's network bounding box are dropped at
   collection time — a known GTFS-RT coordinate-teleport artifact. The
   bbox is derived from the static feed (see `scripts/derive_bbox.py`) and
-  intended to be wide enough not to clip legitimate outlying routes.
+  intended to be wide enough not to clip legitimate outlying routes. An
+  earlier, hand-picked box was not, and it cost the outlying settlements
+  from 2026-08-27 to the afternoon of 2026-08-28; METHODOLOGY.md's Known
+  limitations section has the measured extent of that loss.
+- The feed reports vehicle speed in km/h in a field GTFS-RT specifies as
+  metres per second. The raw archive keeps the field under the name it
+  arrived with (`speed_ms`); preprocessed output calls it `feed_speed_kmh`,
+  because that is the unit the values are in. See METHODOLOGY.md.
+- The "typical weekday" median currently rests on three weekdays, two of
+  them incomplete. Read it together with the `n_samples` shipped next to
+  every median rather than as a settled figure.
 
 ## License
 
