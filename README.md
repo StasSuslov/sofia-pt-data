@@ -15,6 +15,11 @@ and analytical approach.
 - `scripts/generate_manifest.py` — produces a SHA256 + coverage manifest for
   a day's archive file, so a published dataset can be checked for
   completeness and integrity rather than taken on trust.
+- `scripts/verify_remote_checksums.py` — reads each closed day's checksum
+  off the collector host over `ssh` and records the comparison in that day's
+  manifest, so the archive is checked against what the collector actually
+  wrote rather than only against itself after `rsync`. Each file is checked
+  once; a mismatch exits with its own code, an unreachable host does not.
 - `scripts/derive_bbox.py` — recomputes the network bounding box from a
   GTFS Static feed's `stops.txt`/`shapes.txt`, so the bbox used for
   filtering is reproducible from data rather than hand-picked.
