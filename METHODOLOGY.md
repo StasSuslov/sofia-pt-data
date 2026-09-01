@@ -118,9 +118,17 @@ Stated here rather than left for a reader to discover independently:
 - The feed populates no bearing field at all, so direction of travel comes
   from the trip's shape_id in GTFS Static. direction_id, the usual field
   for this, is empty for every trip in the feed.
-- GTFS Static is republished by the agency from time to time, and
-  `feed_version` reads `1.0` in every snapshot collected so far, so it
-  cannot be used to tell one version from another. Each processed day is
+- GTFS Static is rebuilt by the agency every day, not occasionally. The
+  member timestamps inside the zip put the build at 03:33 local time,
+  identical to the second in the snapshots dated 2026-08-27, 2026-08-31 and
+  2026-09-01, and each snapshot's `feed_start_date` equals its own build
+  date. The contents differ substantively from one day to the next, not
+  only in the dates: between 2026-08-31 and 2026-09-01, `trips.txt`,
+  `stop_times.txt`, `shapes.txt`, `routes.txt`, `stops.txt` and
+  `calendar_dates.txt` all changed, while `agency.txt`, `transfers.txt`,
+  `translations.txt`, `pathways.txt`, `levels.txt` and `fare_attributes.txt`
+  were byte-identical. `feed_version` reads `1.0` in every snapshot
+  collected so far, so it cannot be used to tell one version from another. Each processed day is
   matched to the latest static snapshot dated on or before it; that date
   reflects when this archive observed the agency serving the feed, not the
   publisher's own `feed_start_date`, which is recorded alongside it so the
@@ -139,12 +147,17 @@ Stated here rather than left for a reader to discover independently:
   counts are kept in the output rather than only an archive-wide total, so
   a stale snapshot shows up as one day's count climbing instead of being
   averaged away against every other day.
-- Capturing GTFS Static snapshots on a schedule is not yet automated;
-  every snapshot in the archive so far has been taken by hand. Until that
-  changes, a feed republish that nobody notices means a day can get
-  processed against a superseded snapshot. That is visible in principle,
-  since that day's rejected-record count in the per-day breakdown climbs,
-  but not yet caught automatically.
+- Snapshots are captured on a schedule from 2026-09-01
+  (`scripts/archive_static_feed.py`, daily at 05:00 UTC, after the agency's
+  03:33 build), saving a dated copy only when the contents changed. Before
+  that, snapshots were taken by hand, and the archive holds none for
+  2026-08-28, 2026-08-29 or 2026-08-30. The agency serves only the current
+  build and no history, so those three cannot be recovered: each of those
+  days is processed against the snapshot dated 2026-08-27, and any geometry
+  or schedule change the agency made inside that window is attributed to the
+  older shape. Of the 32 `shape_id`s whose geometry differs between the
+  2026-08-27 and 2026-08-31 snapshots, an unknown share changed during those
+  three unobserved days rather than on the 31st.
 
 ## Versioning
 
