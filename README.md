@@ -187,9 +187,13 @@ python3 -m pytest
   metres per second. The raw archive keeps the field under the name it
   arrived with (`speed_ms`); preprocessed output calls it `feed_speed_kmh`,
   because that is the unit the values are in. See METHODOLOGY.md.
-- The "typical weekday" median currently rests on three weekdays, one of
-  them a partial day. Read it together with the `n_samples` shipped next to
-  every median rather than as a settled figure.
+- The "typical weekday" median currently rests on four weekdays, one of
+  them a partial day, and its statistical base is uneven across the map:
+  segments outside the old, narrower bbox (see above) drew on fewer of
+  those days and carry measurably fewer samples per bin. METHODOLOGY.md's
+  Known limitations section has the measured extent. Read it together with
+  the `n_samples` shipped next to every median rather than as a settled
+  figure.
 
 ## License
 

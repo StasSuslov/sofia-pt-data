@@ -234,19 +234,20 @@ coverage is incomplete, rather than take completeness on trust.
 
 Stated here rather than left for a reader to discover independently:
 
-- The "typical weekday" currently rests on three weekdays, one of them a
-  partial day. The aggregation on record covers 2026-08-27, 2026-08-28 and
-  2026-08-31; the first covers 52.45% of its calendar day, because
-  collection began at 11:07 local. That day is flagged as incomplete in the
-  web export's own `manifest.json`, rather than only here. Days still being
-  collected are left out of the aggregate entirely: their local copy reaches
-  only as far as the last pull, so folding one in would give a median that
-  changes under a reader who re-runs the pipeline an hour later. The median
-  spans 718,042 (segment, timeslot) bins over 27,542 distinct segments and
-  96 time slots, and 259,782 of those bins, 36.2%, rest on a single
-  observation; 36.4% have three or more. This is an archive early in
-  its life, and the numbers above should be read as a working pipeline's
-  output rather than as a description of how Sofia's network behaves.
+- The "typical weekday" currently rests on four weekdays, one of them a
+  partial day. The aggregation on record covers 2026-08-27, 2026-08-28,
+  2026-08-31 and 2026-09-01; the first covers 52.45% of its calendar day,
+  because collection began at 11:07 local. That day is flagged as
+  incomplete in the web export's own `manifest.json`, rather than only
+  here. Days still being collected are left out of the aggregate entirely:
+  their local copy reaches only as far as the last pull, so folding one in
+  would give a median that changes under a reader who re-runs the pipeline
+  an hour later. The median spans 787,433 (segment, timeslot) bins over
+  28,285 distinct segments and 96 time slots, and 212,309 of those bins,
+  26.96%, rest on a single observation; 49.52% have three or more. This is
+  an archive early in its life, and the numbers above should be read as a
+  working pipeline's output rather than as a description of how Sofia's
+  network behaves.
 - The GTFS-RT feed does not include Sofia's metro — findings from this
   archive describe surface transport only.
 - Interpolated speed carries uncertainty proportional to the polling
@@ -270,6 +271,20 @@ Stated here rather than left for a reader to discover independently:
   use since (lat 42.45 to 42.90, lon 23.03 to 23.66) contains every stop and
   shape point in that snapshot, whose own extent is lat 42.4788 to 42.8546,
   lon 23.0778 to 23.6075.
+  The bias does not stop at those two raw days: the median itself carries
+  it forward. Of the 26,046 segments in the current typical-weekday web
+  export, 1,803 (6.92%) have at least one endpoint outside the old box.
+  Those segments could only be sampled on the days collected under the
+  wider one: 2026-08-31, 2026-09-01, and the part of 2026-08-28 after
+  17:04 local. The remaining 24,243 segments could draw on all four
+  weekdays behind the median. Their bins carry fewer samples as a result,
+  a median n_samples of 2 against 3 for segments inside the old box (mean
+  2.46 against 4.11), across 15,167 of the export's 575,124 bins (2.64%).
+  The gap is real but short of the clean half a four-versus-two split
+  would suggest, consistent with the bbox transition falling mid-day on
+  2026-08-28 rather than on a day boundary. The per-bin `n_samples` field
+  already lets a reader see this; the scale of it was not previously
+  named.
 - Coverage is measured against calendar-day boundaries in local time,
   using the collector's configured poll interval as the denominator rather
   than the interval observed in the data. An earlier version measured from
