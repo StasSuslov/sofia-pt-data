@@ -1,0 +1,25 @@
+{
+    "title": "Sofia PT Data: an open archive and analysis pipeline for Sofia's public transport feeds",
+    "version": "1.0.0",
+    "upload_type": "software",
+    "access_right": "open",
+    "license": "mit",
+    "language": "eng",
+    "creators": [
+        {
+            "name": "Suslov, Stanislav",
+            "affiliation": "Independent researcher"
+        }
+    ],
+    "keywords": [
+        "public transport",
+        "GTFS",
+        "GTFS-RT",
+        "open data",
+        "urban mobility",
+        "transit data",
+        "Sofia",
+        "Bulgaria",
+        "reproducible research"
+    ]
+}
