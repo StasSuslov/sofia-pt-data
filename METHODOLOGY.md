@@ -5,6 +5,11 @@ ahead of any specific findings. The intent is to fix the method first, so
 later results can be checked against a method that didn't change to fit
 them.
 
+This method is archived on Zenodo alongside the code that implements it:
+[10.5281/zenodo.22256653](https://doi.org/10.5281/zenodo.22256653). Changes to the
+method arrive as new versions of that record, so a result can always be read
+against the method as it stood when the result was produced.
+
 ## Scope
 
 An independent archive of Sofia's public transport GTFS-RT and GTFS Static

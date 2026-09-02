@@ -1,5 +1,7 @@
 # Sofia PT Data
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22256653.svg)](https://doi.org/10.5281/zenodo.22256653)
+
 An independent, open-data archive and analysis pipeline for Sofia's public
 transport network. The goal is a reproducible dataset and methodology — not
 a product — built entirely from openly licensed sources.
@@ -194,6 +196,20 @@ python3 -m pytest
   Known limitations section has the measured extent. Read it together with
   the `n_samples` shipped next to every median rather than as a settled
   figure.
+
+## Citing
+
+Code and methodology are archived on Zenodo. The concept DOI below always
+resolves to the latest version; cite a specific version from the record's
+own page if you need the exact code a result was produced with.
+
+> Suslov, Stanislav (2026). *Sofia PT Data: an open archive and analysis
+> pipeline for Sofia's public transport feeds*. Zenodo.
+> https://doi.org/10.5281/zenodo.22256653
+
+The collected data is archived as a separate record under CC BY 4.0 and
+carries its own DOI. A citation of a result should name both: the data it
+rests on and the code that produced it.
 
 ## License
 

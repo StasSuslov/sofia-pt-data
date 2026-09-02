@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software or its methodology, please cite it as below."
+type: software
+title: "Sofia PT Data: an open archive and analysis pipeline for Sofia's public transport feeds"
+version: 1.0.0
+date-released: 2026-09-02
+license: MIT
+repository-code: "https://github.com/StasSuslov/sofia-pt-data"
+doi: 10.5281/zenodo.22256653
+authors:
+  - family-names: Suslov
+    given-names: Stanislav
+    orcid: "https://orcid.org/0009-0001-8916-0822"
+    affiliation: "Independent researcher"
+keywords:
+  - public transport
+  - GTFS
+  - GTFS-RT
+  - open data
+  - urban mobility
+  - transit data
+  - Sofia
+  - Bulgaria
+  - reproducible research
