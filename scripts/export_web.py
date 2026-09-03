@@ -48,15 +48,15 @@ one day) instead of loading typical_weekday.json, for the day switcher
 before threshold/geometry/writing — there is exactly one code path for
 turning that mapping into files.
 
-shape_key, not shape_id: segment_speeds.py keys everything by a
-content-addressed shape_key (shape_id plus a geometry hash — see its
-build_shape_key()) since a republished static feed can keep a shape_id
-while changing its geometry, and this script inherits that identity so a
-bin's geometry always resolves against the *correct* polyline version, not
-whichever one happened to load last. Route metadata (routes.txt/trips.txt)
-is still keyed by the bare shape_id, so build_geometry() converts back via
-shape_id_from_key() at that one lookup, not by treating shape_key as if it
-were the bare id.
+shape_key, not shape_id: segment_speeds.py keys everything by the shape
+geometry itself (see its build_shape_key()), because a republished static
+feed can keep a shape_id while changing its geometry *and* keep a geometry
+while changing its shape_id — both happened, a fortnight apart. This script
+inherits that identity, so a bin's geometry always resolves against the
+correct polyline and two ids for one road stay one row. Route metadata
+(routes.txt/trips.txt) is still keyed by the bare shape_id, so
+build_geometry() resolves it through the shape_ids load_static() reports
+for each key, which is a set rather than one id for exactly that reason.
 
 Static feed argument: either one zip (one feed for every bin, unchanged
 prior behaviour) or a directory of gtfs_<YYYY-MM-DD>.zip snapshots — see
@@ -108,7 +108,6 @@ from segment_speeds import (  # noqa: E402
     Shape,
     find_static_snapshots,
     load_static,
-    shape_id_from_key,
 )
 
 # ─── Constants: web export decisions (this file's job to pick, per task) ───
@@ -287,7 +286,7 @@ def load_route_info(gtfs_zip_path: Path) -> dict:
 
 def load_static_sources(static_source: Path) -> tuple:
     """Merges every static feed relevant to `static_source` into one
-    (shapes_by_key, route_info, loaded_paths) triple.
+    (shapes_by_key, route_info, shape_ids_by_key, loaded_paths) tuple.
 
     A single zip behaves exactly as before (one feed). A directory loads
     every gtfs_<YYYY-MM-DD>.zip snapshot found in it (find_static_snapshots,
@@ -298,6 +297,13 @@ def load_static_sources(static_source: Path) -> tuple:
     snapshots (routes.txt/trips.txt route associations didn't change, only
     32 shapes' geometry did) — a later snapshot's entry simply overwrites an
     identical earlier one.
+
+    shape_ids_by_key is unioned rather than overwritten across snapshots.
+    A shape_key is a geometry, and the agency has published one geometry
+    under several ids (2026-09-02: A4500-A4503 duplicating
+    A1192/A3949/A1221/A2710), so the ids that resolve route metadata for a
+    geometry accumulate across feeds instead of the newest feed's naming
+    hiding the older one's.
 
     Unlike segment_speeds.py, this script doesn't pick one snapshot per
     calendar day (that selection already happened upstream, producing the
@@ -317,18 +323,22 @@ def load_static_sources(static_source: Path) -> tuple:
 
     shapes_by_key = {}
     route_info = {}
+    shape_ids_by_key = defaultdict(set)
     for path in paths:
         print(f"Loading static feed {path} ...")
         t0 = time.time()
-        _, shapes = load_static(path)
+        _, shapes, ids_by_key = load_static(path)
         shapes_by_key.update(shapes)
+        for key, shape_ids in ids_by_key.items():
+            shape_ids_by_key[key].update(shape_ids)
         route_info.update(load_route_info(path))
         print(f"  {len(shapes):,} shapes ({time.time() - t0:.1f}s)")
 
-    return shapes_by_key, route_info, paths
+    return shapes_by_key, route_info, dict(shape_ids_by_key), paths
 
 
-def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | None = None) -> tuple:
+def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | None = None,
+                    shape_ids_by_key: dict | None = None) -> tuple:
     """Returns (geometry_dict, index_of, missing_count).
 
     index_of maps (shape_key, segment_index) -> its position in geometry's
@@ -337,22 +347,20 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
     static feed(s) don't cover whatever produced the speed data) are
     counted and skipped, never silently dropped without a trace.
 
-    Route metadata (shape_ids/shape_route_*) is grouped by the *bare*
-    shape_id (via shape_id_from_key), not the full shape_key:
-    routes.txt/trips.txt know nothing about a geometry hash, and two
-    geometry versions of the same shape_id are genuinely the same route
-    (CLAUDE.md's 2026-08-31 finding: the republished feed changed geometry,
-    not route associations) — treating them as separate route-metadata rows
-    would only inflate the export for no benefit. Segment *coordinates*
-    still resolve through the full shape_key below, so a bin is never drawn
-    against the wrong geometry version even when it shares a route-metadata
-    row with one that came from a different snapshot.
+    One row of shape metadata per shape_key, which is one geometry. The
+    agency's own shape_ids ride along as a *list* per row, because a
+    geometry can carry more than one of them: on 2026-09-02 it republished
+    A1192/A3949/A1221/A2710 as byte-identical A4500-A4503 and kept both.
+    routes.txt/trips.txt still key route associations by the bare id, so
+    the route metadata for a row is the union over that row's ids.
     """
     ordered = sorted(p for p in retained_pairs if p[0] in shapes_by_key)
     missing = sum(1 for p in retained_pairs if p[0] not in shapes_by_key)
 
-    bare_ids = sorted({shape_id_from_key(shape_key) for shape_key, _ in ordered})
-    shape_pos = {bare_id: i for i, bare_id in enumerate(bare_ids)}
+    shape_ids_by_key = shape_ids_by_key or {}
+    keys = sorted({shape_key for shape_key, _ in ordered})
+    shape_pos = {key: i for i, key in enumerate(keys)}
+    ids_per_key = [sorted(shape_ids_by_key.get(key, ())) for key in keys]
 
     shape_idx, segment_index, start_lat, start_lon, end_lat, end_lon = [], [], [], [], [], []
     index_of = {}
@@ -360,7 +368,7 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
         shape = shapes_by_key[shape_key]
         slat, slon = point_along_shape(shape, seg_idx * SEGMENT_LENGTH_M)
         elat, elon = point_along_shape(shape, (seg_idx + 1) * SEGMENT_LENGTH_M)
-        shape_idx.append(shape_pos[shape_id_from_key(shape_key)])
+        shape_idx.append(shape_pos[shape_key])
         segment_index.append(seg_idx)
         start_lat.append(slat)
         start_lon.append(slon)
@@ -372,13 +380,21 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
     # segment (tens of thousands): a type filter needs one lookup hop through
     # shape_idx, and the file stays small enough to keep loading once.
     route_info = route_info or {}
-    shape_route_ids = [route_info.get(sid, {}).get("route_ids", []) for sid in bare_ids]
-    shape_route_names = [route_info.get(sid, {}).get("route_names", []) for sid in bare_ids]
-    shape_route_type = [route_info.get(sid, {}).get("route_type") for sid in bare_ids]
+    shape_route_ids, shape_route_names, shape_route_type = [], [], []
+    for ids in ids_per_key:
+        infos = [route_info[sid] for sid in ids if sid in route_info]
+        shape_route_ids.append(sorted({r for i in infos for r in i["route_ids"]}))
+        shape_route_names.append(sorted({n for i in infos for n in i["route_names"]}))
+        # One type or nothing, same rule load_route_info() applies per id: a
+        # geometry served by both a tram and a bus can't answer a type
+        # filter, and guessing which to show would be worse than a null.
+        types = {i["route_type"] for i in infos if i["route_type"] is not None}
+        shape_route_type.append(types.pop() if len(types) == 1 else None)
 
     geometry = {
         "segment_length_m": SEGMENT_LENGTH_M,
-        "shape_ids": bare_ids,
+        "shape_keys": keys,
+        "shape_ids": ids_per_key,
         "shape_route_ids": shape_route_ids,
         "shape_route_names": shape_route_names,
         "shape_route_type": shape_route_type,
@@ -521,7 +537,7 @@ def main():
     processed_dir = args.processed_dir or (args.data_dir / "processed")
     output_root = args.output_dir or (args.data_dir / "web")
 
-    shapes_by_key, route_info, static_paths = load_static_sources(args.static_source)
+    shapes_by_key, route_info, shape_ids_by_key, static_paths = load_static_sources(args.static_source)
     static_feed_names = [p.name for p in static_paths]
 
     if args.day:
@@ -565,7 +581,8 @@ def main():
     retained, n_before, n_after = apply_threshold(bins, args.min_samples)
     pairs_after = segment_pairs(retained)
 
-    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_key, route_info)
+    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_key, route_info,
+                                                         shape_ids_by_key)
     timeslot_files = build_timeslot_files(retained, index_of)
 
     # This script owns everything under out_dir once it exists, so rebuild

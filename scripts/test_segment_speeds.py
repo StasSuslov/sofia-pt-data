@@ -18,13 +18,14 @@ from segment_speeds import (
     build_shape_key,
     build_typical_weekday,
     count_multi_geometry_shape_ids,
+    count_multi_id_geometries,
     find_static_snapshots,
+    next_snapshot_after,
     haversine_m,
     load_static,
     pick_snapshot_for_day,
     process_day,
     project_point,
-    shape_id_from_key,
     timeslot_for,
     window_bounds,
 )
@@ -122,7 +123,9 @@ VEHICLE_ID = "V1"
 
 
 def _trip_map_and_shapes():
-    trip_map = {TRIP_ID: (ROUTE_ID, SHAPE_ID)}
+    # Third field is the shape_key; these tests don't care what it hashes
+    # to, only that it addresses the shape, so the bare id stands in.
+    trip_map = {TRIP_ID: (ROUTE_ID, SHAPE_ID, SHAPE_ID)}
     shapes_by_id = {SHAPE_ID: build_shape(STRAIGHT_LINE)}
     return trip_map, shapes_by_id
 
@@ -256,15 +259,17 @@ def test_validation_compares_both_sides_in_kmh(tmp_path: Path):
 
 # ─── Content-addressed shape identity (2026-08-31 republished-feed bug) ────
 
-def _write_static_zip(tmp_path: Path, filename: str, points: list) -> Path:
+def _write_static_zip(tmp_path: Path, filename: str, points: list,
+                      shape_id: str = SHAPE_ID) -> Path:
     """Minimal single-shape/single-trip GTFS zip, parametrized on the
-    shape's own points -- same fixture shape as test_export_web.py's
-    _write_static_zip, but built here so two zips can share a shape_id while
-    differing only in geometry (the exact 2026-08-31 scenario)."""
+    shape's own points and its id -- same fixture shape as
+    test_export_web.py's _write_static_zip, but built here so two zips can
+    share a shape_id while differing only in geometry (the 2026-08-31
+    scenario) or share the geometry under two ids (the 2026-09-02 one)."""
     routes = ["route_id,route_short_name,route_type", f"{ROUTE_ID},9,3"]
-    trips = ["trip_id,route_id,service_id,shape_id", f"{TRIP_ID},{ROUTE_ID},SVC,{SHAPE_ID}"]
+    trips = ["trip_id,route_id,service_id,shape_id", f"{TRIP_ID},{ROUTE_ID},SVC,{shape_id}"]
     shapes = ["shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence"]
-    shapes += [f"{SHAPE_ID},{lat},{lon},{i}" for i, (lat, lon) in enumerate(points)]
+    shapes += [f"{shape_id},{lat},{lon},{i}" for i, (lat, lon) in enumerate(points)]
 
     path = tmp_path / filename
     with zipfile.ZipFile(path, "w") as z:
@@ -281,11 +286,11 @@ def test_load_static_identical_geometry_across_zips_produces_the_same_shape_key(
     zip_a = _write_static_zip(tmp_path, "gtfs_a.zip", STRAIGHT_LINE)
     zip_b = _write_static_zip(tmp_path, "gtfs_b.zip", list(STRAIGHT_LINE))  # same points, different list object
 
-    trip_map_a, shapes_a = load_static(zip_a)
-    trip_map_b, shapes_b = load_static(zip_b)
+    trip_map_a, shapes_a, _ = load_static(zip_a)
+    trip_map_b, shapes_b, _ = load_static(zip_b)
 
-    _, key_a = trip_map_a[TRIP_ID]
-    _, key_b = trip_map_b[TRIP_ID]
+    _, _, key_a = trip_map_a[TRIP_ID]
+    _, _, key_b = trip_map_b[TRIP_ID]
     assert key_a == key_b
     assert set(shapes_a) == set(shapes_b) == {key_a}
 
@@ -303,13 +308,13 @@ def test_load_static_different_geometry_same_shape_id_produces_different_keys(tm
     shifted = [(lat + 0.05, lon) for lat, lon in STRAIGHT_LINE]  # same shape_id, geometry moved ~5.5km
     zip_b = _write_static_zip(tmp_path, "gtfs_b.zip", shifted)
 
-    trip_map_a, shapes_a = load_static(zip_a)
-    trip_map_b, shapes_b = load_static(zip_b)
+    trip_map_a, shapes_a, ids_a = load_static(zip_a)
+    trip_map_b, shapes_b, ids_b = load_static(zip_b)
 
-    _, key_a = trip_map_a[TRIP_ID]
-    _, key_b = trip_map_b[TRIP_ID]
+    _, _, key_a = trip_map_a[TRIP_ID]
+    _, _, key_b = trip_map_b[TRIP_ID]
     assert key_a != key_b
-    assert shape_id_from_key(key_a) == shape_id_from_key(key_b) == SHAPE_ID
+    assert ids_a[key_a] == ids_b[key_b] == {SHAPE_ID}
     # Merging both feeds' shapes (as segment_speeds.py's main() does across
     # snapshots) must keep both geometries addressable, never overwrite one.
     merged = {**shapes_a, **shapes_b}
@@ -328,8 +333,8 @@ def test_process_day_never_pools_samples_across_geometry_versions(tmp_path: Path
     shifted = [(lat + 0.05, lon) for lat, lon in STRAIGHT_LINE]
     zip_b = _write_static_zip(tmp_path, "gtfs_b.zip", shifted)
 
-    trip_map_a, shapes_a = load_static(zip_a)
-    trip_map_b, shapes_b = load_static(zip_b)
+    trip_map_a, shapes_a, _ = load_static(zip_a)
+    trip_map_b, shapes_b, _ = load_static(zip_b)
 
     lat0, lon0 = STRAIGHT_LINE[2]
     lat1, lon1 = STRAIGHT_LINE[3]
@@ -352,24 +357,42 @@ def test_process_day_never_pools_samples_across_geometry_versions(tmp_path: Path
     assert sample_a["shape_key"] != sample_b["shape_key"]
 
 
-def test_shape_id_from_key_round_trips_through_build_shape_key():
-    key = build_shape_key(SHAPE_ID, [(lat, lon) for lat, lon in STRAIGHT_LINE])
-    assert shape_id_from_key(key) == SHAPE_ID
+def test_renumbered_shape_id_on_identical_geometry_keeps_one_key(tmp_path: Path):
+    """
+    The 2026-09-02 finding: the agency kept the geometry and changed the
+    shape_id, publishing A4500-A4503 as byte-identical copies of
+    A1192/A3949/A1221/A2710. Under the old shape_id@hash key that split
+    every affected segment into two series that could never merge again.
+    The key is the geometry alone, so it must not move.
+    """
+    zip_a = _write_static_zip(tmp_path, "gtfs_a.zip", STRAIGHT_LINE)
+    zip_b = _write_static_zip(tmp_path, "gtfs_b.zip", STRAIGHT_LINE, shape_id="S9")
 
+    trip_map_a, _, _ = load_static(zip_a)
+    trip_map_b, _, ids_b = load_static(zip_b)
 
-def test_shape_id_from_key_leaves_a_bare_id_without_at_sign_unchanged():
-    # Test fixtures elsewhere in this suite (and in test_export_web.py) pass
-    # bare strings like "S1" as stand-ins for a shape_key; this must not
-    # corrupt them, since nothing downstream can tell a real key from a
-    # test's bare stand-in.
-    assert shape_id_from_key("S1") == "S1"
+    _, shape_id_a, key_a = trip_map_a[TRIP_ID]
+    _, shape_id_b, key_b = trip_map_b[TRIP_ID]
+    assert shape_id_a != shape_id_b
+    assert key_a == key_b
+    assert ids_b[key_b] == {"S9"}
 
 
 def test_count_multi_geometry_shape_ids_counts_only_ids_with_more_than_one_geometry():
-    key_a1 = build_shape_key("A", [(0.0, 0.0), (0.001, 0.0)])
-    key_a2 = build_shape_key("A", [(1.0, 1.0), (1.001, 1.0)])  # same id, different geometry
-    key_b = build_shape_key("B", [(2.0, 2.0), (2.001, 2.0)])   # single geometry, never repeated
-    assert count_multi_geometry_shape_ids([key_a1, key_a2, key_b]) == 1
+    key_a1 = build_shape_key([(0.0, 0.0), (0.001, 0.0)])
+    key_a2 = build_shape_key([(1.0, 1.0), (1.001, 1.0)])
+    key_b = build_shape_key([(2.0, 2.0), (2.001, 2.0)])
+    # "A" published under two geometries, "B" under one.
+    shape_ids_by_key = {key_a1: {"A"}, key_a2: {"A"}, key_b: {"B"}}
+    assert count_multi_geometry_shape_ids(shape_ids_by_key) == 1
+
+
+def test_count_multi_id_geometries_counts_only_geometries_with_more_than_one_id():
+    key_shared = build_shape_key([(0.0, 0.0), (0.001, 0.0)])
+    key_single = build_shape_key([(2.0, 2.0), (2.001, 2.0)])
+    # One geometry republished under a second id (A4500 over A1192), one not.
+    shape_ids_by_key = {key_shared: {"A1192", "A4500"}, key_single: {"B"}}
+    assert count_multi_id_geometries(shape_ids_by_key) == 1
 
 
 # ─── Per-day static snapshot selection ─────────────────────────────────────
@@ -402,6 +425,99 @@ def test_pick_snapshot_for_day_after_the_last_snapshot_uses_the_latest_one():
     assert (snap_date, path.name, is_fallback) == ("2026-08-31", "b.zip", False)
 
 
+def test_find_static_snapshots_orders_an_intra_day_capture_after_its_plain_sibling(tmp_path: Path):
+    (tmp_path / "gtfs_2026-09-10.zip").write_bytes(b"")
+    (tmp_path / "gtfs_2026-09-10T1100.zip").write_bytes(b"")
+    (tmp_path / "gtfs_2026-09-11.zip").write_bytes(b"")
+
+    snapshots = find_static_snapshots(tmp_path)
+    assert [p.name for _, p in snapshots] == [
+        "gtfs_2026-09-10.zip", "gtfs_2026-09-10T1100.zip", "gtfs_2026-09-11.zip",
+    ]
+
+
+def test_a_day_with_an_intra_day_capture_is_scored_against_its_morning_snapshot():
+    """
+    Once the archive captures hourly, the day of a mid-day republish owns two
+    snapshots. The day's own feed is the morning one -- the feed it started
+    under -- and the intra-day sibling has to stay reachable as the fallback,
+    or every record from before the republish would be scored against a feed
+    that did not exist yet while the morning capture sat behind the fallback
+    pointer where nothing reads it.
+    """
+    snapshots = [("2026-09-10", Path("gtfs_2026-09-10.zip")),
+                 ("2026-09-10", Path("gtfs_2026-09-10T1100.zip")),
+                 ("2026-09-11", Path("gtfs_2026-09-11.zip"))]
+
+    snap_date, path, is_fallback = pick_snapshot_for_day(snapshots, "2026-09-10")
+    assert (snap_date, path.name, is_fallback) == ("2026-09-10", "gtfs_2026-09-10.zip", False)
+    assert next_snapshot_after(snapshots, path).name == "gtfs_2026-09-10T1100.zip"
+
+
+def test_a_later_day_uses_the_last_capture_of_the_preceding_date():
+    # The mirror case: by 2026-09-11 every republish of the 10th has already
+    # happened, so the intra-day capture is the current feed, not the morning
+    # one.
+    snapshots = [("2026-09-10", Path("gtfs_2026-09-10.zip")),
+                 ("2026-09-10", Path("gtfs_2026-09-10T1100.zip"))]
+    snap_date, path, is_fallback = pick_snapshot_for_day(snapshots, "2026-09-11")
+    assert (snap_date, path.name, is_fallback) == ("2026-09-10", "gtfs_2026-09-10T1100.zip", False)
+
+
+def test_next_snapshot_after_returns_the_following_one_and_none_at_the_end():
+    snapshots = [("2026-09-02", Path("b.zip")), ("2026-09-03", Path("c.zip"))]
+    assert next_snapshot_after(snapshots, Path("b.zip")).name == "c.zip"
+    assert next_snapshot_after(snapshots, Path("c.zip")) is None
+
+
+def test_a_trip_the_days_own_feed_does_not_know_resolves_against_the_next_feed(tmp_path: Path):
+    """
+    The 2026-09-02 recovery: the agency renumbered 157 trips at midday, the
+    RT stream switched to the new trip_ids at once, and the day's own
+    snapshot -- taken that morning -- knew none of them. They are all in the
+    next morning's capture, so the day's records must resolve against it
+    instead of being rejected as trip_not_in_static.
+    """
+    trip_map, shapes_by_id = _trip_map_and_shapes()
+    renumbered = "T_NEW"
+    next_trip_map = {renumbered: (ROUTE_ID, SHAPE_ID, SHAPE_ID)}
+
+    lat0, lon0 = STRAIGHT_LINE[2]
+    lat1, lon1 = STRAIGHT_LINE[3]
+    day_path = tmp_path / "2026-09-02.jsonl"
+    _write_day(day_path, [_rec(1000, lat0, lon0, trip_id=renumbered),
+                          _rec(1045, lat1, lon1, trip_id=renumbered)])
+    out_path = tmp_path / "out.jsonl"
+
+    stats = process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA,
+                        defaultdict(list), [], next_trip_map)
+
+    assert stats.reject_counts["trip_not_in_static"] == 0
+    assert stats.records_from_next_feed == 2
+    assert stats.trips_from_next_feed == {renumbered}
+    assert len(out_path.read_text().splitlines()) == 1
+
+
+def test_the_days_own_feed_wins_when_both_know_the_trip(tmp_path: Path):
+    # The next feed is a fallback, never an override: a day stays scored
+    # against the feed it was actually collected under wherever that feed
+    # has an answer.
+    trip_map, shapes_by_id = _trip_map_and_shapes()
+    next_trip_map = {TRIP_ID: ("OTHER_ROUTE", SHAPE_ID, SHAPE_ID)}
+
+    lat0, lon0 = STRAIGHT_LINE[2]
+    lat1, lon1 = STRAIGHT_LINE[3]
+    day_path = tmp_path / "2026-09-02.jsonl"
+    _write_day(day_path, [_rec(1000, lat0, lon0), _rec(1045, lat1, lon1)])
+    out_path = tmp_path / "out.jsonl"
+
+    stats = process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA,
+                        defaultdict(list), [], next_trip_map)
+
+    assert stats.records_from_next_feed == 0
+    assert json.loads(out_path.read_text().splitlines()[0])["route_id"] == ROUTE_ID
+
+
 def test_pick_snapshot_for_day_before_the_earliest_snapshot_falls_back_and_says_so():
     # There is no feed on record from before the archive started; the
     # earliest available snapshot stands in, but is_fallback must say so
@@ -414,12 +530,12 @@ def test_pick_snapshot_for_day_before_the_earliest_snapshot_falls_back_and_says_
 # ─── Emitted bin key contract (export_web.py depends on key.split("|")) ────
 
 def test_typical_weekday_segment_key_still_splits_into_exactly_three_fields():
-    # shape_key contains "@" but must never contain "|" -- this is what lets
-    # export_web.py's key.split("|") keep working untouched even though the
-    # first field grew from a bare shape_id to shape_id@geom_hash.
-    shape_key = "S1@abcd1234"
+    # shape_key is bare hex and must never contain "|" -- this is what lets
+    # export_web.py's key.split("|") keep working untouched across both
+    # changes to the key's contents.
+    shape_key = build_shape_key([(0.0, 0.0), (0.001, 0.0)])
     agg = {(shape_key, 7, "11:00"): [10.0, 12.0]}
-    result = build_typical_weekday(agg, ["2026-08-27"], ["2026-08-27"], [], [], Counter(), {}, 0)
+    result = build_typical_weekday(agg, ["2026-08-27"], ["2026-08-27"], [], [], Counter(), {}, 0, 0)
 
     assert len(result["segments"]) == 1
     key = next(iter(result["segments"]))

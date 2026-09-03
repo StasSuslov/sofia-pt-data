@@ -132,29 +132,29 @@ near a shape self-crossing, while a larger reversal is treated as a failed
 match. 100 km/h is a wide margin over anything this network runs.
 
 I keep the two denominators apart: totalling the six counters against one of
-them would misstate every rate in the table. The run on record covers five
-days and 2,804,654 records, of which 7,348 (0.262%) were rejected as
-`trip_not_in_static` and none as `shape_not_found`. It yielded 2,742,870
-consecutive pairs, of which 2,736,587 became samples and 6,283 (0.229%) were
-rejected: `moved_backward` 5,209, `speed_too_high` 608, `gap_too_large` 466,
+them would misstate every rate in the table. The run on record covers seven
+days and 4,273,952 records, of which 2,578 (0.060%) were rejected as
+`trip_not_in_static` and none as `shape_not_found`. It yielded 4,189,084
+consecutive pairs, of which 4,179,545 became samples and 9,539 (0.228%) were
+rejected: `moved_backward` 8,014, `speed_too_high` 989, `gap_too_large` 536,
 `non_positive_time_delta` none.
 
-The distribution matters more than the total. Of the 7,348 unmatched trips,
-7,284 fall on 2026-08-29 and 2026-08-30, the two days processed against a
-static snapshot two and three days old by then. 2026-08-27 and 2026-08-28,
-processed against the 2026-08-27 snapshot, contribute none; 2026-08-31,
-processed against a snapshot of its own date, contributes 64. A stale
-snapshot surfaces as one day's counter climbing, which is why the per-day
-breakdown sits next to the total instead of being averaged into it.
+The distribution matters more than the total. All 2,578 unmatched trips fall
+on 2026-08-29, 2026-08-30 and 2026-08-31, and every one of them belongs to a
+single bus route, `A75` (short name 10): 1,266 and 1,248 records on the two
+weekend days, plus 64 on the 31st. The other four days contribute none. A
+stale snapshot surfaces as one day's counter climbing, which is why the
+per-day breakdown sits next to the total instead of being averaged into it.
 
-Those 7,284 records are not spread across the network. Every one of them
-belongs to one of two bus routes, `A109` (short name 30) and `A75` (short
-name 10), and on both days they account for 100% of those two routes'
-records: 2,367 and 1,266 on 2026-08-29, 2,403 and 1,248 on 2026-08-30, over
-77 and 78 distinct `trip_id`s. They spread across the service day at about
-200 records an hour from 05:00 to 23:00 local, so the pattern looks nothing
-like a peak-hour or a school-hour addition. No other route contributes a
-single unmatched record on either day.
+Before 2026-09-03 that counter read 7,348, and the extra 4,770 belonged to a
+second route, `A109` (short name 30): 2,367 records on 2026-08-29 and 2,403
+on 2026-08-30, over 48 distinct `trip_id`s, 100% of that route's records on
+both days. They spread across the service day at about 200 records an hour
+from 05:00 to 23:00 local, so the pattern looked nothing like a peak-hour or
+a school-hour addition. Those identifiers all appear in the 2026-08-31
+snapshot, and the pipeline now resolves them against it (see Known
+limitations). `A75`'s do not appear in any snapshot this archive holds, so
+they stay unmatched.
 
 The mechanism is the agency's `trip_id` format. A `trip_id` reads
 `<route_id>-<shape_id>-<direction>-<sequence>-<service_id>`, so renumbering
@@ -176,20 +176,21 @@ introduced it cannot be recovered.
 
 Weekday service identifiers for the same two routes, `34695955721` and
 `41453276541`, are identical in all three snapshots, which is why 2026-08-27
-and 2026-08-28 reject nothing while the two weekend days reject 0.778% and
-0.788%. So the counter measures the age of my snapshots. The feed was
+and 2026-08-28 reject nothing while the two weekend days reject 0.271% and
+0.269%. So the counter measures the age of my snapshots. The feed was
 internally consistent with the static build in force on each of those days,
-and this archive is missing that build. Read routes 30 and 10 as absent from
-the processed output for 2026-08-29 and 2026-08-30, with no claim about the
-speed they ran at. Both days are weekends and fall outside the Monday to
-Friday median in any case.
+and this archive is missing that build. Route 30 is recovered from the
+2026-08-31 snapshot, which holds its identifiers verbatim; read route 10 as
+absent from the processed output for 2026-08-29 and 2026-08-30, with no
+claim about the speed it ran at. Both days are weekends and fall outside the
+Monday to Friday median in any case.
 
 **Export.** `scripts/export_web.py` writes segment geometry once and
 references it by index from one file per 15-minute slot, so a timeline
 scrubs without downloading the whole corpus. Bins below the `--min-samples`
 threshold (default 2, the smallest count at which a median aggregates
-anything at all) are dropped: on the current archive that retains 458,260 of
-718,042 bins. `n_samples` ships with every surviving bin. Speed ships as an
+anything at all) are dropped: on the current archive that retains 649,070 of
+837,024 bins. `n_samples` ships with every surviving bin. Speed ships as an
 integer km/h for map colouring, with the float m/s and every sample behind
 it left in `segment_speeds_<date>.jsonl` and `typical_weekday.json`. The
 drawn geometry of a segment is the straight chord between its two 200 m
@@ -207,21 +208,28 @@ endpoints, so the true curve inside the bin is lost.
   200 m`. A time slot is a 15-minute local-time bin. `direction_id` is
   empty for every trip in this feed, so `shape_id`, distinct per direction
   and route variant, is what separates two directions of the same route.
-- For aggregation I address a shape by its content: the key is its
-  `shape_id` plus the first 8 hex characters of a SHA256 over its ordered
-  points. The agency republished GTFS Static on 2026-08-31, and 32
-  `shape_id`s kept their identifier while the geometry underneath them
-  changed (see Known limitations). Keying on the bare `shape_id` would pool
-  speed samples from two different stretches of road into one median, with
-  nothing in the output to show it happened. With the geometry hash folded
-  in, shapes whose points are unchanged between feed versions produce the
-  same key and keep pooling samples across them: 1,836 of the 1,868 shapes
-  in the 2026-08-27 snapshot, 98.3%, hash identically to their counterpart
-  in the 2026-08-31 one. The 32 that changed produce different keys instead,
-  starting a new series that never merges with the old one. The pattern
-  repeats past that one republish: between the 2026-08-31 and 2026-09-01
-  snapshots, another 9 `shape_id`s kept their identifier and changed
-  geometry underneath it.
+- For aggregation I address a shape by its content alone: the key is the
+  first 16 hex characters of a SHA256 over its ordered points, with no
+  `shape_id` in it. The publisher's identifiers move in both directions and
+  neither direction is safe to key on. The agency republished GTFS Static on
+  2026-08-31 with 32 `shape_id`s keeping their identifier while the geometry
+  underneath them changed, and again on 2026-09-02 keeping the geometry and
+  changing the identifier, shipping `A4500`–`A4503` as byte-identical copies
+  of `A1192`, `A3949`, `A1221` and `A2710` while leaving the originals in
+  the feed (see Known limitations). Keying on the bare `shape_id` would pool
+  speed samples from two different stretches of road into one median; keying
+  on `shape_id` plus the hash, which is what this pipeline did until
+  2026-09-03, splits one unchanged stretch of road into two series that
+  never merge again the moment the agency renumbers it. A bare geometry hash
+  survives both: shapes whose points are unchanged between feed versions
+  produce the same key and keep pooling samples across them (1,836 of the
+  1,868 shapes in the 2026-08-27 snapshot, 98.3%, hash identically to their
+  counterpart in the 2026-08-31 one), and a renumbered shape keeps the key
+  it already had. Both movements are counted in `typical_weekday.json`:
+  `multi_geometry_shape_id_count` is how many `shape_id`s appeared under
+  more than one geometry across the feeds loaded in a run, and
+  `multi_id_geometry_count` how many geometries appeared under more than one
+  `shape_id`. On the run of record, 48 and 19.
 - Every median ships with the number of samples it was computed from
   (`n_samples`), in `typical_weekday.json` and in the web export alike. A
   median of two observations and a median of two hundred are otherwise
@@ -241,17 +249,17 @@ coverage is incomplete and why, instead of taking completeness on trust.
 
 I would rather name these myself than leave you to find them:
 
-- The "typical weekday" rests on four weekdays, one of them a partial day.
-  The aggregation on record covers 2026-08-27, 2026-08-28, 2026-08-31 and
-  2026-09-01; the first covers 52.45% of its calendar day, because
+- The "typical weekday" rests on five weekdays, one of them a partial day.
+  The aggregation on record covers 2026-08-27, 2026-08-28, 2026-08-31,
+  2026-09-01 and 2026-09-02; the first covers 52.45% of its calendar day, because
   collection began at 11:07 local. That day is flagged as incomplete in the
   web export's own `manifest.json`, so a reader meets the caveat there too.
   Days still being collected stay out of the aggregate: their local copy
   reaches only as far as the last pull, so folding one in would give a
   median that changes under a reader who re-runs the pipeline an hour later.
-  The median spans 787,433 (segment, timeslot) bins over 28,285 distinct
-  segments and 96 time slots, and 212,309 of those bins, 26.96%, rest on a
-  single observation; 49.52% have three or more. This archive is a week old.
+  The median spans 837,024 (segment, timeslot) bins over 29,350 distinct
+  segments and 96 time slots, and 187,954 of those bins, 22.46%, rest on a
+  single observation; 57.93% have three or more. This archive is a week old.
   Read the numbers above as the output of a working pipeline. They do not
   yet describe how Sofia's network behaves.
 - The GTFS-RT feed carries no metro, so findings from this archive describe
@@ -322,10 +330,12 @@ I would rather name these myself than leave you to find them:
   `fare_attributes.txt` were byte-identical. `feed_version` reads `1.0` in
   every snapshot collected so far, which makes it useless for telling one
   version from another. Each processed day is matched to the latest static
-  snapshot dated on or before it; that date reflects when this archive
-  observed the agency serving the feed, and the publisher's own
-  `feed_start_date` is recorded alongside it so the two can be checked
-  against each other. No single snapshot fits the whole archive: processing
+  snapshot dated on or before it, and where that date is the day's own and
+  holds several captures, to the first of them — the feed the day started
+  under, with the later captures reachable as the fallback described below.
+  That date reflects when this archive observed the agency serving the feed,
+  and the publisher's own `feed_start_date` is recorded alongside it so the
+  two can be checked against each other. No single snapshot fits the whole archive: processing
   2026-08-31 against the snapshot dated 2026-08-27 rejects 26,289 records
   (7.013%) as unmatched to any known trip; against the snapshot dated
   2026-08-31 itself, 64 records (0.017%). Both figures come from the same
@@ -341,8 +351,10 @@ I would rather name these myself than leave you to find them:
   day's count climbing instead of being averaged away against every other
   day.
 - Snapshots are captured on a schedule from 2026-09-01
-  (`scripts/archive_static_feed.py`, daily at 05:00 UTC, after the agency's
-  03:33 build), saving a dated copy when the contents changed. Before that I
+  (`scripts/archive_static_feed.py`, hourly since 2026-09-03 and daily at
+  05:00 UTC before that), saving a dated copy only when the contents
+  changed, so the runs between midnight and the agency's 03:33 build write
+  nothing. Before that I
   took snapshots by hand, and the archive holds none for 2026-08-28,
   2026-08-29 or 2026-08-30. The agency serves the current build and keeps no
   history, so those three cannot be recovered: each of those days is
@@ -351,10 +363,26 @@ I would rather name these myself than leave you to find them:
   older shape. Of the 32 `shape_id`s whose geometry differs between the
   2026-08-27 and 2026-08-31 snapshots, an unknown share changed during those
   three unobserved days rather than on the 31st. The gap costs more than
-  geometry: the 7,284 records rejected on 2026-08-29 and 2026-08-30 carry
-  trip identifiers minted by a build in that window and held by no snapshot
-  here, which removes routes 30 and 10 from the processed output for both
-  days (see Preprocessing for the full trace).
+  geometry: the records rejected on 2026-08-29 and 2026-08-30 carry trip
+  identifiers minted by a build in that window. Where the next snapshot on
+  record turned out to hold them after all, they now resolve against it
+  (see the next bullet), which recovers route 30; route 10's identifiers
+  appear in no snapshot this archive holds and it stays absent from the
+  processed output for both days (see Preprocessing for the full trace).
+- A feed republished in the middle of a day is not in that day's own
+  snapshot. On 2026-09-02 the agency renumbered 157 trips of four routes at
+  around 11:00 local, hours after that day's capture, and the real-time
+  stream switched to the new identifiers at once: 10,166 records, 1.4% of
+  the day, matched no trip in the feed the day is scored against. For trip
+  identifiers the day's own snapshot does not know, the pipeline now falls
+  back to the next snapshot chronologically, and only for those; wherever
+  the day's own feed has an answer, that answer stands. The day breakdown
+  in `typical_weekday.json` records which snapshot was used as the fallback
+  and how many trips and records came from it, so a day resolved partly
+  against a later feed says so. This does not make the fallback feed the
+  right one for that day — it is the nearest evidence of a build this
+  archive never captured, and a renumbering it does not carry stays
+  unresolved.
 
 ## Versioning
 

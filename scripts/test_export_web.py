@@ -107,9 +107,9 @@ def test_timeslot_segment_index_resolves_back_to_same_shape_and_segment():
     for slot, payload in timeslot_files.items():
         assert payload["timeslot"] == slot
         for pos, speed_kmh, n in zip(payload["segment_idx"], payload["speed_kmh"], payload["n_samples"]):
-            shape_id = geometry["shape_ids"][geometry["shape_idx"][pos]]
+            shape_key = geometry["shape_keys"][geometry["shape_idx"][pos]]
             seg_idx = geometry["segment_index"][pos]
-            key = (shape_id, seg_idx, slot)
+            key = (shape_key, seg_idx, slot)
             assert key in bins
             assert bins[key][1] == n
             assert speed_kmh == round(bins[key][0] * 3.6)
@@ -191,14 +191,16 @@ def test_geometry_carries_route_metadata_per_shape(tmp_path: Path):
     """
     static_zip = _write_static_zip(tmp_path)
     route_info = load_route_info(static_zip)
-    _, shapes_by_key = load_static(static_zip)
+    _, shapes_by_key, shape_ids_by_key = load_static(static_zip)
     shape_key = next(iter(shapes_by_key))  # only one shape in this fixture
     pairs = {(shape_key, 0), (shape_key, 1)}
 
-    geometry, index_of, missing = build_geometry(pairs, shapes_by_key, route_info)
+    geometry, index_of, missing = build_geometry(pairs, shapes_by_key, route_info,
+                                                  shape_ids_by_key)
 
     assert missing == 0
-    pos = geometry["shape_ids"].index(SHAPE_ID)
+    pos = geometry["shape_keys"].index(shape_key)
+    assert geometry["shape_ids"][pos] == [SHAPE_ID]
     assert geometry["shape_route_ids"][pos] == [ROUTE_ID]
     assert geometry["shape_route_type"][pos] == 3  # bus, from routes.txt
     assert len(geometry["shape_route_type"]) == len(geometry["shape_ids"])

@@ -192,7 +192,7 @@ python3 -m pytest
   arrived with, `speed_ms`. Preprocessed output calls it `feed_speed_kmh`,
   which is the unit the values are in. METHODOLOGY.md has the numbers behind
   that reading.
-- The "typical weekday" median rests on four weekdays so far, one of them a
+- The "typical weekday" median rests on five weekdays so far, one of them a
   partial day, and its base is uneven across the map. Segments outside that
   old, narrower box drew on fewer days and carry fewer samples per bin.
   METHODOLOGY.md's Known limitations section has the measured extent. Read
