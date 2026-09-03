@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).parent))
 
 from archive_static_feed import (
-    SAME_DATE_COLLISION_EXIT_CODE,
     archive_feed,
     content_hash,
     download_to_temp,
@@ -187,7 +186,7 @@ def test_changed_feed_saves_zip_and_manifest_with_matching_hashes(tmp_path):
     assert (output_dir / "gtfs_2026-08-27.zip").exists()
 
 
-def test_same_date_collision_keeps_existing_file_and_exits_nonzero(tmp_path):
+def test_second_change_in_one_day_is_saved_beside_the_first(tmp_path):
     output_dir = tmp_path / "static"
     output_dir.mkdir()
     today_snapshot = _gtfs_zip(output_dir / "gtfs_2026-08-31.zip")
@@ -195,13 +194,41 @@ def test_same_date_collision_keeps_existing_file_and_exits_nonzero(tmp_path):
 
     candidate = _gtfs_zip(tmp_path / "download.zip", shapes_extra_point=True)  # genuinely different content
 
+    # 20:00 UTC is 23:00 in Sofia, and the intra-day name carries the local
+    # capture time so it sorts after the plain name for the same date.
     now = datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc)
     exit_code = archive_feed(output_dir, candidate, "https://example.test/static", SOFIA, now=now)
 
-    assert exit_code == SAME_DATE_COLLISION_EXIT_CODE
+    assert exit_code == 0
     assert not candidate.exists()
+    # The morning capture is kept as it was: the point is both, not the newer.
     assert today_snapshot.read_bytes() == original_bytes
-    assert sorted(p.name for p in output_dir.iterdir()) == ["gtfs_2026-08-31.zip"]
+    assert sorted(p.name for p in output_dir.iterdir()) == [
+        "gtfs_2026-08-31.zip",
+        "gtfs_2026-08-31T2300.manifest.json",
+        "gtfs_2026-08-31T2300.zip",
+    ]
+    manifest = json.loads((output_dir / "gtfs_2026-08-31T2300.manifest.json").read_text())
+    assert manifest["file"] == "gtfs_2026-08-31T2300.zip"
+    assert manifest["content_hash"] == content_hash(output_dir / "gtfs_2026-08-31T2300.zip")
+
+
+def test_a_third_change_compares_against_the_intra_day_snapshot(tmp_path):
+    # The intra-day file has to be the one latest_snapshot() returns, or the
+    # next run would compare against the morning capture and re-save content
+    # it already holds.
+    output_dir = tmp_path / "static"
+    output_dir.mkdir()
+    _gtfs_zip(output_dir / "gtfs_2026-08-31.zip")
+    _gtfs_zip(output_dir / "gtfs_2026-08-31T1100.zip", shapes_extra_point=True)
+
+    candidate = _gtfs_zip(tmp_path / "download.zip", shapes_extra_point=True)
+    now = datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc)
+    exit_code = archive_feed(output_dir, candidate, "https://example.test/static", SOFIA, now=now)
+
+    assert exit_code == 0
+    assert not candidate.exists()
+    assert not (output_dir / "gtfs_2026-08-31T2300.zip").exists()
 
 
 def test_snapshot_date_comes_from_sofia_local_time_not_utc(tmp_path):

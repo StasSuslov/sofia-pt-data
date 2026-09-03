@@ -26,11 +26,14 @@ move commit a748492 made to the segment aggregation key (build_shape_key()
 in scripts/segment_speeds.py): identify data by what it says, not by an
 incidental encoding detail of how it happens to be packaged.
 
-One snapshot per calendar day is all the gtfs_<YYYY-MM-DD>.zip naming
-scheme can express, and pick_snapshot_for_day() depends on that being
-true. If the feed changes twice in one local day, the second change is
-detected but not captured: see the same-date collision branch in
-archive_feed() below.
+A second change inside one local day lands as gtfs_<YYYY-MM-DD>T<HHMM>.zip
+next to that day's plain snapshot. Until 2026-09-03 it was detected and
+thrown away, because the naming scheme held one snapshot per calendar day
+and the archive ran once daily. The agency then republished at around 11:00
+local on 2026-09-02, renumbering the trips of four routes; the day's own
+snapshot had been taken three hours earlier, and 10,166 RT records (1.4% of
+the day) matched no trip in it. Keeping only the morning capture makes the
+afternoon of such a day unprocessable against anything but a guess.
 
 Usage:
     python scripts/archive_static_feed.py data/sofia/static
@@ -77,14 +80,7 @@ REQUIRED_MEMBERS = ("trips.txt", "shapes.txt", "stops.txt", "routes.txt")
 # above. A prefix or glob match would also catch the unpacked
 # gtfs_2026-08-27/ sibling directory or a stray .DS_Store that already sit
 # next to the zips in data/sofia/static/ today.
-SNAPSHOT_NAME_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})\.zip$")
-
-# Distinct from the plain sys.exit(1) used for a failed download or a
-# rejected zip, so a systemd exit-status check or a log grep can tell "the
-# feed changed twice today and the second change was not captured, a human
-# should look" apart from "this run just failed, the next scheduled run
-# will probably succeed."
-SAME_DATE_COLLISION_EXIT_CODE = 3
+SNAPSHOT_NAME_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})(?:T\d{4})?\.zip$")
 
 
 # ─── Content hashing ────────────────────────────────────────────────────────
@@ -203,9 +199,14 @@ def load_feed_info(zip_path: Path) -> dict:
 
 def latest_snapshot(output_dir: Path):
     """
-    (date_str, path) for the newest gtfs_<YYYY-MM-DD>.zip already in
-    output_dir, or None if there isn't one yet (a fresh archive, or a
-    directory that doesn't exist).
+    (date_str, path) for the newest snapshot already in output_dir, or None
+    if there isn't one yet (a fresh archive, or a directory that doesn't
+    exist).
+
+    Newest is decided on the filename, not on the parsed date, because two
+    snapshots can share a date: gtfs_2026-09-02.zip and its intra-day
+    sibling gtfs_2026-09-02T1100.zip. "." sorts before "T", so the plain
+    name compares as the earlier of the two, which is what it is.
     """
     if not output_dir.exists():
         return None
@@ -216,7 +217,9 @@ def latest_snapshot(output_dir: Path):
         m = SNAPSHOT_NAME_RE.match(p.name)
         if m:
             snapshots.append((m.group(1), p))
-    return max(snapshots, default=None)
+    if not snapshots:
+        return None
+    return max(snapshots, key=lambda pair: pair[1].name)
 
 
 def build_manifest(target_path: Path, source_url: str, downloaded_at: datetime,
@@ -274,22 +277,15 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
 
     target_path = output_dir / f"gtfs_{today_str}.zip"
     if target_path.exists():
-        # The naming scheme supports exactly one snapshot per calendar day,
-        # and pick_snapshot_for_day() in segment_speeds.py depends on that.
-        # Overwriting today's file to record a second same-day change would
-        # destroy the only evidence of what the agency served earlier
-        # today, in exchange for evidence of what it serves now. Neither
-        # capture is disposable, so this keeps the one already on disk and
-        # refuses the new one rather than picking a side.
-        tmp_path.unlink()
-        print(
-            f"Feed content changed, but {target_path.name} already exists. "
-            f"A second change landed on {today_str} and was not captured; "
-            "the existing file is kept. Only one snapshot per calendar day "
-            f"is supported. Exiting {SAME_DATE_COLLISION_EXIT_CODE}.",
-            file=sys.stderr,
-        )
-        return SAME_DATE_COLLISION_EXIT_CODE
+        # A second change inside one local day. Overwriting the morning
+        # capture would destroy the only evidence of what the agency served
+        # earlier today in exchange for evidence of what it serves now, and
+        # discarding the new one (what this did until 2026-09-03) loses the
+        # afternoon instead. Both go on disk; the intra-day name carries the
+        # local capture time, so it sorts after the plain name for the same
+        # date and pick_snapshot_for_day() in segment_speeds.py picks it up
+        # as the newer snapshot for that day.
+        target_path = output_dir / f"gtfs_{today_str}T{now.astimezone(tz):%H%M}.zip"
 
     zip_sha256 = sha256_of_file(tmp_path)
     size_bytes = tmp_path.stat().st_size
@@ -317,7 +313,7 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
 
     manifest = build_manifest(target_path, source_url, now, zip_sha256, new_hash,
                                size_bytes, len(member_pairs), feed_info)
-    manifest_path = output_dir / f"gtfs_{today_str}.manifest.json"
+    manifest_path = target_path.with_suffix(".manifest.json")
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     reason = "no prior snapshot on disk" if existing is None else f"changed from {existing_path.name}"

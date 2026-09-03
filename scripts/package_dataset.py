@@ -71,7 +71,7 @@ DOC_FILES = ("METHODOLOGY.md", "README.md")
 
 # Same pattern generate_manifest.py/archive_static_feed.py use for static
 # snapshot filenames.
-STATIC_SNAPSHOT_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})\.zip$")
+STATIC_SNAPSHOT_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})(?:T\d{4})?\.zip$")
 
 # A stray file in data_dir whose name doesn't start with a date at all (e.g.
 # .DS_Store, a *.log left by hand) gets this reason in the skip report.
@@ -210,7 +210,7 @@ def find_static_snapshots(static_dir: Path, start_date: str, end_date: str) -> l
         if not (start_date <= snap_date <= end_date):
             continue
 
-        manifest_path = static_dir / f"gtfs_{snap_date}.manifest.json"
+        manifest_path = p.with_suffix(".manifest.json")
         manifest = load_manifest(manifest_path)
 
         zip_sha256, _ = sha256_of(p)

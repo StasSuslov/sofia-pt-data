@@ -1,28 +1,29 @@
 [Unit]
-Description=Run Sofia PT GTFS Static feed snapshot capture daily
+Description=Run Sofia PT GTFS Static feed snapshot capture hourly
 
 [Timer]
-# 05:00 UTC, not OnCalendar=daily (which is midnight UTC). The agency
-# rebuilds its feed export on a fixed daily schedule at 03:33 by the
-# member timestamps inside the zip, identical to the second across the
-# 2026-08-27, 08-31 and 09-01 snapshots. Those timestamps are naive, so
-# 03:33 is either 00:33 or 03:33 UTC depending on the build box's clock,
-# and midnight UTC lands before the build under either reading: the run
-# would find yesterday's build, report no change, and the day's real
-# feed would not be captured until the next midnight, filed under a date
-# one day after the build it holds. pick_snapshot_for_day() in
-# segment_speeds.py takes the latest snapshot dated on or before a day,
-# so every day would then be matched to the feed that preceded it, which
-# is the exact silent mismatch this whole unit exists to prevent. 05:00
-# clears the later reading by 1.4 hours and the earlier one by 4.4.
-OnCalendar=*-*-* 05:00:00
+# Hourly, at five past. Until 2026-09-03 this ran once a day at 05:00 UTC,
+# chosen against the agency's fixed 03:33 daily build (identical to the
+# second across the 2026-08-27, 08-31 and 09-01 snapshots) so a run would
+# never file yesterday's build under today's date. That reasoning survives
+# the move to hourly untouched: archive_feed() saves only when the content
+# hash differs from the newest snapshot on disk, so every run between
+# midnight and the build finds yesterday's content, writes nothing, and
+# leaves the day's real capture to the first run after 03:33.
+#
+# What one run a day could not do is see a republish between two runs. The
+# agency republished at around 11:00 local on 2026-09-02, renumbering the
+# trips of four routes; that day's capture was three hours old by then and
+# 10,166 RT records (1.4% of the day) matched no trip in it. Hourly bounds
+# that blind window at an hour, and a second change inside one local day now
+# lands as gtfs_<date>T<HHMM>.zip instead of being thrown away.
+OnCalendar=*-*-* *:05:00
 # Same reasoning as sofia-compress.timer: a $4/mo droplet is not guaranteed
 # to be up at the exact scheduled instant (reboots for host maintenance,
 # etc.), and archive_feed()'s whole design already tolerates a missed or
-# late run just fine, one snapshot per calendar day is the ceiling either
-# way, and a run that finds the feed unchanged writes nothing. Persistent=true
-# means a run skipped by downtime still happens once at next boot instead of
-# silently vanishing for that day.
+# late run just fine, since a run that finds the feed unchanged writes
+# nothing. Persistent=true means downtime spanning a scheduled run still
+# gets one run at next boot instead of waiting for the next full hour.
 Persistent=true
 
 [Install]

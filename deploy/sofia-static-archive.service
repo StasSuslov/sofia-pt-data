@@ -22,10 +22,10 @@ Type=oneshot
 # endpoint (config.BASE_URL + /api/v1/static).
 #
 # A run that finds the feed unchanged exits 0 and writes nothing, so this
-# is safe to run as often as the timer likes. If the feed changes twice in
-# one calendar day the second run exits 3 (SAME_DATE_COLLISION_EXIT_CODE in
-# the script) rather than overwrite the first capture; that shows up in
-# `systemctl status` / journalctl as a failed run and needs a human look,
-# not a retry.
+# is safe to run as often as the timer likes, and since 2026-09-03 the
+# timer runs it hourly. A second change inside one local day is saved as
+# gtfs_<date>T<HHMM>.zip beside that day's plain snapshot rather than
+# overwriting it or (as until 2026-09-03) exiting 3 and dropping it, so a
+# failed run here means a failed download or a rejected zip, nothing else.
 ExecStart=/usr/bin/python3 /opt/sofia-pt/scripts/archive_static_feed.py /opt/sofia-pt/data/sofia/static
 User=root
