@@ -2,58 +2,61 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22256653.svg)](https://doi.org/10.5281/zenodo.22256653)
 
-An independent, open-data archive and analysis pipeline for Sofia's public
-transport network. The goal is a reproducible dataset and methodology — not
-a product — built entirely from openly licensed sources.
+I collect Sofia's public transport feeds and keep every day of them, so that
+a claim about how this network runs can be checked against something. The
+repository holds the collector and the pipeline that turns its output into
+speeds a map can draw. The collected data ships as a separate archive under
+CC BY 4.0.
 
-See [METHODOLOGY.md](METHODOLOGY.md) for the data model, known limitations,
-and analytical approach.
+[METHODOLOGY.md](METHODOLOGY.md) has the data model, the thresholds and the
+limitations I know about.
 
 ## What's here
 
-- `collect.py` — polls the GTFS-RT vehicle-positions feed at a fixed
-  interval and appends validated snapshots to a JSONL archive, filtered to
-  Sofia's network bounding box.
-- `scripts/generate_manifest.py` — produces a SHA256 + coverage manifest for
-  a day's archive file, so a published dataset can be checked for
-  completeness and integrity rather than taken on trust.
-- `scripts/verify_remote_checksums.py` — reads each closed day's checksum
-  off the collector host over `ssh` and records the comparison in that day's
-  manifest, so the archive is checked against what the collector actually
-  wrote rather than only against itself after `rsync`. Each file is checked
-  once; a mismatch exits with its own code, an unreachable host does not.
-- `scripts/derive_bbox.py` — recomputes the network bounding box from a
-  GTFS Static feed's `stops.txt`/`shapes.txt`, so the bbox used for
-  filtering is reproducible from data rather than hand-picked.
-- `scripts/archive_static_feed.py` — downloads the GTFS Static feed on a
-  schedule and saves a dated snapshot only when the feed's contents changed,
-  comparing member contents rather than the zip's bytes so a rebuild of
-  identical data is not mistaken for a republish.
-- `scripts/segment_speeds.py` — projects raw GTFS-RT vehicle positions onto
-  GTFS Static shapes, derives a speed sample per 200 m segment, and
-  aggregates Monday–Friday samples into a "typical weekday" median per
-  segment and 15-minute time slot.
-- `scripts/export_web.py` — turns that aggregation into the small,
-  timeslot-sliced static JSON files a browser fetches directly, with no
-  backend.
-- `scripts/fetch_data.sh` / `scripts/scheduled_fetch.sh` — pull the archive
-  from a remote collector host via `rsync`.
-- `deploy/` — `systemd` units and a `launchd` template for running the
-  collector continuously, capturing a GTFS Static snapshot when the feed
-  changes, gzipping closed day files on the collector host so its disk
-  doesn't fill, and syncing the output on a schedule. Day files are
-  read transparently in either form; a manifest always describes the
-  uncompressed bytes, so compression never changes a recorded checksum.
+- `collect.py` polls the GTFS-RT vehicle-positions feed at a fixed interval
+  and appends each validated snapshot to a JSONL archive, dropping whatever
+  falls outside Sofia's network bounding box.
+- `scripts/generate_manifest.py` writes a SHA256 and coverage manifest for a
+  day's archive file, so you can check a published day yourself instead of
+  trusting my word for it.
+- `scripts/verify_remote_checksums.py` reads each closed day's checksum off
+  the collector host over `ssh` and records the comparison in that day's
+  manifest. That way the local copy is checked against what the collector
+  wrote, not only against itself after `rsync`. Each file is checked once. A
+  mismatch exits with its own code; an unreachable host does not.
+- `scripts/derive_bbox.py` recomputes the network bounding box from a GTFS
+  Static feed's `stops.txt` and `shapes.txt`, so I can show where the box
+  came from instead of asserting it.
+- `scripts/archive_static_feed.py` downloads the GTFS Static feed on a
+  schedule and saves a dated snapshot when the contents changed. It compares
+  the members inside the zip, so a rebuild of identical data does not look
+  like a republish.
+- `scripts/segment_speeds.py` projects raw GTFS-RT positions onto GTFS
+  Static shapes and derives one speed sample per 200 m segment. Monday to
+  Friday samples become a "typical weekday" median per segment and
+  15-minute time slot.
+- `scripts/export_web.py` turns that aggregation into the small,
+  timeslot-sliced JSON files a browser fetches on its own, with no backend.
+- `scripts/fetch_data.sh` and `scripts/scheduled_fetch.sh` pull the archive
+  off the collector host with `rsync`.
+- `deploy/` holds the `systemd` units and a `launchd` template: continuous
+  collection, a GTFS Static snapshot when the feed changes, gzip for closed
+  days so the collector's disk survives, and a sync on a schedule. The
+  readers handle a day file in either form, and a manifest always describes
+  the uncompressed bytes, so compressing a day never changes its recorded
+  checksum.
 
 ## Data sources
 
-- **GTFS-RT and GTFS Static** — published by Sofia's public transport
-  operator (ЦГМ) via the [urbandata.sofia.bg](https://urbandata.sofia.bg)
-  open data portal, Level 1, CC BY 4.0, no registration required.
-- **OpenStreetMap** (via the Overpass API) — district boundaries and road
-  network, used for planned accessibility analysis.
+- **GTFS-RT and GTFS Static**, published by Sofia's public transport
+  operator (ЦГМ) through the [urbandata.sofia.bg](https://urbandata.sofia.bg)
+  open data portal. Level 1, CC BY 4.0, no registration.
+- **OpenStreetMap** through the Overpass API for district boundaries and the
+  road network. I need those for the accessibility analysis, which is not
+  written yet.
 
-No manually entered data and no assumptions not confirmed by a feed.
+I enter nothing by hand, and I assume nothing about the network that a feed
+has not confirmed.
 
 ## Running the collector
 
@@ -77,10 +80,9 @@ Key flags (`python3 collect.py --help` for the full list):
 | `--interval N` | Poll interval in seconds |
 | `--healthcheck-url URL` | Ping a dead-man's-switch URL (e.g. healthchecks.io) periodically |
 
-Each poll is logged to a companion `<date>.polls.jsonl` heartbeat file
-(success, empty response, or fetch error) regardless of whether any
-vehicle records were written, so a silent feed outage is distinguishable
-from a silent collector outage.
+Every poll goes into a companion `<date>.polls.jsonl` heartbeat file with
+its outcome, whether or not it produced vehicle records. Without that file,
+a quiet feed and a dead collector leave the same trace in the archive.
 
 ## Verifying an archive file
 
@@ -88,25 +90,25 @@ from a silent collector outage.
 python3 scripts/generate_manifest.py data/sofia/2026-08-27.jsonl
 ```
 
-Produces a manifest with file checksums and a gap analysis derived from the
-heartbeat log (or, for files collected before heartbeat logging existed,
-from the data file alone — marked as lower-confidence).
+You get a manifest with the file checksums and a gap analysis built from the
+heartbeat log. Days collected before heartbeat logging existed get their gap
+analysis from the data file alone, and the manifest marks them as
+lower-confidence.
 
 ## Preprocessing
 
-Two scripts turn a day's raw vehicle-position archive into what a map can
-render.
+Two scripts stand between a raw day and anything a map can render.
 
 `scripts/segment_speeds.py` projects each vehicle position onto its trip's
-GTFS Static shape, turns consecutive same-trip positions into a speed
-sample for a 200 m segment of that shape, and aggregates Monday–Friday
-samples into a per-segment, per-15-minute-timeslot median (the "typical
-weekday", see METHODOLOGY.md's Aggregation section). Nothing is dropped
-silently: six named counters (`trip_not_in_static`, `shape_not_found`,
+GTFS Static shape, turns consecutive same-trip positions into a speed sample
+for a 200 m segment of that shape, and aggregates Monday to Friday samples
+into a per-segment, per-15-minute median (the "typical weekday", see
+METHODOLOGY.md's Aggregation section). Every discarded record moves one of
+six named counters: `trip_not_in_static`, `shape_not_found`,
 `non_positive_time_delta`, `gap_too_large`, `moved_backward`,
-`speed_too_high`) are reported per day and in total, next to the thresholds
-that produced them. METHODOLOGY.md's Preprocessing section explains the
-projection, the thresholds and what each counter means.
+`speed_too_high`. The counters are reported per day and in total, next to
+the thresholds that produced them. METHODOLOGY.md's Preprocessing section
+explains the projection and what each counter means.
 
 ```bash
 # one static feed for every day, three specific days
@@ -121,15 +123,14 @@ python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip data/sof
 python3 scripts/segment_speeds.py data/sofia/static data/sofia
 ```
 
-Writes `segment_speeds_<date>.jsonl` (one row per accepted sample) and
-`typical_weekday.json` (the median aggregation, with a per-day reject-count
-breakdown and which static snapshot matched which day) under `--output-dir`
-(default `<data_dir>/processed`).
+It writes `segment_speeds_<date>.jsonl`, one row per accepted sample, and
+`typical_weekday.json` with the median aggregation, a per-day reject
+breakdown and which static snapshot matched which day. Both land under
+`--output-dir` (default `<data_dir>/processed`).
 
-`scripts/export_web.py` reads that output and writes the static files a
-browser fetches directly: one small JSON per 15-minute time slot,
-referencing a shared `geometry.json` by index rather than repeating
-coordinates in every bin.
+`scripts/export_web.py` reads that output and writes what a browser fetches
+directly: one small JSON per 15-minute time slot, pointing into a shared
+`geometry.json` by index so coordinates are not repeated in every bin.
 
 ```bash
 python3 scripts/export_web.py data/sofia/static/gtfs_2026-08-27.zip data/sofia
@@ -142,28 +143,27 @@ python3 scripts/export_web.py data/sofia/static/gtfs_2026-08-27.zip data/sofia \
 python3 scripts/export_web.py data/sofia/static data/sofia
 ```
 
-Writes `geometry.json`, one `timeslots/<HHMM>.json` per surviving time
-slot, and a `manifest.json` (thresholds applied, bins dropped, and the
-export's own known limitations) under `--output-dir` (default
-`<data_dir>/web/<mode>`, where `<mode>` is `typical_weekday` or the `--day`
-value).
+It writes `geometry.json`, one `timeslots/<HHMM>.json` per surviving time
+slot and a `manifest.json` carrying the thresholds applied, the bins dropped
+and the export's own known limitations. Output goes under `--output-dir`
+(default `<data_dir>/web/<mode>`, where `<mode>` is `typical_weekday` or the
+`--day` value).
 
 `--min-samples N` (default 2) drops bins built from fewer than N
 observations before anything is written. The count survives the threshold:
-`n_samples` ships with every retained bin, so a thin median stays visible to
-the client instead of being hidden by the cutoff. `--processed-dir` points
-the export at `segment_speeds.py`'s output if it was written somewhere other
-than `<data_dir>/processed`; `segment_speeds.py` itself takes `--timezone`
-(default `Europe/Sofia`), which fixes both the time-slot bins and which days
-count as Monday to Friday.
+`n_samples` ships with every bin that stays, so a thin median stays visible
+to the client. `--processed-dir` points the export at `segment_speeds.py`'s
+output when it went somewhere other than `<data_dir>/processed`.
+`segment_speeds.py` takes `--timezone` (default `Europe/Sofia`), which fixes
+both the time-slot bins and which days count as Monday to Friday.
 
-Both scripts accept either a single GTFS Static zip (one feed for every day
-or bin processed) or a directory of `gtfs_<YYYY-MM-DD>.zip` snapshots. The
-directory form exists because the agency republishes the static feed from
-time to time, and a stale snapshot degrades preprocessing silently.
-`scripts/archive_static_feed.py` keeps that directory populated. See
-METHODOLOGY.md's Aggregation and Known limitations sections for what a stale
-snapshot did to one 2026-08-31 run and how the fix works.
+Both scripts accept either a single GTFS Static zip or a directory of
+`gtfs_<YYYY-MM-DD>.zip` snapshots. The directory form exists because the
+agency rebuilds the static feed every night, and a stale snapshot degrades
+preprocessing without announcing it. `scripts/archive_static_feed.py` keeps
+that directory populated. METHODOLOGY.md's Aggregation and Known limitations
+sections have what a stale snapshot did to one 2026-08-31 run, and how the
+fix works.
 
 ## Tests
 
@@ -173,45 +173,46 @@ python3 -m pytest
 
 ## Known limitations
 
-- The GTFS-RT feed does not include Sofia's metro.
-- Speeds between consecutive snapshots are interpolated, not measured
-  directly, and carry the corresponding uncertainty.
-- The feed occasionally has gaps (dropped connections, empty responses);
-  these are logged, not silently interpolated over.
-- Coordinates outside Sofia's network bounding box are dropped at
-  collection time — a known GTFS-RT coordinate-teleport artifact. The
-  bbox is derived from the static feed (see `scripts/derive_bbox.py`) and
-  intended to be wide enough not to clip legitimate outlying routes. An
-  earlier, hand-picked box was not, and it cost the outlying settlements
-  from 2026-08-27 to the afternoon of 2026-08-28; METHODOLOGY.md's Known
-  limitations section has the measured extent of that loss.
+- The GTFS-RT feed carries no metro, so everything here describes surface
+  transport.
+- Speed between two consecutive snapshots is interpolated from position and
+  elapsed time, with the uncertainty that implies.
+- The feed drops connections and returns empty responses from time to time.
+  I log those gaps and leave them as gaps.
+- Coordinates outside Sofia's network bounding box are dropped at collection
+  time, because the feed emits occasional coordinate teleports. The box
+  comes from the static feed (see `scripts/derive_bbox.py`) and is meant to
+  be wide enough to keep the outlying routes. My first box was hand-picked
+  and too narrow, and it cost me the outlying settlements from 2026-08-27 to
+  the afternoon of 2026-08-28. METHODOLOGY.md's Known limitations section
+  has the measured size of that loss.
 - The feed reports vehicle speed in km/h in a field GTFS-RT specifies as
   metres per second. The raw archive keeps the field under the name it
-  arrived with (`speed_ms`); preprocessed output calls it `feed_speed_kmh`,
-  because that is the unit the values are in. See METHODOLOGY.md.
-- The "typical weekday" median currently rests on four weekdays, one of
-  them a partial day, and its statistical base is uneven across the map:
-  segments outside the old, narrower bbox (see above) drew on fewer of
-  those days and carry measurably fewer samples per bin. METHODOLOGY.md's
-  Known limitations section has the measured extent. Read it together with
-  the `n_samples` shipped next to every median rather than as a settled
-  figure.
+  arrived with, `speed_ms`. Preprocessed output calls it `feed_speed_kmh`,
+  which is the unit the values are in. METHODOLOGY.md has the numbers behind
+  that reading.
+- The "typical weekday" median rests on four weekdays so far, one of them a
+  partial day, and its base is uneven across the map. Segments outside that
+  old, narrower box drew on fewer days and carry fewer samples per bin.
+  METHODOLOGY.md's Known limitations section has the measured extent. Read
+  it together with the `n_samples` that ships next to every median.
 
 ## Citing
 
-Code and methodology are archived on Zenodo. The concept DOI below always
-resolves to the latest version; cite a specific version from the record's
-own page if you need the exact code a result was produced with.
+The code and the methodology are archived on Zenodo. The concept DOI below
+always resolves to the latest version; cite a specific version from the
+record's own page when you need the exact code behind a result.
 
 > Suslov, Stanislav (2026). *Sofia PT Data: an open archive and analysis
 > pipeline for Sofia's public transport feeds*. Zenodo.
 > https://doi.org/10.5281/zenodo.22256653
 
-The collected data is archived as a separate record under CC BY 4.0 and
-carries its own DOI. A citation of a result should name both: the data it
-rests on and the code that produced it.
+The collected data goes into its own Zenodo record under CC BY 4.0,
+versioned apart from the code. Its DOI lands here with the first dataset
+release. Cite both when you cite a result: the data it rests on, and the
+code that produced it.
 
 ## License
 
-Code: MIT, see [LICENSE](LICENSE). Collected data, once published, will be
+Code: MIT, see [LICENSE](LICENSE). Collected data, once published, is
 released separately under CC BY 4.0.
