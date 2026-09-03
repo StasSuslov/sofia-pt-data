@@ -1,6 +1,7 @@
 # Sofia PT Data
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22256653.svg)](https://doi.org/10.5281/zenodo.22256653)
+[![Code DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22256653.svg)](https://doi.org/10.5281/zenodo.22256653)
+[![Data DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22285128.svg)](https://doi.org/10.5281/zenodo.22285128)
 
 I collect Sofia's public transport feeds and keep every day of them, so that
 a claim about how this network runs can be checked against something. The
@@ -207,12 +208,17 @@ record's own page when you need the exact code behind a result.
 > pipeline for Sofia's public transport feeds*. Zenodo.
 > https://doi.org/10.5281/zenodo.22256653
 
-The collected data goes into its own Zenodo record under CC BY 4.0,
-versioned apart from the code. Its DOI lands here with the first dataset
-release. Cite both when you cite a result: the data it rests on, and the
-code that produced it.
+The collected data has its own Zenodo record under CC BY 4.0, versioned
+apart from the code. v1.0.0 covers 27 August to 2 September 2026.
+
+> Suslov, Stanislav (2026). *Sofia public transport: raw GTFS-Realtime
+> vehicle positions and static feed snapshots, 2026-08-27 to 2026-09-02*.
+> Zenodo. https://doi.org/10.5281/zenodo.22285128
+
+Cite both when you cite a result: the data it rests on, and the code that
+produced it.
 
 ## License
 
-Code: MIT, see [LICENSE](LICENSE). Collected data, once published, is
-released separately under CC BY 4.0.
+Code: MIT, see [LICENSE](LICENSE). Collected data is released separately
+under CC BY 4.0: https://doi.org/10.5281/zenodo.22285128

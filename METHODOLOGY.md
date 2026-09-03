@@ -10,6 +10,10 @@ change the method, the change goes out as a new version of that record, so
 you can always read a result against the method as it stood on the day the
 result was produced.
 
+The data this method runs on is archived as its own record under CC BY 4.0:
+[10.5281/zenodo.22285128](https://doi.org/10.5281/zenodo.22285128). Cite
+both when you cite a result.
+
 ## Scope
 
 I archive Sofia's public transport GTFS-RT and GTFS Static feeds and run a

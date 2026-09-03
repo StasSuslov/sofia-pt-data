@@ -91,7 +91,7 @@ they know what is in it.
 <li>2026-08-30: 463,271 records, coverage 100%, 0 gaps</li>
 <li>2026-08-31: 730,167 records, coverage 100%, 0 gaps</li>
 <li>2026-09-01: 733,951 records, coverage 100%, 0 gaps</li>
-<li>2026-09-02: ⟪TBD⟫ records, coverage ⟪TBD⟫, ⟪TBD⟫ gaps</li>
+<li>2026-09-02: 735,347 records, coverage 100%, 0 gaps</li>
 </ul>
 <p>Coverage is the number of polls observed on the day divided by the number expected for its calendar day at the <em>configured</em> polling interval, never at the interval observed in the data. A collector quietly degrading to half rate would otherwise recalibrate its own idea of normal and report full coverage.</p>
 

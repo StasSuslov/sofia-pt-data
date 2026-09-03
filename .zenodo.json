@@ -12,6 +12,14 @@
             "affiliation": "Independent researcher"
         }
     ],
+    "related_identifiers": [
+        {
+            "identifier": "10.5281/zenodo.22285128",
+            "relation": "documents",
+            "resource_type": "dataset",
+            "scheme": "doi"
+        }
+    ],
     "keywords": [
         "public transport",
         "GTFS",
