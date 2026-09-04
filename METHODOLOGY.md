@@ -189,8 +189,9 @@ Monday to Friday median in any case.
 references it by index from one file per 15-minute slot, so a timeline
 scrubs without downloading the whole corpus. Bins below the `--min-samples`
 threshold (default 2, the smallest count at which a median aggregates
-anything at all) are dropped: on the current archive that retains 649,070 of
-837,024 bins. `n_samples` ships with every surviving bin. Speed ships as an
+anything at all) are dropped, per schedule period: on the current archive
+that retains 287,024 of 572,109 bins in the two-day period and 609,461 of
+799,934 in the four-day one. `n_samples` ships with every surviving bin. Speed ships as an
 integer km/h for map colouring, with the float m/s and every sample behind
 it left in `segment_speeds_<date>.jsonl` and `typical_weekday.json`. The
 drawn geometry of a segment is the straight chord between its two 200 m
@@ -229,7 +230,83 @@ endpoints, so the true curve inside the bin is lost.
   `multi_geometry_shape_id_count` is how many `shape_id`s appeared under
   more than one geometry across the feeds loaded in a run, and
   `multi_id_geometry_count` how many geometries appeared under more than one
-  `shape_id`. On the run of record, 48 and 19.
+  `shape_id`. On the run of record, 52 and 19.
+- The median is split by schedule period, so days running different
+  timetables never pool into one number. On 2026-09-04 the agency published
+  its autumn timetable: bus routes 191 and 192 appear with 100 trips a day
+  each, route 10's 58 daily trips move onto a new route 190 running the same
+  four shapes, and tram 8 goes from 261 trips a day to 213. The
+  weekend pattern takes over on 5 September and runs through Monday
+  7 September, a public holiday; the new weekday pattern starts on
+  8 September. One Monday-to-Friday median would average the old service and
+  the new one together and label the result typical.
+- Each archived day is signed by what its own snapshot schedules for it: the
+  sorted list of (route id, trip count) pairs over the services GTFS Static
+  says run on that date, hashed to the first 16 hex characters of a SHA256.
+  The signature is content-addressed for the same reason the shape key is.
+  The agency renumbers trip ids and service ids between nightly rebuilds, and
+  a key built from those identifiers would announce a new timetable every
+  time it did, while route ids and per-route trip counts sit still through a
+  renumbering. Reading each day from the snapshot in force on that day also
+  means a later snapshot cannot rewrite which timetable a past day ran, and
+  that matters: this feed quietly drops calendar rows for dates once they
+  have passed (1,281 services on 2026-08-27 as the 08-27 snapshot has it,
+  1,271 as the 09-04 one does).
+- Signatures are not compared for equality. Two consecutive weekdays share a
+  period while the trips separating them stay under 0.5% of the first day's
+  total, and a larger jump starts a new period. The difference is counted per
+  route and summed as absolute values, so one route appearing and another
+  disappearing cannot cancel out. Days are compared against the day that
+  opened the period rather than against yesterday, so a slow drift cannot
+  walk a period away from the timetable its key names, one tolerated step at
+  a time. Read each of the 267 weekdays from 27 August 2026 to 4 September
+  2027 out of the snapshot in force on it, which is what the pipeline does,
+  and what the feed shows is a gap rather than a fitted line: consecutive
+  weekdays differ by 0% inside a period, by 3.15% on 8 September, 3.88% on
+  14 September and 4.07% at the end of August, and by nothing in between. The
+  data therefore bounds this threshold from above and is silent on where
+  inside it belongs; 0.5% is a sixth of the smallest boundary the agency has
+  published. On this archive it changes no grouping — comparing signatures
+  for equality would produce the same periods — so it is insurance against a
+  feed that shifts a handful of trips without changing its timetable, and I
+  would rather name it that than present it as a value the data chose.
+- Which snapshot answers for a past date decides two of those four numbers.
+  Reading the same 267 weekdays out of the 2026-09-04 snapshot alone adds two
+  boundaries, 9.42% at the end of August and 0.60% between 2 and 3 September,
+  and both are artefacts of the archive rather than timetable changes: the
+  agency erodes calendar rows for dates already past, so that snapshot no
+  longer carries 1,066 of the trips 27 August ran or 89 of 2 September's, all
+  89 of them on route A53, while both days' own snapshots still carry them. A
+  pipeline reading history out of the newest feed would see a 0.60% step
+  between two days that ran the same timetable, and a 0.5% threshold would
+  split them. This one reads each day against the feed it started under.
+- A weekday scheduling less than 80% of the median weekday's trips leaves the
+  median rather than opening a period of its own. Sofia runs a weekend
+  timetable on public holidays: Monday 7 September 2026 schedules 10,149
+  trips where the Thursday before schedules 14,907, a 35% difference against
+  the 3 to 4% of a real timetable change. Eleven weekdays in the year the
+  2026-09-04 snapshot publishes forward look like this, and their dates line
+  up with Bulgarian public holidays. A holiday is not a typical weekday, and
+  a single day is not enough to take a median over.
+- Aggregation groups on (schedule period, segment, time slot), and the web
+  export writes one bundle per period under
+  `web/typical_weekday/<period_key>/`, with an index at
+  `web/typical_weekday/manifest.json` naming every period and which one is
+  current. Days the median leaves out keep both their signature and the
+  reason they were left out in `typical_weekday.json`, so a reader can still
+  see which schedule was in force on a date the median skips.
+- The archive of record holds two weekday periods, not one. 27 and 28 August
+  ran 133 routes and 14,608 trips; from 31 August it is 135 routes and 14,907
+  trips. Reading both dates out of the single 2026-08-27 snapshot reproduces
+  the split, so it is a timetable change rather than an artifact of comparing
+  two feed versions: read that way, route A145's service ends on 30 August
+  (148 trips) while TM58 and TM24 each gain one, 151 trips of churn against
+  14,608, 1.03%. The pipeline's own comparison is larger, because it reads
+  each day against the snapshot in force on it and the 08-27 feed does not
+  yet know the three tram routes that start on 31 August: 595 trips, 4.07%
+  (TM40 +173, TM34 +167, TM33 +104, A145 -148, TM24 +2, TM58 +1). Either way
+  the boundary is real and clears the threshold. The two medians are
+  published side by side; neither is folded into the other.
 - Every median ships with the number of samples it was computed from
   (`n_samples`), in `typical_weekday.json` and in the web export alike. A
   median of two observations and a median of two hundred are otherwise
@@ -249,19 +326,49 @@ coverage is incomplete and why, instead of taking completeness on trust.
 
 I would rather name these myself than leave you to find them:
 
-- The "typical weekday" rests on five weekdays, one of them a partial day.
-  The aggregation on record covers 2026-08-27, 2026-08-28, 2026-08-31,
-  2026-09-01 and 2026-09-02; the first covers 52.45% of its calendar day, because
-  collection began at 11:07 local. That day is flagged as incomplete in the
-  web export's own `manifest.json`, so a reader meets the caveat there too.
-  Days still being collected stay out of the aggregate: their local copy
-  reaches only as far as the last pull, so folding one in would give a
-  median that changes under a reader who re-runs the pipeline an hour later.
-  The median spans 837,024 (segment, timeslot) bins over 29,350 distinct
-  segments and 96 time slots, and 187,954 of those bins, 22.46%, rest on a
-  single observation; 57.93% have three or more. This archive is a week old.
-  Read the numbers above as the output of a working pipeline. They do not
-  yet describe how Sofia's network behaves.
+- The "typical weekday" rests on six weekdays split across two schedule
+  periods, one of them a partial day. The aggregation on record covers
+  2026-08-27 and 2026-08-28 in the first period, 2026-08-31 through
+  2026-09-03 in the second; the first of all of them covers 52.45% of its
+  calendar day, because collection began at 11:07 local. That day is flagged
+  as incomplete in the web export's own `manifest.json`, so a reader meets the
+  caveat there too. Days still being collected stay out of the aggregate:
+  their local copy reaches only as far as the last pull, so folding one in
+  would give a median that changes under a reader who re-runs the pipeline an
+  hour later. The two-day period spans 572,109 (segment, timeslot) bins over
+  24,365 segments, and 49.83% of those bins rest on a single observation; the
+  four-day period spans 799,934 bins over 28,559 segments, 23.81% of them on
+  a single observation and 55.61% on three or more. Splitting by period buys
+  medians that mean something at the cost of thinner ones, and the two-day
+  period is the visible price. This archive is a week old. Read the numbers
+  above as the output of a working pipeline. They do not yet describe how
+  Sofia's network behaves.
+- The 0.5% and 80% thresholds rest on one feed and one year of its published
+  calendar, and they do not rest on it equally. The 80% one is pinned: against
+  a median of 15,595 trips the heaviest reduced-service weekday reaches
+  65.90% and the lightest ordinary weekday 93.67%, so any threshold between
+  those two selects the same eleven days. Both edges are the pipeline's own
+  reading, each day against the snapshot in force on it; the upper one falls
+  to 86.84% if 27 August is read out of the 2026-09-04 snapshot instead, for
+  the erosion reason above. 80% sits inside the band either way. The 0.5% one
+  is not pinned. Every boundary this
+  agency has published sits at 3.15% or above and every day inside a period
+  at 0, so the evidence rules out a threshold above 3.15% and says nothing
+  about the choice within it — on this archive the split would be identical
+  with no threshold at all. It is there for a feed that moves a few trips
+  without changing its timetable, which this one has not yet done. An agency
+  publishing timetable changes in small continuous steps would need a
+  different rule, not a different number. Both thresholds are recorded in
+  `typical_weekday.json` next to the results they produced.
+- The schedule period key cannot see a pure retiming. Two timetables that
+  move departure times around while leaving every route's trip count
+  unchanged hash to the same key, so their days would pool into one median
+  the way every day did before the split existed. Catching that needs
+  `stop_times.txt`, 45.8 MB unpacked against `trips.txt`'s 3.2 MB, re-read for
+  every archived day on every scheduled fetch, an order of magnitude more
+  work than the `trips.txt` read the current key costs. I have not observed
+  a retiming-only change in this feed. If one turns up, the key gets
+  extended; until then this is the boundary of what the split detects.
 - The GTFS-RT feed carries no metro, so findings from this archive describe
   surface transport.
 - Interpolated speed carries uncertainty proportional to the polling

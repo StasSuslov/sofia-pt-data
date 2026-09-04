@@ -11,7 +11,11 @@ from export_web import (  # noqa: E402
     apply_threshold,
     build_geometry,
     build_manifest,
+    build_period_index,
     build_timeslot_files,
+    current_period_key,
+    load_typical_weekday_bins,
+    main,
     point_along_shape,
     segment_pairs,
 )
@@ -216,3 +220,162 @@ def test_route_type_left_unset_when_a_shape_mixes_types(tmp_path: Path):
     info = load_route_info(static_zip)
     assert info[SHAPE_ID]["route_type"] is None
     assert info[SHAPE_ID]["route_ids"] == sorted([ROUTE_ID, "R_TRAM"])
+
+
+# ─── Schedule periods: one bundle each, plus an index over them ────────────
+
+def _write_typical_weekday(path: Path, shape_key: str) -> None:
+    """Two schedule periods over the same segment: the summer timetable and
+    the autumn one that replaced it. Both cover the same (segment, timeslot)
+    bins, which is exactly the case a single pooled median would blur."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "days_processed": ["2026-09-03", "2026-09-08"],
+        "days_in_median_mon_fri": ["2026-09-03", "2026-09-08"],
+        "static_feeds": [],
+        "schedule_periods": [
+            {"period_key": "summer00000000", "days": ["2026-09-03"],
+             "days_in_median_mon_fri": ["2026-09-03"], "first_date": "2026-09-03",
+             "last_date": "2026-09-03", "route_count": 135, "trip_count": 14907,
+             "bin_count": 2},
+            {"period_key": "autumn00000000", "days": ["2026-09-08"],
+             "days_in_median_mon_fri": ["2026-09-08"], "first_date": "2026-09-08",
+             "last_date": "2026-09-08", "route_count": 138, "trip_count": 15600,
+             "bin_count": 2},
+        ],
+        "segments": {
+            "summer00000000": {
+                f"{shape_key}|0|08:00": {"median_speed_ms": 10.0, "n_samples": 5},
+                f"{shape_key}|1|08:00": {"median_speed_ms": 9.0, "n_samples": 5},
+            },
+            "autumn00000000": {
+                f"{shape_key}|0|08:00": {"median_speed_ms": 4.0, "n_samples": 3},
+                f"{shape_key}|0|08:15": {"median_speed_ms": 5.0, "n_samples": 3},
+            },
+        },
+    }), encoding="utf-8")
+
+
+def test_load_typical_weekday_bins_keeps_each_period_separate(tmp_path: Path):
+    path = tmp_path / "typical_weekday.json"
+    _write_typical_weekday(path, "abc123")
+    bins_by_period, raw = load_typical_weekday_bins(path)
+
+    assert set(bins_by_period) == {"summer00000000", "autumn00000000"}
+    assert bins_by_period["summer00000000"][("abc123", 0, "08:00")] == (10.0, 5)
+    assert bins_by_period["autumn00000000"][("abc123", 0, "08:00")] == (4.0, 3)
+    assert len(raw["schedule_periods"]) == 2
+
+
+def test_current_period_is_the_one_with_the_newest_weekday():
+    periods = [
+        {"period_key": "old", "days_in_median_mon_fri": ["2026-08-27", "2026-08-28"]},
+        {"period_key": "new", "days_in_median_mon_fri": ["2026-09-08"]},
+        # A weekend-only period is never the current weekday median (D4),
+        # even when its dates are the most recent in the archive.
+        {"period_key": "weekend", "days_in_median_mon_fri": []},
+    ]
+    assert current_period_key(periods) == "new"
+    assert current_period_key([]) is None
+
+
+def test_period_index_lists_every_period_and_names_the_current_one():
+    entries = [{"period_key": "old", "path": "old"}, {"period_key": "new", "path": "new"}]
+    # A bundle can only list its own days, so the days that entered no median
+    # at all are named here or nowhere in the web tree.
+    excluded = [{"date": "2026-09-05", "reason": "weekend"},
+                {"date": "2026-09-07", "reason": "reduced_service"}]
+    index = build_period_index(entries, "new", excluded)
+    for key in ("format_version", "generated_at", "mode", "current_period",
+                "period_count", "periods", "days_excluded_from_median"):
+        assert key in index, f"missing required index field: {key}"
+    assert index["mode"] == "typical_weekday_index"
+    assert index["period_count"] == 2
+    assert index["current_period"] == "new"
+    assert index["days_excluded_from_median"] == excluded
+
+
+def test_export_writes_one_bundle_per_period_plus_an_index(tmp_path: Path, monkeypatch, capsys):
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    _write_static_zip(static_dir).rename(static_dir / "gtfs_2026-09-03.zip")
+
+    data_dir = tmp_path / "data"
+    _, shapes_by_key, _ = load_static(static_dir / "gtfs_2026-09-03.zip")
+    shape_key = next(iter(shapes_by_key))
+    _write_typical_weekday(data_dir / "processed" / "typical_weekday.json", shape_key)
+
+    monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(data_dir),
+                                      "--min-samples", "2"])
+    main()
+
+    root = data_dir / "web" / "typical_weekday"
+    index = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    assert index["current_period"] == "autumn00000000"  # newest weekday, 2026-09-08
+    assert {p["period_key"] for p in index["periods"]} == {"summer00000000", "autumn00000000"}
+    by_key = {p["period_key"]: p for p in index["periods"]}
+    assert by_key["summer00000000"]["days_in_median"] == ["2026-09-03"]
+    assert by_key["autumn00000000"]["route_count"] == 138
+
+    for period_key in ("summer00000000", "autumn00000000"):
+        bundle = root / period_key
+        assert (bundle / "geometry.json").exists()
+        manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["mode"] == "typical_weekday"
+        assert manifest["schedule_period"]["period_key"] == period_key
+        assert by_key[period_key]["path"] == period_key
+        slots = sorted(f.stem for f in (bundle / "timeslots").glob("*.json"))
+        assert slots == [t.replace(":", "") for t in manifest["timeslots"]]
+
+    # The two periods really are two medians of the same segment, not one.
+    summer = json.loads((root / "summer00000000" / "timeslots" / "0800.json").read_text())
+    autumn = json.loads((root / "autumn00000000" / "timeslots" / "0800.json").read_text())
+    assert summer["speed_kmh"][0] == 36  # 10.0 m/s
+    assert autumn["speed_kmh"][0] == 14  # 4.0 m/s
+    # 08:15 exists only under the autumn timetable, so only its bundle has it.
+    assert (root / "autumn00000000" / "timeslots" / "0815.json").exists()
+    assert not (root / "summer00000000" / "timeslots" / "0815.json").exists()
+
+
+def test_export_drops_a_period_directory_that_left_the_archive(tmp_path: Path, monkeypatch):
+    """The tree is rebuilt each run, so a stale period bundle cannot survive
+    as a directory the index no longer mentions."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    _write_static_zip(static_dir).rename(static_dir / "gtfs_2026-09-03.zip")
+
+    data_dir = tmp_path / "data"
+    _, shapes_by_key, _ = load_static(static_dir / "gtfs_2026-09-03.zip")
+    _write_typical_weekday(data_dir / "processed" / "typical_weekday.json",
+                           next(iter(shapes_by_key)))
+    stale = data_dir / "web" / "typical_weekday" / "gone000000000000"
+    stale.mkdir(parents=True)
+    (stale / "manifest.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(data_dir)])
+    main()
+
+    assert not stale.exists()
+
+
+def test_manifest_names_the_schedule_period_as_a_limitation():
+    period = {"period_key": "abc", "first_date": "2026-09-08", "last_date": "2026-09-12",
+              "route_count": 138, "trip_count": 15600}
+    with_period = build_manifest(
+        mode="typical_weekday", min_samples=2, bins_before=10, bins_after=6,
+        pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
+        source={}, days_processed=[], days_in_median=[], incomplete_days={},
+        shapes_observed=3, total_static_shapes=10, schedule_period=period,
+    )
+    without = build_manifest(
+        mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
+        pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
+        source={}, days_processed=[], days_in_median=[], incomplete_days={},
+        shapes_observed=3, total_static_shapes=10,
+    )
+    assert with_period["schedule_period"] == period
+    assert len(with_period["known_limitations"]) == len(without["known_limitations"]) + 1
+    assert any("2026-09-08 to 2026-09-12" in line for line in with_period["known_limitations"])
+    # The day switcher exports one day, which ran one timetable -- no period
+    # field, no extra caveat.
+    assert without["schedule_period"] is None

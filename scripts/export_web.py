@@ -58,6 +58,15 @@ correct polyline and two ids for one road stay one row. Route metadata
 build_geometry() resolves it through the shape_ids load_static() reports
 for each key, which is a set rather than one id for exactly that reason.
 
+One bundle per schedule period: segment_speeds.py splits the typical
+weekday by the timetable each day ran under (its schedule_period_key), so
+this script writes web/typical_weekday/<period_key>/ for each of them —
+geometry, timeslots and manifest exactly as before, one median per
+timetable — plus web/typical_weekday/manifest.json, an index naming every
+period, its date range and which one is current. A client fetches the index
+first and follows current_period. The --day switcher is untouched: one day
+ran one timetable, so it needs no split.
+
 Static feed argument: either one zip (one feed for every bin, unchanged
 prior behaviour) or a directory of gtfs_<YYYY-MM-DD>.zip snapshots — see
 load_static_sources(). Unlike segment_speeds.py this script doesn't need to
@@ -153,18 +162,30 @@ INCOMPLETE_COVERAGE_PCT = 99.0
 # ─── Loading the two possible sources into one shape ────────────────────────
 
 def load_typical_weekday_bins(path: Path) -> tuple:
-    """typical_weekday.json's "shape_key|segment_index|timeslot" string keys
-    -> {(shape_key, segment_index, timeslot): (median_speed_ms, n_samples)}.
-    shape_key contains "@" (see segment_speeds.build_shape_key) but never
-    "|", so split("|") still yields exactly 3 fields. Returns (bins,
-    raw_json) so the caller can also pull provenance fields (days_processed,
-    static_feeds, ...) out of the same file."""
+    """typical_weekday.json's segments, as
+    {schedule_period_key: {(shape_key, segment_index, timeslot):
+    (median_speed_ms, n_samples)}}.
+
+    segment_speeds.py aggregates one median set per schedule period (see its
+    assign_schedule_periods), because pooling a day from before a timetable
+    change with a day from after it averages two different services into one
+    number. Each period is exported as its own bundle, so the outer key
+    stays a period here rather than being flattened away.
+
+    The inner key is still 3 fields: shape_key is bare hex (see
+    segment_speeds.build_shape_key) and never contains "|". Returns
+    (bins_by_period, raw_json) so the caller can also pull provenance fields
+    (days_processed, schedule_periods, static_feeds, ...) out of the same
+    file."""
     raw = json.loads(path.read_text(encoding="utf-8"))
-    bins = {}
-    for key, v in raw["segments"].items():
-        shape_key, seg_idx, slot = key.split("|")
-        bins[(shape_key, int(seg_idx), slot)] = (v["median_speed_ms"], v["n_samples"])
-    return bins, raw
+    bins_by_period = {}
+    for period_key, segments in raw["segments"].items():
+        bins = {}
+        for key, v in segments.items():
+            shape_key, seg_idx, slot = key.split("|")
+            bins[(shape_key, int(seg_idx), slot)] = (v["median_speed_ms"], v["n_samples"])
+        bins_by_period[period_key] = bins
+    return bins_by_period, raw
 
 
 def aggregate_day_bins(segment_speeds_path: Path) -> dict:
@@ -444,13 +465,44 @@ def build_manifest(
     incomplete_days: dict,
     shapes_observed: int,
     total_static_shapes: int,
+    schedule_period: dict | None = None,
 ) -> dict:
     bins_dropped = bins_before - bins_after
     segments_dropped = pairs_before - pairs_after
+    limitations = [
+        "Segment geometry is a straight chord between the two ends of a 200 m bin, not "
+        "the true polyline inside it — a sharp turn or roundabout within one segment "
+        "renders as a straight line, not the vehicle's actual path.",
+        "Speed is an integer km/h for map colouring, not the scientific record. The "
+        "underlying float m/s and every individual sample it was built from live in "
+        "segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).",
+        f"Only shapes actually observed in the source archive appear here: "
+        f"{shapes_observed} of the static feed's {total_static_shapes} shapes for this "
+        f"export ({mode}).",
+        "The GTFS-RT feed carries no Sofia metro vehicles; this export describes surface "
+        "transport only.",
+        "Route metadata is per shape, not per segment. Twelve shapes in this feed serve "
+        "more than one route, so shape_route_ids is a list; no shape mixes route types, "
+        "so shape_route_type is a single GTFS value (0 tram, 1 metro, 3 bus, "
+        "11 trolleybus) and is null if that ever stops holding.",
+    ]
+    if schedule_period:
+        limitations.append(
+            "This median covers only the days that ran one published timetable "
+            f"({schedule_period['first_date']} to {schedule_period['last_date']}, "
+            f"{schedule_period['route_count']} routes and {schedule_period['trip_count']} "
+            "trips). Days under a different timetable are exported as a separate period "
+            "and are never averaged into this one. Two timetables that differ only in "
+            "departure times, with every route's trip count unchanged, are indistinguishable "
+            "to that split and would share one period."
+        )
     return {
         "format_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,  # "typical_weekday" or a specific "YYYY-MM-DD"
+        # Which timetable this bundle's days ran, from typical_weekday.json's
+        # schedule_periods; null for a single-day export, which needs no split.
+        "schedule_period": schedule_period,
         "source": source,
         "days_processed": days_processed,
         "days_in_median": days_in_median,
@@ -489,23 +541,7 @@ def build_manifest(
         "segment_count": pairs_after,
         "timeslot_count": len(timeslot_labels),
         "timeslots": sorted(timeslot_labels),
-        "known_limitations": [
-            "Segment geometry is a straight chord between the two ends of a 200 m bin, not "
-            "the true polyline inside it — a sharp turn or roundabout within one segment "
-            "renders as a straight line, not the vehicle's actual path.",
-            "Speed is an integer km/h for map colouring, not the scientific record. The "
-            "underlying float m/s and every individual sample it was built from live in "
-            "segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).",
-            f"Only shapes actually observed in the source archive appear here: "
-            f"{shapes_observed} of the static feed's {total_static_shapes} shapes for this "
-            f"export ({mode}).",
-            "The GTFS-RT feed carries no Sofia metro vehicles; this export describes surface "
-            "transport only.",
-            "Route metadata is per shape, not per segment. Twelve shapes in this feed serve "
-            "more than one route, so shape_route_ids is a list; no shape mixes route types, "
-            "so shape_route_type is a single GTFS value (0 tram, 1 metro, 3 bus, "
-            "11 trolleybus) and is null if that ever stops holding.",
-        ],
+        "known_limitations": limitations,
     }
 
 
@@ -515,70 +551,31 @@ def gzip_size(path: Path) -> int:
     return len(gzip.compress(path.read_bytes(), compresslevel=9))
 
 
-# ─── Entry point ─────────────────────────────────────────────────────────────
+# ─── Writing one bundle (a schedule period, or one day) ────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("static_source", type=Path,
-                        help="GTFS static zip (needs shapes.txt), or a directory of gtfs_<YYYY-MM-DD>.zip "
-                             "snapshots -- every snapshot found is loaded and merged (see load_static_sources)")
-    parser.add_argument("data_dir", type=Path, help="Directory with <YYYY-MM-DD>.jsonl/.manifest.json and segment_speeds.py's processed/ output")
-    parser.add_argument("--processed-dir", type=Path, default=None,
-                        help="Where segment_speeds.py wrote its output (default: <data_dir>/processed)")
-    parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Where to write the web export (default: <data_dir>/web)")
-    parser.add_argument("--day", type=str, default=None,
-                        help="Export one specific YYYY-MM-DD day's own median instead of typical_weekday.json "
-                             "(Component D feature 2, the day switcher)")
-    parser.add_argument("--min-samples", type=int, default=MIN_SAMPLES_DEFAULT,
-                        help=f"Drop (segment, timeslot) bins with fewer observations than this (default: {MIN_SAMPLES_DEFAULT})")
-    args = parser.parse_args()
+def write_export(
+    *,
+    out_dir: Path,
+    bins: dict,
+    min_samples: int,
+    shapes_by_key: dict,
+    route_info: dict,
+    shape_ids_by_key: dict,
+    mode: str,
+    source: dict,
+    days_processed: list,
+    days_in_median: list,
+    incomplete_days: dict,
+    schedule_period: dict | None = None,
+) -> dict:
+    """Threshold -> geometry -> timeslot files -> manifest, into `out_dir`.
+    Returns the manifest it wrote.
 
-    processed_dir = args.processed_dir or (args.data_dir / "processed")
-    output_root = args.output_dir or (args.data_dir / "web")
-
-    shapes_by_key, route_info, shape_ids_by_key, static_paths = load_static_sources(args.static_source)
-    static_feed_names = [p.name for p in static_paths]
-
-    if args.day:
-        mode = args.day
-        segment_speeds_path = processed_dir / f"segment_speeds_{args.day}.jsonl"
-        if not segment_speeds_path.exists():
-            print(f"{segment_speeds_path}: not found", file=sys.stderr)
-            sys.exit(1)
-        t0 = time.time()
-        bins = aggregate_day_bins(segment_speeds_path)
-        print(f"  aggregated {segment_speeds_path.name}: {len(bins):,} bins ({time.time() - t0:.1f}s)")
-        source = {"segment_speeds_file": segment_speeds_path.name, "static_feeds_used": static_feed_names}
-        days_processed = [args.day]
-        days_in_median = [args.day]
-    else:
-        mode = "typical_weekday"
-        typical_path = processed_dir / "typical_weekday.json"
-        if not typical_path.exists():
-            print(f"{typical_path}: not found -- run segment_speeds.py first", file=sys.stderr)
-            sys.exit(1)
-        bins, typical_data = load_typical_weekday_bins(typical_path)
-        # typical_weekday.json now records a list of feeds (one per day it
-        # potentially spans, see segment_speeds.py's day_breakdown) rather
-        # than one scalar file -- warn only if this run's loaded feeds don't
-        # cover everything segment_speeds.py actually used, since a
-        # directory source naturally loads every snapshot anyway.
-        recorded_feeds = {f["file"] for f in typical_data.get("static_feeds", [])}
-        missing_feeds = recorded_feeds - set(static_feed_names)
-        if missing_feeds:
-            print(f"WARNING: typical_weekday.json was built using {sorted(missing_feeds)}, "
-                  f"not loaded by this run ({static_feed_names}) -- some shape_ids may not resolve",
-                  file=sys.stderr)
-        source = {"typical_weekday_file": typical_path.name, "static_feeds_used": static_feed_names}
-        days_processed = typical_data.get("days_processed", [])
-        days_in_median = typical_data.get("days_in_median_mon_fri", [])
-
-    incomplete = incomplete_day_notes(args.data_dir, days_in_median)
-    out_dir = output_root / mode
-
+    One bundle is one median: a schedule period of the typical weekday, or a
+    single day for the day switcher. Both callers reach the files through
+    here, so the format cannot drift between them."""
     pairs_before = segment_pairs(bins)
-    retained, n_before, n_after = apply_threshold(bins, args.min_samples)
+    retained, n_before, n_after = apply_threshold(bins, min_samples)
     pairs_after = segment_pairs(retained)
 
     geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_key, route_info,
@@ -607,7 +604,7 @@ def main():
 
     manifest = build_manifest(
         mode=mode,
-        min_samples=args.min_samples,
+        min_samples=min_samples,
         bins_before=n_before,
         bins_after=n_after,
         pairs_before=len(pairs_before),
@@ -617,9 +614,10 @@ def main():
         source=source,
         days_processed=days_processed,
         days_in_median=days_in_median,
-        incomplete_days=incomplete,
+        incomplete_days=incomplete_days,
         shapes_observed=len({sid for sid, _ in pairs_before}),
         total_static_shapes=len(shapes_by_key),
+        schedule_period=schedule_period,
     )
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -641,11 +639,175 @@ def main():
           f"({len(geometry['shape_idx']):,} segments, {len(geometry['shape_ids']):,} shapes)")
     print(f"  {len(slot_paths)} timeslot files, avg {avg_gz:,.0f}B gz, largest {max_gz:,}B gz")
     print(f"  first load (manifest + geometry + 1 slot): {first_load_gz:,}B gz  (budget: ~1,000,000B)")
-    print(f"  bins: {n_before:,} -> {n_after:,} retained (min_samples={args.min_samples}), "
+    print(f"  bins: {n_before:,} -> {n_after:,} retained (min_samples={min_samples}), "
           f"segments: {len(pairs_before):,} -> {len(pairs_after):,}")
     if missing_shapes:
         print(f"  WARNING: {missing_shapes} (shape,segment) pair(s) referenced a shape_key absent "
-              f"from {static_feed_names} -- dropped from geometry and every timeslot file", file=sys.stderr)
+              f"from the static feed(s) loaded -- dropped from geometry and every timeslot file",
+              file=sys.stderr)
+
+    return manifest
+
+
+# ─── The index over the schedule periods ────────────────────────────────────
+
+def current_period_key(schedule_periods: list) -> str | None:
+    """The period holding the most recent weekday in the archive — the one a
+    client should open by default, since it is the timetable in force.
+    Weekday days only: a weekend runs its own schedule and never enters the
+    median (D4), so the newest weekend day says nothing about which
+    weekday median is current."""
+    latest, key = None, None
+    for p in schedule_periods:
+        for d in p.get("days_in_median_mon_fri", []):
+            if latest is None or d > latest:
+                latest, key = d, p["period_key"]
+    return key
+
+
+def build_period_index(period_entries: list, current: str | None,
+                       days_excluded: list) -> dict:
+    """The index a client fetches first: which timetables this archive has
+    medians for, which one is current, and where each bundle lives. Without
+    it a client would have to guess directory names built from a hash.
+
+    days_excluded carries the archive days that entered no median at all,
+    each with its reason (weekend, reduced_service, no_calendar_rows). A
+    period bundle can only list its own days, so without this the web tree
+    would say which days were averaged and never which ones were dropped —
+    and a dropped public holiday is exactly the kind of omission a reader
+    should be able to see rather than infer from a gap in the dates."""
+    return {
+        "format_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "typical_weekday_index",
+        "current_period": current,
+        "period_count": len(period_entries),
+        "periods": period_entries,
+        "days_excluded_from_median": days_excluded,
+    }
+
+
+# ─── Entry point ─────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("static_source", type=Path,
+                        help="GTFS static zip (needs shapes.txt), or a directory of gtfs_<YYYY-MM-DD>.zip "
+                             "snapshots -- every snapshot found is loaded and merged (see load_static_sources)")
+    parser.add_argument("data_dir", type=Path, help="Directory with <YYYY-MM-DD>.jsonl/.manifest.json and segment_speeds.py's processed/ output")
+    parser.add_argument("--processed-dir", type=Path, default=None,
+                        help="Where segment_speeds.py wrote its output (default: <data_dir>/processed)")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Where to write the web export (default: <data_dir>/web)")
+    parser.add_argument("--day", type=str, default=None,
+                        help="Export one specific YYYY-MM-DD day's own median instead of typical_weekday.json "
+                             "(Component D feature 2, the day switcher)")
+    parser.add_argument("--min-samples", type=int, default=MIN_SAMPLES_DEFAULT,
+                        help=f"Drop (segment, timeslot) bins with fewer observations than this (default: {MIN_SAMPLES_DEFAULT})")
+    args = parser.parse_args()
+
+    processed_dir = args.processed_dir or (args.data_dir / "processed")
+    output_root = args.output_dir or (args.data_dir / "web")
+
+    shapes_by_key, route_info, shape_ids_by_key, static_paths = load_static_sources(args.static_source)
+    static_feed_names = [p.name for p in static_paths]
+
+    common = dict(min_samples=args.min_samples, shapes_by_key=shapes_by_key,
+                  route_info=route_info, shape_ids_by_key=shape_ids_by_key)
+
+    if args.day:
+        # The day switcher exports one day's own median. A single day ran a
+        # single timetable, so nothing here splits by schedule period.
+        segment_speeds_path = processed_dir / f"segment_speeds_{args.day}.jsonl"
+        if not segment_speeds_path.exists():
+            print(f"{segment_speeds_path}: not found", file=sys.stderr)
+            sys.exit(1)
+        t0 = time.time()
+        bins = aggregate_day_bins(segment_speeds_path)
+        print(f"  aggregated {segment_speeds_path.name}: {len(bins):,} bins ({time.time() - t0:.1f}s)")
+        write_export(
+            out_dir=output_root / args.day,
+            bins=bins,
+            mode=args.day,
+            source={"segment_speeds_file": segment_speeds_path.name,
+                    "static_feeds_used": static_feed_names},
+            days_processed=[args.day],
+            days_in_median=[args.day],
+            incomplete_days=incomplete_day_notes(args.data_dir, [args.day]),
+            **common,
+        )
+        return
+
+    typical_path = processed_dir / "typical_weekday.json"
+    if not typical_path.exists():
+        print(f"{typical_path}: not found -- run segment_speeds.py first", file=sys.stderr)
+        sys.exit(1)
+    bins_by_period, typical_data = load_typical_weekday_bins(typical_path)
+    if "schedule_periods" not in typical_data:
+        print(f"{typical_path}: no schedule_periods -- it predates the schedule-period split, "
+              f"re-run segment_speeds.py", file=sys.stderr)
+        sys.exit(1)
+    # typical_weekday.json records a list of feeds (one per day it
+    # potentially spans, see segment_speeds.py's day_breakdown) rather
+    # than one scalar file -- warn only if this run's loaded feeds don't
+    # cover everything segment_speeds.py actually used, since a
+    # directory source naturally loads every snapshot anyway.
+    recorded_feeds = {f["file"] for f in typical_data.get("static_feeds", [])}
+    missing_feeds = recorded_feeds - set(static_feed_names)
+    if missing_feeds:
+        print(f"WARNING: typical_weekday.json was built using {sorted(missing_feeds)}, "
+              f"not loaded by this run ({static_feed_names}) -- some shape_ids may not resolve",
+              file=sys.stderr)
+
+    # One bundle per schedule period under typical_weekday/, plus an index
+    # naming them. The whole tree is rebuilt so a period that has left the
+    # archive cannot linger as a directory the index no longer mentions.
+    root = output_root / "typical_weekday"
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True)
+
+    periods = [p for p in typical_data["schedule_periods"] if p["period_key"] in bins_by_period]
+    index_entries = []
+    for period in periods:
+        period_key = period["period_key"]
+        days_in_median = period.get("days_in_median_mon_fri", [])
+        manifest = write_export(
+            out_dir=root / period_key,
+            bins=bins_by_period[period_key],
+            mode="typical_weekday",
+            source={"typical_weekday_file": typical_path.name,
+                    "static_feeds_used": static_feed_names},
+            days_processed=days_in_median,
+            days_in_median=days_in_median,
+            incomplete_days=incomplete_day_notes(args.data_dir, days_in_median),
+            schedule_period=period,
+            **common,
+        )
+        index_entries.append({
+            "period_key": period_key,
+            "path": period_key,
+            "first_date": period["first_date"],
+            "last_date": period["last_date"],
+            "days_in_median": days_in_median,
+            "route_count": period["route_count"],
+            "trip_count": period["trip_count"],
+            "bins_total_before_threshold": manifest["web_export"]["bins_total_before_threshold"],
+            "bins_retained": manifest["web_export"]["bins_retained"],
+            "segments_retained": manifest["segment_count"],
+            "timeslot_count": manifest["timeslot_count"],
+        })
+
+    index = build_period_index(index_entries, current_period_key(periods),
+                               typical_data.get("days_excluded_from_median", []))
+    index_path = root / "manifest.json"
+    index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    print(f"\n{index_path}: {len(index_entries)} schedule period(s), "
+          f"current {index['current_period']}")
+    for e in index_entries:
+        print(f"  {e['period_key']}  {e['first_date']}..{e['last_date']}  "
+              f"{len(e['days_in_median'])} weekday day(s), {e['bins_retained']:,} bins retained")
 
 
 if __name__ == "__main__":

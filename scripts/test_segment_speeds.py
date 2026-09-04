@@ -16,14 +16,19 @@ from segment_speeds import (
     Shape,
     build_shape,
     build_shape_key,
+    build_schedule_periods,
     build_typical_weekday,
     count_multi_geometry_shape_ids,
     count_multi_id_geometries,
     find_static_snapshots,
     next_snapshot_after,
     haversine_m,
+    load_schedule_calendar,
     load_static,
     pick_snapshot_for_day,
+    assign_schedule_periods,
+    schedule_churn,
+    schedule_signature,
     process_day,
     project_point,
     timeslot_for,
@@ -534,11 +539,314 @@ def test_typical_weekday_segment_key_still_splits_into_exactly_three_fields():
     # export_web.py's key.split("|") keep working untouched across both
     # changes to the key's contents.
     shape_key = build_shape_key([(0.0, 0.0), (0.001, 0.0)])
-    agg = {(shape_key, 7, "11:00"): [10.0, 12.0]}
-    result = build_typical_weekday(agg, ["2026-08-27"], ["2026-08-27"], [], [], Counter(), {}, 0, 0)
+    agg = {"period0": {(shape_key, 7, "11:00"): [10.0, 12.0]}}
+    result = build_typical_weekday(agg, ["2026-08-27"], ["2026-08-27"], [], [], Counter(), {}, 0, 0, [])
 
-    assert len(result["segments"]) == 1
-    key = next(iter(result["segments"]))
+    # The period key is the outer level, so the bin key itself is untouched.
+    assert list(result["segments"]) == ["period0"]
+    key = next(iter(result["segments"]["period0"]))
     parts = key.split("|")
     assert len(parts) == 3
     assert parts == [shape_key, "7", "11:00"]
+
+
+# ─── Schedule periods (which timetable a day ran) ──────────────────────────
+
+def _write_schedule_zip(tmp_path: Path, filename: str, trips: list, dates: dict) -> Path:
+    """A GTFS zip carrying only what schedule_signature() reads: trips.txt
+    (as (trip_id, route_id, service_id) triples) and calendar_dates.txt (as
+    "YYYYMMDD" -> [service_id, ...], all exception_type 1, which is the only
+    type this feed ever publishes)."""
+    trip_rows = ["trip_id,route_id,service_id,shape_id"]
+    trip_rows += [f"{t},{r},{s},{SHAPE_ID}" for t, r, s in trips]
+    cal_rows = ["service_id,date,exception_type"]
+    for date, services in dates.items():
+        cal_rows += [f"{s},{date},1" for s in services]
+
+    path = tmp_path / filename
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("trips.txt", "\n".join(trip_rows) + "\n")
+        z.writestr("calendar_dates.txt", "\n".join(cal_rows) + "\n")
+    return path
+
+
+def _signature(zip_path: Path, date_str: str):
+    return schedule_signature(*load_schedule_calendar(zip_path), date_str)
+
+
+def _day(date_str: str, counts: dict, is_weekday: bool = True, key: str = None) -> dict:
+    """A day in the shape assign_schedule_periods() takes it. signature_key
+    stands in for the sha256 the pipeline computes from the same counts."""
+    return {"date": date_str, "is_weekday": is_weekday, "counts": counts,
+            "signature_key": key or f"sig_{date_str}"}
+
+
+def test_added_route_puts_two_days_in_different_schedule_periods(tmp_path: Path):
+    """The 2026-09-04 autumn timetable in miniature: a route appears, so the
+    two days ran different schedules and must not pool into one median."""
+    before = _write_schedule_zip(
+        tmp_path, "gtfs_before.zip",
+        [("T1", "R1", "WD"), ("T2", "R2", "WD")],
+        {"20260903": ["WD"]},
+    )
+    after = _write_schedule_zip(
+        tmp_path, "gtfs_after.zip",
+        [("T1", "R1", "WD"), ("T2", "R2", "WD"), ("T3", "R3", "WD")],
+        {"20260908": ["WD"]},
+    )
+    key_before, counts_before = _signature(before, "2026-09-03")
+    key_after, counts_after = _signature(after, "2026-09-08")
+
+    assert key_before != key_after
+    assert counts_before == {"R1": 1, "R2": 1}
+    assert counts_after == {"R1": 1, "R2": 1, "R3": 1}
+
+
+def test_changed_trip_count_alone_splits_the_period(tmp_path: Path):
+    # Tram 8 going 399 -> 617 trips is the same route list, a different
+    # timetable. Route ids alone would miss it; the counts are in the key.
+    fewer = _write_schedule_zip(tmp_path, "gtfs_fewer.zip",
+                                [("T1", "R1", "WD")], {"20260903": ["WD"]})
+    more = _write_schedule_zip(tmp_path, "gtfs_more.zip",
+                               [("T1", "R1", "WD"), ("T2", "R1", "WD")], {"20260908": ["WD"]})
+    assert _signature(fewer, "2026-09-03")[0] != _signature(more, "2026-09-08")[0]
+
+
+def test_renumbered_trip_ids_keep_the_same_schedule_period(tmp_path: Path):
+    """2026-09-02: the agency renumbered 157 trip_ids (and their service_ids)
+    mid-day without changing the timetable. A key built from those
+    identifiers would declare a new timetable; the content-addressed one
+    must not."""
+    original = _write_schedule_zip(
+        tmp_path, "gtfs_orig.zip",
+        [("T1", "R1", "WD"), ("T2", "R1", "WD"), ("T3", "R2", "WD")],
+        {"20260902": ["WD"], "20260903": ["WD"]},
+    )
+    renumbered = _write_schedule_zip(
+        tmp_path, "gtfs_renum.zip",
+        [("T900001", "R1", "SVC_7788"), ("T900002", "R1", "SVC_7788"), ("T900003", "R2", "SVC_7788")],
+        {"20260902": ["SVC_7788"], "20260903": ["SVC_7788"]},
+    )
+    assert _signature(original, "2026-09-02")[0] == _signature(renumbered, "2026-09-02")[0]
+
+
+def test_services_not_running_on_the_day_stay_out_of_its_key(tmp_path: Path):
+    # A weekend service sitting in the same feed must not leak into the
+    # weekday key -- the key is per date, not per feed.
+    z = _write_schedule_zip(
+        tmp_path, "gtfs_mixed.zip",
+        [("T1", "R1", "WD"), ("T2", "R2", "WD"), ("T3", "R9", "WE")],
+        {"20260903": ["WD"], "20260905": ["WE"]},
+    )
+    weekday_key, weekday_counts = _signature(z, "2026-09-03")
+    weekend_key, weekend_counts = _signature(z, "2026-09-05")
+    assert weekday_key != weekend_key
+    assert weekday_counts == {"R1": 1, "R2": 1}
+    assert weekend_counts == {"R9": 1}
+
+
+def test_a_date_the_feed_does_not_cover_hashes_to_the_empty_signature(tmp_path: Path):
+    # Retrospective calendar erosion is real (newer snapshots drop rows for
+    # past dates), so an absent date must degrade to an empty, obviously
+    # distinct signature rather than raise.
+    z = _write_schedule_zip(tmp_path, "gtfs_thin.zip",
+                            [("T1", "R1", "WD")], {"20260903": ["WD"]})
+    key, counts = _signature(z, "2026-12-25")
+    assert counts == {}
+    assert key != _signature(z, "2026-09-03")[0]
+
+
+# The August archive in miniature: ~15,000 trips a weekday, so the 0.5%
+# tolerance is 75 trips of movement.
+BASE = {"R1": 10000, "R2": 5000}
+
+
+def test_a_handful_of_added_trips_stays_in_one_period():
+    """Three trips moving between two tram routes: 0.02% of a weekday, the
+    same timetable by any honest reading, and hashing the signature alone
+    would call it a new one. The feed has not published a boundary this
+    small — the smallest it shows is 3.15% — so this is the case the
+    threshold exists to absorb rather than one it was fitted to."""
+    days = assign_schedule_periods([
+        _day("2026-08-27", BASE),
+        _day("2026-08-28", {"R1": 10002, "R2": 5001}),
+    ])
+    assert days[0]["period_key"] == days[1]["period_key"] == "sig_2026-08-27"
+    assert days[1]["churn_vs_reference"] == 3
+
+
+def test_a_material_timetable_change_starts_a_new_period():
+    # Route 10TM's 148 trips ending, part of the 595-trip 4.07% step the feed
+    # publishes at the end of August: over the threshold, and the two medians
+    # must stay apart.
+    days = assign_schedule_periods([
+        _day("2026-08-28", BASE),
+        _day("2026-08-31", {"R1": 9852, "R2": 5000}),
+    ])
+    assert days[1]["period_key"] == "sig_2026-08-31"
+    assert days[0]["period_key"] != days[1]["period_key"]
+
+
+def test_drift_is_measured_against_the_reference_not_the_previous_day():
+    """Two steps of 70 trips each are inside the tolerance one at a time but
+    140 apart end to end. Compared against the previous day the period would
+    walk away from the timetable its key names."""
+    days = assign_schedule_periods([
+        _day("2026-08-27", BASE),
+        _day("2026-08-28", {"R1": 10070, "R2": 5000}),
+        _day("2026-08-31", {"R1": 10140, "R2": 5000}),
+    ])
+    assert days[1]["period_key"] == days[0]["period_key"]
+    assert days[2]["period_key"] == "sig_2026-08-31"
+
+
+def test_a_weekday_on_holiday_service_leaves_the_median_instead_of_founding_a_period():
+    """2026-09-07, a Monday running 10,149 trips against 15,013 on the
+    weekdays around it. Let through, it would be a period of one day; the
+    median of one day is that day."""
+    days = assign_schedule_periods([
+        _day("2026-09-03", BASE),
+        _day("2026-09-04", BASE),
+        _day("2026-09-07", {"R1": 7000, "R2": 3149}),
+        _day("2026-09-08", BASE),
+    ])
+    assert days[2]["excluded_from_median"] == "reduced_service"
+    assert days[2]["period_key"] is None
+    # And it did not become the reference: the weekday after it stays in the
+    # period it would have interrupted.
+    assert days[3]["period_key"] == days[0]["period_key"]
+
+
+def test_a_gap_in_the_calendar_cannot_disarm_the_holiday_rule():
+    """Zero-trip weekdays used to count towards the median that the
+    reduced-service test measures against. Enough of them (a run of static
+    snapshots missing the dates they cover, which this archive has already
+    hit once) drags that median to zero, and a zero baseline turns the whole
+    test into a no-op: the holiday sails into the median and founds a period
+    of its own."""
+    days = assign_schedule_periods(
+        [_day(f"2026-10-{d:02d}", {}) for d in (5, 6, 7, 8, 9, 12)]
+        + [_day(f"2026-10-{d:02d}", BASE) for d in (13, 14, 15, 16, 19)]
+        + [_day("2026-10-20", {"R1": 7000, "R2": 3149})]
+    )
+    holiday = days[-1]
+    assert holiday["excluded_from_median"] == "reduced_service"
+    assert holiday["period_key"] is None
+    assert all(d["excluded_from_median"] == "no_calendar_rows" for d in days[:6])
+
+
+def test_a_date_the_snapshot_has_no_calendar_rows_for_is_not_called_a_holiday():
+    # Zero trips is a hole in the archive, not the city running fewer buses.
+    # Both leave the median; only one of them is a fact about the city.
+    days = assign_schedule_periods([_day("2026-08-27", BASE), _day("2026-12-25", {})])
+    assert days[1]["excluded_from_median"] == "no_calendar_rows"
+
+
+def test_weekends_take_no_period_at_all():
+    days = assign_schedule_periods([
+        _day("2026-08-28", BASE),
+        _day("2026-08-29", {"R1": 6000, "R2": 3800}, is_weekday=False),
+    ])
+    assert days[1]["excluded_from_median"] == "weekend"
+    assert days[1]["period_key"] is None
+
+
+def test_a_period_names_the_reference_day_even_when_the_run_skipped_it():
+    """A run given an explicit subset of dates still assigns periods over the
+    whole archive (see main()), so a period's reference day can be one this
+    run did not process. The entry has to name that day rather than the
+    earliest day it happens to hold, or the same timetable would be
+    described differently depending on how the run was called."""
+    days = assign_schedule_periods([
+        _day("2026-08-27", BASE),
+        _day("2026-08-28", {"R1": 10002, "R2": 5001}),
+    ])
+    assert [d["period_reference_date"] for d in days] == ["2026-08-27", "2026-08-27"]
+
+    periods = build_schedule_periods(days[1:], {"sig_2026-08-27": 7})
+    assert len(periods) == 1
+    assert periods[0]["period_key"] == "sig_2026-08-27"
+    assert periods[0]["reference_date"] == "2026-08-27"
+    assert periods[0]["days_in_median_mon_fri"] == ["2026-08-28"]
+
+
+def test_schedule_churn_counts_a_dropped_route_in_full():
+    assert schedule_churn({"R1": 100}, {"R1": 100, "R2": 40}) == 40
+    assert schedule_churn({}, {}) == 0
+
+
+def test_build_schedule_periods_describes_each_period_by_its_reference_day():
+    days = assign_schedule_periods([
+        _day("2026-08-27", BASE),
+        _day("2026-08-28", {"R1": 10002, "R2": 5001}),
+        _day("2026-08-29", {"R1": 6000, "R2": 3800}, is_weekday=False),
+        _day("2026-08-31", {"R1": 9852, "R2": 5000, "R3": 55}),
+    ])
+    periods = build_schedule_periods(days, {"sig_2026-08-27": 10, "sig_2026-08-31": 20})
+    by_key = {p["period_key"]: p for p in periods}
+
+    assert [p["period_key"] for p in periods] == ["sig_2026-08-27", "sig_2026-08-31"]
+    first = by_key["sig_2026-08-27"]
+    assert first["days_in_median_mon_fri"] == ["2026-08-27", "2026-08-28"]
+    assert (first["first_date"], first["last_date"]) == ("2026-08-27", "2026-08-28")
+    assert first["reference_date"] == "2026-08-27"
+    assert (first["route_count"], first["trip_count"]) == (2, 15000)  # the reference day
+    assert first["max_churn_vs_reference"] == 3
+    assert first["bin_count"] == 10
+    # The weekend day is in no period; day_breakdown carries its reason.
+    assert sum(len(p["days_in_median_mon_fri"]) for p in periods) == 3
+    assert by_key["sig_2026-08-31"]["route_count"] == 3
+
+
+def test_bins_from_two_periods_never_merge_into_one_median():
+    """The bug this whole split exists for: the same segment and timeslot
+    observed under two timetables must yield two medians, not one average
+    of both."""
+    shape_key = build_shape_key([(0.0, 0.0), (0.001, 0.0)])
+    bin_key = (shape_key, 3, "08:00")
+    agg = {
+        "summer": {bin_key: [10.0, 10.0]},
+        "autumn": {bin_key: [4.0, 4.0]},
+    }
+    days = assign_schedule_periods([
+        _day("2026-09-03", BASE, key="summer"),
+        _day("2026-09-08", {"R1": 10000, "R2": 5000, "R3": 300}, key="autumn"),
+    ])
+    periods = build_schedule_periods(days, {"summer": 1, "autumn": 1})
+    result = build_typical_weekday(
+        agg, ["2026-09-03", "2026-09-08"], ["2026-09-03", "2026-09-08"],
+        [], [], Counter(), {}, 0, 0, periods,
+    )
+
+    flat = f"{shape_key}|3|08:00"
+    assert result["segments"]["summer"][flat]["median_speed_ms"] == 10.0
+    assert result["segments"]["autumn"][flat]["median_speed_ms"] == 4.0
+    # Pooled, the median would have been 7.0 and n_samples 4.
+    assert result["segments"]["summer"][flat]["n_samples"] == 2
+    assert result["segments"]["autumn"][flat]["n_samples"] == 2
+    assert result["segment_count"] == 2          # one bin per period, counted per period
+    assert result["distinct_segment_count"] == 1  # and one piece of road, counted once
+    assert [p["period_key"] for p in result["schedule_periods"]] == ["summer", "autumn"]
+
+
+def test_day_breakdown_names_the_timetable_and_the_reason_for_every_day(tmp_path: Path):
+    # Not a pipeline run -- just the contract that the field is present and
+    # weekends are not blanked out.
+    day_breakdown = [
+        {"date": "2026-08-29", "schedule_signature_key": "wknd_sig",
+         "schedule_period_key": None, "excluded_from_median": "weekend"},
+        {"date": "2026-09-07", "schedule_signature_key": "hol_sig",
+         "schedule_period_key": None, "excluded_from_median": "reduced_service"},
+        {"date": "2026-08-31", "schedule_signature_key": "bbb",
+         "schedule_period_key": "bbb", "excluded_from_median": None},
+    ]
+    result = build_typical_weekday(
+        {"bbb": {}}, ["2026-08-29", "2026-09-07", "2026-08-31"], ["2026-08-31"], [],
+        day_breakdown, Counter(), {}, 0, 0, [],
+    )
+    # Every day says which timetable it ran, whether or not it fed a median.
+    assert all(d["schedule_signature_key"] for d in result["day_breakdown"])
+    assert result["days_excluded_from_median"] == [
+        {"date": "2026-08-29", "reason": "weekend"},
+        {"date": "2026-09-07", "reason": "reduced_service"},
+    ]

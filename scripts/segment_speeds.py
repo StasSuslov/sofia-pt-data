@@ -69,14 +69,32 @@ Algorithm (given, not reinvented — see the task write-up):
       not the publisher's own claim about when a schedule took effect; both
       are recorded in the output so a reader can check one against the
       other rather than take either on trust.
+  12. schedule periods: (8) pools every Mon-Fri day into one median, which
+      silently averages two timetables together the moment the agency
+      publishes a new one — the autumn timetable of 2026-09-04 adds bus
+      routes 191 and 192, moves route 10's 58 daily trips onto a new route
+      190 running its four shapes and takes tram 8 from 261 trips a day to
+      213, all of it taking effect 2026-09-08. Each day is
+      therefore signed by the routes and trip counts its own snapshot
+      schedules for it (schedule_signature() below); consecutive weekdays
+      whose signatures differ by less than PERIOD_TOLERANCE_PCT of the
+      trips share a period, a bigger jump starts a new one, and a weekday
+      running a holiday's service leaves the median altogether
+      (assign_schedule_periods()). The aggregation groups on
+      (period_key, segment, timeslot), so days running different
+      timetables never merge into one median. D4's Mon-Fri rule is
+      untouched, only the grouping is finer.
 
 Outputs (directory created if missing):
     <output-dir>/segment_speeds_<date>.jsonl  — one row per accepted sample
     <output-dir>/typical_weekday.json         — D4 aggregation + run metadata,
         including which static feed(s) were used, a per-day breakdown (so a
         snapshot going stale shows up as one day's reject counts climbing,
-        not smeared into a grand total), and how many shape_ids were seen
-        carrying more than one distinct geometry across the feeds loaded.
+        not smeared into a grand total), how many shape_ids were seen
+        carrying more than one distinct geometry across the feeds loaded,
+        and the schedule_periods list — one entry per timetable observed,
+        with "segments" keyed by period so two timetables' medians stay
+        apart (see (12)).
 
 Usage:
     python3 scripts/segment_speeds.py data/sofia/static/gtfs_2026-08-27.zip \\
@@ -158,6 +176,60 @@ SEARCH_MARGIN_M = 300.0
 # Task-specified validation cutoff: how far the derived speed must be from
 # the feed's own speed_ms before it counts as a meaningful disagreement.
 VALIDATION_DIFF_THRESHOLD_KMH = 20.0
+
+# How far two weekdays' timetables may differ and still pool into one median.
+# The measure is churn (schedule_churn): per route, the difference between the
+# two days' scheduled trip counts, summed as absolute values, as a share of
+# the reference day's trips. A weekday here publishes around 15,000 trips, so
+# 0.5% is 75 trips of movement.
+#
+# What the archive shows is a gap, not a fitted line, and the honest version
+# says so. Read each of the 267 weekdays from 2026-08-27 to 2027-09-04 out of
+# the snapshot in force on it, which is what the pipeline does — the eight
+# archived days by their own snapshot, the 259 later ones by 2026-09-04's,
+# the eleven holiday weekdays below taken out — and consecutive weekdays
+# produce four churn values and nothing else:
+#   every day inside a period                        0 trips   0%
+#   the autumn weekday timetable, 2026-09-08       470 trips   3.15%
+#   the step to the school year, 2026-09-14        582 trips   3.88%
+#   three trams starting and 10TM ending, 08-31    595 trips   4.07%
+# So the feed bounds this threshold from above and says nothing about where
+# inside (0, 3.15%) it belongs: no boundary it has published sits under
+# 3.15%, and no day inside a period sits above 0. 0.5% is a sixth of the
+# smallest real boundary, which leaves room for a feed that shifts a handful
+# of trips without changing the timetable. On this archive it changes no
+# grouping at all — exact signatures would give the same periods — so it is
+# insurance against a feed that drifts, and METHODOLOGY.md calls it that
+# rather than dressing it up as a value the data picked.
+#
+# Which snapshot answers for a past date decides two of those four numbers.
+# Read the same 267 weekdays out of the 2026-09-04 snapshot alone and two
+# more boundaries appear, 9.42% at the end of August and 0.60% between 2 and
+# 3 September, both of them artefacts: the agency erodes calendar rows for
+# dates already past, and that snapshot no longer carries 1,066 of the trips
+# 2026-08-27 ran or 89 of 2026-09-02's (all of the 89 on route A53), which
+# both days' own snapshots do carry. A pipeline reading history out of the
+# latest feed would see a 0.60% step between two days that ran the same
+# timetable, and 0.5% would split them. This one reads each day against the
+# feed it started under, so the step never arises.
+PERIOD_TOLERANCE_PCT = 0.5
+
+# A weekday scheduling fewer trips than this share of the median weekday is
+# running a holiday's service, not a new timetable. 2026-09-07 is a Monday
+# carrying the same signature as the weekend either side of it: 10,149 trips
+# against 14,907 on the Thursday before, 35% churn, where a real timetable
+# change moves 3-4%. Over the same 267 weekdays eleven look like this, and
+# their dates line up with Bulgarian public holidays. This line is pinned
+# where the churn one is not: against a median of 15,595 trips the heaviest
+# such day reaches 65.90% and the lightest ordinary weekday 93.67%, so any
+# threshold between those two selects the same eleven days. Both edges are
+# the pipeline's own reading; the upper one falls to 86.84% if 2026-08-27 is
+# read out of the 2026-09-04 snapshot instead, for the erosion reason above.
+# 80% sits inside the band either way. Such a day leaves the median entirely — D4 asks for a
+# typical weekday — rather than founding a period of its own, which is what
+# the threshold alone would have handed it: one day, and a median over one
+# day is that day.
+REDUCED_SERVICE_PCT = 80.0
 
 REJECT_REASONS = (
     "trip_not_in_static",       # trip_id from the RT feed has no trips.txt row (~0.7% per CLAUDE.md)
@@ -393,6 +465,190 @@ def load_feed_info(gtfs_zip_path: Path) -> dict:
                 return next(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")), {})
     except (KeyError, zipfile.BadZipFile, StopIteration):
         return {}
+
+
+# ─── Schedule periods (which timetable a day ran) ───────────────────────────
+
+def load_schedule_calendar(gtfs_zip_path: Path) -> tuple:
+    """
+    (services_by_date, trip_services) for one static snapshot:
+    "YYYYMMDD" -> {service_id, ...} from calendar_dates.txt, and every
+    trips.txt row as a (service_id, route_id) pair.
+
+    This feed publishes no calendar.txt — checked against every snapshot in
+    the archive — so calendar_dates.txt is not a list of exceptions to a
+    weekly pattern, it is the entire calendar, one row per service per date
+    (499,841 rows over 1,119 dates in the 2026-09-04 snapshot). Only
+    exception_type "1" (service added) is read; "2" removes a service from a
+    base calendar that does not exist here, and no snapshot has ever carried
+    one.
+    """
+    services_by_date = defaultdict(set)
+    with zipfile.ZipFile(gtfs_zip_path) as z:
+        with z.open("calendar_dates.txt") as f:
+            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
+                if row["exception_type"] == "1":
+                    services_by_date[row["date"]].add(row["service_id"])
+        with z.open("trips.txt") as f:
+            trip_services = [
+                (row["service_id"], row["route_id"])
+                for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+            ]
+    return dict(services_by_date), trip_services
+
+
+def schedule_signature(services_by_date: dict, trip_services: list, date_str: str) -> tuple:
+    """
+    (signature_key, counts) for one calendar date read out of one static
+    snapshot — the day's own snapshot (pick_snapshot_for_day), never the
+    next_snapshot_after() fallback: the question here is which timetable the
+    day ran under, and that is the feed it started under.
+
+    counts is route_id -> trips scheduled that date. signature_key is the
+    first 16 hex chars of a sha256 over the sorted (route_id, trip_count)
+    pairs, the same content-addressing convention as build_shape_key(). It
+    names exactly what the agency published that day, with no tolerance:
+    which of these signatures are near enough to share a median is
+    assign_schedule_periods()'s decision, and the raw key stays in the
+    output per day so a reader sees the observation the grouping was made
+    from, not only its result.
+
+    Content-addressed for the same reason shape identity is: the agency
+    renumbers trip_ids and service_ids between nightly rebuilds (2026-09-02,
+    157 trips of four routes at 11:00 local) and a key built from those
+    identifiers would declare a new timetable every time it did. Route ids
+    and per-route trip counts sit still through a renumbering.
+
+    ponytail: the ceiling is a pure retiming — the agency moves departure
+    times but keeps every route's trip count identical — which hashes to the
+    same key, and those two timetables would merge into one median.
+    Detecting it needs stop_times.txt, 45.8 MB unpacked against trips.txt's
+    3.2 MB, re-read for every archived day on every scheduled fetch. Not worth paying until a retiming-only
+    change is actually observed; it is named as a limitation in
+    METHODOLOGY.md instead.
+    """
+    active = services_by_date.get(date_str.replace("-", ""), frozenset())
+    counts = Counter(route_id for service_id, route_id in trip_services if service_id in active)
+    pairs = sorted(counts.items())
+    key = hashlib.sha256(
+        ";".join(f"{route_id},{n}" for route_id, n in pairs).encode("utf-8")
+    ).hexdigest()[:16]
+    return key, dict(pairs)
+
+
+def schedule_churn(counts: dict, ref_counts: dict) -> int:
+    """Trips separating two days' timetables: per route, the absolute
+    difference in scheduled trips, summed over every route either day runs.
+    A route that appears or vanishes contributes its whole trip count, so
+    dropping a route is never free."""
+    return sum(abs(counts.get(r, 0) - ref_counts.get(r, 0))
+               for r in set(counts) | set(ref_counts))
+
+
+def assign_schedule_periods(days: list,
+                            tolerance_pct: float = PERIOD_TOLERANCE_PCT,
+                            reduced_service_pct: float = REDUCED_SERVICE_PCT) -> list:
+    """Give every day in `days` a "period_key" and an "excluded_from_median"
+    reason, in place, and return the list. Each day is a dict carrying
+    "date", "is_weekday", "signature_key" and "counts"; `days` is in date
+    order.
+
+    Weekends never enter the median (D4) and take no period. Of the
+    weekdays, one scheduling less than reduced_service_pct of the median
+    weekday's trips is dropped as reduced service: a holiday timetable is
+    not a typical weekday, and it differs from its neighbours by enough that
+    letting it through would found a period holding exactly one day.
+
+    The survivors are walked in date order. The first is its period's
+    reference and lends the period its signature_key; each following day
+    joins while its churn against that reference stays within tolerance_pct
+    of the reference's trips, and otherwise starts a new period as the new
+    reference. Measured against the reference rather than the previous day,
+    so a slow drift cannot walk a period arbitrarily far from the timetable
+    its key names, one tolerated step at a time.
+    """
+    # Zero-trip weekdays are holes in the archive, not the city running
+    # fewer buses, and they are kept out of the baseline: enough of them and
+    # the median reaches zero, at which point `level` goes falsy and the
+    # reduced-service test below silently stops firing for every day. A gap
+    # in the static snapshots is exactly the failure this archive has already
+    # lived through once (2026-08-28/29/30), so it must not disarm the rule.
+    weekday_totals = sorted(t for t in (sum(d["counts"].values())
+                                        for d in days if d["is_weekday"]) if t)
+    level = statistics.median(weekday_totals) if weekday_totals else 0
+
+    ref = None
+    for d in days:
+        total = sum(d["counts"].values())
+        if not d["is_weekday"]:
+            d["excluded_from_median"] = "weekend"
+        elif not total:
+            # Not a holiday: the snapshot this day was read against carries
+            # no calendar rows for the date at all. Keeping the two apart
+            # matters — one is the city running fewer buses, the other is a
+            # hole in the archive.
+            d["excluded_from_median"] = "no_calendar_rows"
+        elif level and total < level * reduced_service_pct / 100:
+            d["excluded_from_median"] = "reduced_service"
+        else:
+            d["excluded_from_median"] = None
+
+        if d["excluded_from_median"]:
+            d["period_key"] = None
+            continue
+
+        churn = schedule_churn(d["counts"], ref["counts"]) if ref else 0
+        if ref is None or churn > sum(ref["counts"].values()) * tolerance_pct / 100:
+            ref, churn = d, 0
+            d["period_key"] = d["signature_key"]
+        else:
+            d["period_key"] = ref["period_key"]
+        d["churn_vs_reference"] = churn
+        d["period_reference_date"] = ref["date"]
+    return days
+
+
+def build_schedule_periods(days: list, bin_counts: dict) -> list:
+    """
+    One entry per period over days already run through
+    assign_schedule_periods(), with `bin_counts` as period_key -> number of
+    (segment, timeslot) bins in that period's median.
+
+    Only days that entered the median carry a period_key, so only they
+    appear here; a weekend or a reduced-service day names its reason in
+    day_breakdown instead. reference_date is the day whose signature the
+    period is named after, which a run processing part of the archive can
+    have assigned against without processing (see main()); route_count and
+    trip_count then describe the earliest day of the period this run did
+    process, which the tolerance holds within PERIOD_TOLERANCE_PCT of it.
+    max_churn_vs_reference says how far the loosest day in the period sat
+    from the reference, so a reader can see how tight the grouping actually
+    was rather than trusting the threshold.
+    """
+    by_key = {}
+    for d in days:
+        key = d.get("period_key")
+        if key is None:
+            continue
+        entry = by_key.get(key)
+        if entry is None:
+            entry = by_key[key] = {
+                "period_key": key,
+                "reference_date": d.get("period_reference_date", d["date"]),
+                "days_in_median_mon_fri": [],
+                "first_date": d["date"],
+                "last_date": d["date"],
+                "route_count": len(d["counts"]),
+                "trip_count": sum(d["counts"].values()),
+                "max_churn_vs_reference": 0,
+                "bin_count": bin_counts.get(key, 0),
+            }
+        entry["days_in_median_mon_fri"].append(d["date"])
+        entry["first_date"] = min(entry["first_date"], d["date"])
+        entry["last_date"] = max(entry["last_date"], d["date"])
+        entry["max_churn_vs_reference"] = max(entry["max_churn_vs_reference"],
+                                              d.get("churn_vs_reference", 0))
+    return sorted(by_key.values(), key=lambda e: (e["first_date"], e["period_key"]))
 
 
 def sha256_of_file(path: Path) -> str:
@@ -701,7 +957,7 @@ def process_day(
 # ─── Aggregation (D4) ────────────────────────────────────────────────────────
 
 def build_typical_weekday(
-    agg: dict,
+    agg_by_period: dict,
     processed_days: list,
     weekday_days: list,
     static_feeds: list,
@@ -710,18 +966,28 @@ def build_typical_weekday(
     validation_summary: dict,
     multi_geometry_shape_id_count: int,
     multi_id_geometry_count: int,
+    schedule_periods: list,
 ) -> dict:
+    # One median set per schedule period (see assign_schedule_periods): the
+    # timetable a day ran is part of what a "typical weekday" is, and a bin
+    # from before a timetable change has no business being pooled with one
+    # from after it. The period key is the outer level rather than a fourth
+    # field in the bin key, so a reader (and export_web.py) can take one
+    # period's whole payload without filtering the other periods out of it.
     segments = {}
-    for (shape_key, segment_index, slot), speeds in agg.items():
-        # Deliberately still a 3-field "<field>|<segment_index>|<timeslot>"
-        # string, shape_key occupying the first field — export_web.py does
-        # key.split("|") and that call site keeps working untouched.
-        # shape_key is 16 hex chars (see build_shape_key) and so contains no
-        # "|", which is what keeps this from silently becoming a 4-field key.
-        segments[f"{shape_key}|{segment_index}|{slot}"] = {
-            "median_speed_ms": round(statistics.median(speeds), 3),
-            "n_samples": len(speeds),
-        }
+    for period_key, agg in agg_by_period.items():
+        period_segments = {}
+        for (shape_key, segment_index, slot), speeds in agg.items():
+            # Deliberately still a 3-field "<field>|<segment_index>|<timeslot>"
+            # string, shape_key occupying the first field — export_web.py does
+            # key.split("|") and that call site keeps working untouched.
+            # shape_key is 16 hex chars (see build_shape_key) and so contains no
+            # "|", which is what keeps this from silently becoming a 4-field key.
+            period_segments[f"{shape_key}|{segment_index}|{slot}"] = {
+                "median_speed_ms": round(statistics.median(speeds), 3),
+                "n_samples": len(speeds),
+            }
+        segments[period_key] = period_segments
 
     return {
         "generated_at": datetime.now(dt_timezone.utc).isoformat(),
@@ -733,6 +999,18 @@ def build_typical_weekday(
         "static_feeds": static_feeds,
         "days_processed": processed_days,
         "days_in_median_mon_fri": weekday_days,
+        # Days processed but deliberately kept out of the median, each with
+        # its reason (see assign_schedule_periods). Weekends are the routine
+        # case; a weekday here means a holiday timetable, or a date its own
+        # snapshot has no calendar rows for.
+        "days_excluded_from_median": [
+            {"date": e["date"], "reason": e.get("excluded_from_median")}
+            for e in day_breakdown if e.get("excluded_from_median")
+        ],
+        # One entry per timetable observed across the days processed, each
+        # naming the days that ran it and how many bins its median holds.
+        # "segments" is keyed by the same period_key.
+        "schedule_periods": schedule_periods,
         # Per-day breakdown, because a grand total hides exactly the signal
         # that matters here: a snapshot going stale shows up as *one day's*
         # trip_not_in_static climbing, which reject_counts_total below
@@ -746,6 +1024,8 @@ def build_typical_weekday(
             "backward_tolerance_m": BACKWARD_TOLERANCE_M,
             "search_margin_m": SEARCH_MARGIN_M,
             "validation_diff_threshold_kmh": VALIDATION_DIFF_THRESHOLD_KMH,
+            "schedule_period_tolerance_pct": PERIOD_TOLERANCE_PCT,
+            "reduced_service_threshold_pct": REDUCED_SERVICE_PCT,
         },
         "reject_counts_total": dict(reject_totals),
         "validation_vs_feed_speed_ms": validation_summary,
@@ -759,7 +1039,13 @@ def build_typical_weekday(
         # f"{shape_id}@{geom_hash}" key each of those was a permanent split
         # between two series describing one piece of road.
         "multi_id_geometry_count": multi_id_geometry_count,
-        "segment_count": len(segments),
+        # Bins summed across periods: a bin observed under two timetables
+        # counts twice here, because that is two medians, not one. Both
+        # numbers are published because either alone reads as "how much data
+        # is in this file" and they answer different questions — how many
+        # medians it holds, and how much of the network it covers.
+        "segment_count": sum(len(s) for s in segments.values()),
+        "distinct_segment_count": len(set().union(*segments.values())) if segments else 0,
         "segments": segments,
     }
 
@@ -800,6 +1086,7 @@ def main():
     # of their geometry (the observed 2026-08-27/2026-08-31 case) cost barely
     # more to hold in memory than one.
     loaded_feeds = {}         # path -> (trip_map, shapes_by_key, feed_info)
+    loaded_calendars = {}     # path -> (services_by_date, trip_services)
     all_shapes_by_key = {}    # union across every feed loaded this run
     all_shape_ids_by_key = defaultdict(set)
 
@@ -815,6 +1102,13 @@ def main():
             for key, shape_ids in shape_ids_by_key.items():
                 all_shape_ids_by_key[key].update(shape_ids)
         return loaded_feeds[path]
+
+    def load_calendar(path: Path) -> tuple:
+        # Cached per feed, not per day: calendar_dates.txt is half a million
+        # rows and several days usually share one snapshot.
+        if path not in loaded_calendars:
+            loaded_calendars[path] = load_schedule_calendar(path)
+        return loaded_calendars[path]
 
     if args.dates:
         # resolve_day_file() picks whichever of <date>.jsonl / <date>.jsonl.gz
@@ -841,15 +1135,39 @@ def main():
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)
 
-    agg = defaultdict(list)
+    # Which timetable a day ran is a fact about the archive, not about this
+    # invocation. The period key names a directory in the web export and
+    # travels into published JSON, so it has to come out the same however the
+    # run was called: the plan below spans every closed day on disk plus
+    # anything named explicitly, and the loop after it processes only the days
+    # actually requested. Without this, `segment_speeds.py static data
+    # 2026-09-01` makes 09-01 the reference of its own period and hands the
+    # same timetable a different key than the full run does.
+    requested = {date_from_path(p) for p in day_files}
+    plan_files = sorted(set(day_files) | set(find_day_files(args.data_dir)),
+                        key=date_from_path)
+    today = datetime.now(tz).date().isoformat()
+    plan_files = [p for p in plan_files
+                  if date_from_path(p) < today or date_from_path(p) in requested]
+
+    # period_key -> {(shape_key, segment_index, timeslot): [speed, ...]}. One
+    # aggregate per timetable, so days running different schedules never
+    # merge into one median (see assign_schedule_periods).
+    agg_by_period = defaultdict(lambda: defaultdict(list))
     diff_kmh_all = []
     reject_totals = Counter()
     processed_days = []
     weekday_days = []
     day_breakdown = []
+    day_plan = []                       # one dict per day, filled by the pre-pass below
     feed_days_used = defaultdict(list)  # path -> [date_str, ...]
 
-    for day_path in day_files:
+    # Which timetable each day ran is settled before any day is processed:
+    # dropping a reduced-service weekday needs the median trip count over
+    # every weekday in the archive, so no day can be routed to an aggregate
+    # until all of them have been read. Cheap — the calendar is cached per
+    # snapshot and several days usually share one.
+    for day_path in plan_files:
         if not day_path.exists():
             print(f"{day_path.name}: not found, skipping", file=sys.stderr)
             continue
@@ -857,14 +1175,40 @@ def main():
         date_str = date_from_path(day_path)
 
         if snapshots is None:
-            static_path = args.static_source
-            snapshot_date, is_fallback, next_path = None, False, None
+            static_path, is_fallback, next_path = args.static_source, False, None
         else:
-            snapshot_date, static_path, is_fallback = pick_snapshot_for_day(snapshots, date_str)
+            _, static_path, is_fallback = pick_snapshot_for_day(snapshots, date_str)
             if is_fallback:
                 print(f"{date_str}: precedes every static snapshot on record, "
                       f"falling back to the earliest one ({static_path.name})", file=sys.stderr)
             next_path = next_snapshot_after(snapshots, static_path)
+
+        # The day's own snapshot, never next_path: which timetable the day
+        # ran is a fact about the feed it started under.
+        signature_key, counts = schedule_signature(*load_calendar(static_path), date_str)
+        day_plan.append({
+            "date": date_str,
+            "day_path": day_path,
+            "static_path": static_path,
+            "is_fallback": is_fallback,
+            "next_path": next_path,
+            "is_weekday": date.fromisoformat(date_str).weekday() < 5,  # Mon-Fri, per D4
+            "signature_key": signature_key,
+            "counts": counts,
+            "processed": date_str in requested,
+        })
+
+    assign_schedule_periods(day_plan)
+    for d in day_plan:
+        if d["excluded_from_median"] and d["is_weekday"]:
+            print(f"{d['date']}: weekday scheduling {sum(d['counts'].values()):,} trips "
+                  f"({d['excluded_from_median']}), kept out of the median", file=sys.stderr)
+
+    for d in day_plan:
+        if not d["processed"]:
+            continue
+        date_str, static_path, next_path = d["date"], d["static_path"], d["next_path"]
+        period_key = d["period_key"]
 
         trip_map, shapes_by_key, _ = load_feed(static_path)
         next_trip_map = {}
@@ -875,30 +1219,38 @@ def main():
             # content-addressed so the union can't collide (build_shape_key).
             shapes_by_key = {**next_shapes, **shapes_by_key}
 
-        is_weekday = date.fromisoformat(date_str).weekday() < 5  # Mon-Fri, per D4
         out_path = output_dir / f"segment_speeds_{date_str}.jsonl"
 
         t0 = time.time()
-        stats = process_day(day_path, out_path, trip_map, shapes_by_key, tz,
-                             agg if is_weekday else None, diff_kmh_all,
-                             next_trip_map)
+        stats = process_day(d["day_path"], out_path, trip_map, shapes_by_key, tz,
+                            agg_by_period[period_key] if period_key else None, diff_kmh_all,
+                            next_trip_map)
         elapsed = time.time() - t0
 
         processed_days.append(date_str)
-        if is_weekday:
+        if period_key:
             weekday_days.append(date_str)
         reject_totals.update(stats.reject_counts)
         feed_days_used[static_path].append(date_str)
         day_breakdown.append({
             "date": date_str,
             "static_feed_file": static_path.name,
-            "static_feed_is_fallback": is_fallback,
+            "static_feed_is_fallback": d["is_fallback"],
             # The feed captured after this day's own, consulted only for
             # trips the day's feed doesn't know (next_snapshot_after). Both
             # counts are reported even when zero, so "the agency didn't
             # republish mid-day" and "this run never had a later feed to
             # ask" stay distinguishable in the output.
             "next_static_feed_file": next_path.name if next_path else None,
+            # Two different facts, both recorded for every day including
+            # the ones the median skips. schedule_signature_key is the raw
+            # observation: exactly which routes ran how many trips that
+            # date, hashed. schedule_period_key is the median it was pooled
+            # into, null for a day left out — see excluded_from_median.
+            "schedule_signature_key": d["signature_key"],
+            "schedule_period_key": period_key,
+            "excluded_from_median": d["excluded_from_median"],
+            "scheduled_trip_count": sum(d["counts"].values()),
             "trips_resolved_from_next_feed": len(stats.trips_from_next_feed),
             "records_resolved_from_next_feed": stats.records_from_next_feed,
             "records": stats.total_records,
@@ -912,7 +1264,7 @@ def main():
                   f"{len(stats.trips_from_next_feed)} trip(s) unknown to {static_path.name}, "
                   f"resolved from {next_path.name} (feed republished during the day)")
         print(
-            f"{date_str} ({'weekday' if is_weekday else 'weekend'}, static={static_path.name}): "
+            f"{date_str} ({'weekday' if d['is_weekday'] else 'weekend'}, static={static_path.name}): "
             f"{stats.total_records:,} records | {stats.total_pairs:,} pairs | "
             f"{stats.samples_emitted:,} samples emitted | {rejected:,} rejected | "
             f"{elapsed:.1f}s"
@@ -944,16 +1296,28 @@ def main():
     multi_geometry_shape_id_count = count_multi_geometry_shape_ids(all_shape_ids_by_key)
     multi_id_geometry_count = count_multi_id_geometries(all_shape_ids_by_key)
 
+    schedule_periods = build_schedule_periods(
+        [d for d in day_plan if d["processed"]],
+        {k: len(a) for k, a in agg_by_period.items()},
+    )
+
     typical = build_typical_weekday(
-        agg, processed_days, weekday_days, static_feeds_meta, day_breakdown,
+        agg_by_period, processed_days, weekday_days, static_feeds_meta, day_breakdown,
         reject_totals, validation_summary, multi_geometry_shape_id_count,
-        multi_id_geometry_count,
+        multi_id_geometry_count, schedule_periods,
     )
     typical_path = output_dir / "typical_weekday.json"
     typical_path.write_text(json.dumps(typical, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    print(f"\n{typical_path}: {typical['segment_count']:,} (segment, timeslot) bins "
-          f"from {len(weekday_days)} weekday day(s)")
+    print(f"\n{typical_path}: {typical['distinct_segment_count']:,} distinct (segment, timeslot) "
+          f"bins, {typical['segment_count']:,} counted per period, "
+          f"from {len(weekday_days)} weekday day(s) in {len(schedule_periods)} schedule period(s)")
+    for p in schedule_periods:
+        print(f"  {p['period_key']}  {p['first_date']}..{p['last_date']}  "
+              f"{p['route_count']} routes / {p['trip_count']:,} trips  "
+              f"{len(p['days_in_median_mon_fri'])} weekday day(s), {p['bin_count']:,} bins  "
+              f"max churn {p['max_churn_vs_reference']:,} trips  "
+              f"[{', '.join(p['days_in_median_mon_fri'])}]")
     print(f"Validation vs feed speed_ms: {validation_summary}")
     if multi_geometry_shape_id_count:
         print(f"WARNING: {multi_geometry_shape_id_count} shape_id(s) carried more than one distinct "
