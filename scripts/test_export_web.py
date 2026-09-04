@@ -176,6 +176,7 @@ def test_manifest_has_required_fields_and_correct_derived_counts():
         days_in_median=["2026-08-27"],
         incomplete_days={"2026-08-27": "only 52.45% coverage of the calendar day"},
         shapes_observed=3,
+        shapes_written=3,
         total_static_shapes=10,
     )
     for key in (
@@ -402,13 +403,13 @@ def test_manifest_names_the_schedule_period_as_a_limitation():
         mode="typical_weekday", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
         source={}, days_processed=[], days_in_median=[], incomplete_days={},
-        shapes_observed=3, total_static_shapes=10, schedule_period=period,
+        shapes_observed=3, shapes_written=3, total_static_shapes=10, schedule_period=period,
     )
     without = build_manifest(
         mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
         source={}, days_processed=[], days_in_median=[], incomplete_days={},
-        shapes_observed=3, total_static_shapes=10,
+        shapes_observed=3, shapes_written=3, total_static_shapes=10,
     )
     assert with_period["schedule_period"] == period
     assert len(with_period["known_limitations"]) == len(without["known_limitations"]) + 1
@@ -416,3 +417,25 @@ def test_manifest_names_the_schedule_period_as_a_limitation():
     # The day switcher exports one day, which ran one timetable -- no period
     # field, no extra caveat.
     assert without["schedule_period"] is None
+
+
+def test_manifest_limitation_counts_shapes_written_not_observed():
+    # Observation is counted before the min_samples threshold; geometry.json holds
+    # only what survived it. The sentence must name the file's own count.
+    manifest = build_manifest(
+        mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
+        pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
+        source={}, days_processed=[], days_in_median=[], incomplete_days={},
+        shapes_observed=5, shapes_written=3, total_static_shapes=10,
+    )
+    line = next(l for l in manifest["known_limitations"] if "appear here" in l)
+    assert "3 of the static feed's 10 shapes" in line
+    assert "2 further shapes were observed" in line
+
+    one = build_manifest(
+        mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
+        pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
+        source={}, days_processed=[], days_in_median=[], incomplete_days={},
+        shapes_observed=4, shapes_written=3, total_static_shapes=10,
+    )
+    assert any("1 further shape was observed" in l for l in one["known_limitations"])

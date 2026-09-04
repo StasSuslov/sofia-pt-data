@@ -583,11 +583,29 @@ def build_manifest(
     days_in_median: list,
     incomplete_days: dict,
     shapes_observed: int,
+    shapes_written: int,
     total_static_shapes: int,
     schedule_period: dict | None = None,
 ) -> dict:
     bins_dropped = bins_before - bins_after
     segments_dropped = pairs_before - pairs_after
+    # The number the reader checks against geometry.json is the number of shapes
+    # written, not the number observed: observation is counted before the
+    # min_samples threshold, and shapes that lose every bin to it never reach the
+    # file. Naming the observed count as what "appears here" reports one object
+    # and points at another.
+    shapes_line = (
+        f"Only shapes actually observed in the source archive appear here: "
+        f"{shapes_written} of the static feed's {total_static_shapes} shapes for this "
+        f"export ({mode})."
+    )
+    lost = shapes_observed - shapes_written
+    if lost > 0:
+        shapes_line += (
+            f" {lost} further shape{'' if lost == 1 else 's'} "
+            f"{'was' if lost == 1 else 'were'} observed but kept no bin at the "
+            f"{min_samples}-sample threshold."
+        )
     limitations = [
         "Segment geometry is the shape's own polyline inside the 200 m bin, simplified "
         f"with Douglas-Peucker at {SIMPLIFY_TOLERANCE_M:g} m: every dropped shapes.txt "
@@ -598,9 +616,7 @@ def build_manifest(
         "Speed is an integer km/h for map colouring, not the scientific record. The "
         "underlying float m/s and every individual sample it was built from live in "
         "segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).",
-        f"Only shapes actually observed in the source archive appear here: "
-        f"{shapes_observed} of the static feed's {total_static_shapes} shapes for this "
-        f"export ({mode}).",
+        shapes_line,
         "The GTFS-RT feed carries no Sofia metro vehicles; this export describes surface "
         "transport only.",
         "Route metadata is per shape, not per segment. Twelve shapes in this feed serve "
@@ -761,6 +777,7 @@ def write_export(
         days_in_median=days_in_median,
         incomplete_days=incomplete_days,
         shapes_observed=len({sid for sid, _ in pairs_before}),
+        shapes_written=len(geometry["shape_keys"]),
         total_static_shapes=len(shapes_by_key),
         schedule_period=schedule_period,
     )
