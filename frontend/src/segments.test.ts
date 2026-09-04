@@ -1,0 +1,62 @@
+import { describe, expect, it } from "vitest";
+import { buildRenderableSegments } from "./segments.ts";
+import type { Geometry, Timeslot } from "./types.ts";
+
+// Minimal geometry.json-shaped fixture: three segments, only two of which
+// (0 and 2) have a median in the timeslot below — segment 1 is the sparse
+// gap this contract relies on (see typical_weekday/<period>/timeslots/*.json).
+const geometry: Geometry = {
+  segment_length_m: 200,
+  shape_keys: ["shapeA"],
+  shape_ids: [["A1"]],
+  shape_route_ids: [["R1"]],
+  shape_route_names: [["1"]],
+  shape_route_type: [3],
+  shape_idx: [0, 0, 0],
+  segment_index: [0, 1, 2],
+  start_lat: [42.1, 42.2, 42.3],
+  start_lon: [23.1, 23.2, 23.3],
+  end_lat: [42.15, 42.25, 42.35],
+  end_lon: [23.15, 23.25, 23.35],
+};
+
+const timeslot: Timeslot = {
+  timeslot: "08:00",
+  segment_idx: [2, 0],
+  speed_kmh: [30, 12],
+  n_samples: [7, 3],
+};
+
+describe("buildRenderableSegments", () => {
+  it("resolves segment_idx to the matching coordinates and median", () => {
+    const result = buildRenderableSegments(geometry, timeslot);
+
+    expect(result).toEqual([
+      {
+        segmentIdx: 2,
+        startLat: 42.3,
+        startLon: 23.3,
+        endLat: 42.35,
+        endLon: 23.35,
+        speedKmh: 30,
+        nSamples: 7,
+      },
+      {
+        segmentIdx: 0,
+        startLat: 42.1,
+        startLon: 23.1,
+        endLat: 42.15,
+        endLon: 23.15,
+        speedKmh: 12,
+        nSamples: 3,
+      },
+    ]);
+  });
+
+  it("omits a segment absent from the sparse timeslot array", () => {
+    const result = buildRenderableSegments(geometry, timeslot);
+
+    expect(result.some((s) => s.segmentIdx === 1)).toBe(false);
+    expect(result).toHaveLength(2);
+  });
+});
