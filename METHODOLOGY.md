@@ -194,8 +194,21 @@ that retains 287,024 of 572,109 bins in the two-day period and 609,461 of
 799,934 in the four-day one. `n_samples` ships with every surviving bin. Speed ships as an
 integer km/h for map colouring, with the float m/s and every sample behind
 it left in `segment_speeds_<date>.jsonl` and `typical_weekday.json`. The
-drawn geometry of a segment is the straight chord between its two 200 m
-endpoints, so the true curve inside the bin is lost.
+drawn geometry of a segment is the shape's own polyline inside the 200 m
+bin, simplified with the Douglas-Peucker algorithm at a 5 m tolerance
+applied in the local metric plane, not in degrees. Every `shapes.txt`
+vertex the simplification drops lies within 5 m of the line drawn in its
+place, so a turn or a roundabout inside a segment is drawn rather than cut
+across, but not to the last metre. Earlier versions of this export drew the
+straight chord between the bin's two endpoints instead, which put the line
+a median of 3.4 m from the true path, 90.6 m away at worst, and more than
+5 m away on 44.0% of the 26,111 segments in the current schedule period.
+Keeping every vertex is what the page-load budget rules out: at 10.59
+points per bin `geometry.json` alone gzips to 1,135 KB, past the 1 MB
+budgeted for a first load, against 327 KB for the simplified file and
+256 KB for the chord it replaced. `web/index.json` lists the day bundles
+and names the current schedule period, since a static site cannot list a
+directory.
 
 ## Aggregation
 

@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { buildRenderableSegments } from "./segments.ts";
 import type { Geometry, Timeslot } from "./types.ts";
 
-// Minimal geometry.json-shaped fixture: three segments, only two of which
-// (0 and 2) have a median in the timeslot below — segment 1 is the sparse
-// gap this contract relies on (see typical_weekday/<period>/timeslots/*.json).
+// Minimal geometry.json-shaped fixture in the CSR layout: three segments,
+// only two of which (0 and 2) have a median in the timeslot below — segment 1
+// is the sparse gap this contract relies on. Segment 2 carries three points,
+// the case a chord-shaped reader would silently truncate.
 const geometry: Geometry = {
   segment_length_m: 200,
   shape_keys: ["shapeA"],
@@ -14,10 +15,9 @@ const geometry: Geometry = {
   shape_route_type: [3],
   shape_idx: [0, 0, 0],
   segment_index: [0, 1, 2],
-  start_lat: [42.1, 42.2, 42.3],
-  start_lon: [23.1, 23.2, 23.3],
-  end_lat: [42.15, 42.25, 42.35],
-  end_lon: [23.15, 23.25, 23.35],
+  point_offset: [0, 2, 4, 7],
+  lat: [42.1, 42.15, 42.2, 42.25, 42.3, 42.32, 42.35],
+  lon: [23.1, 23.15, 23.2, 23.25, 23.3, 23.32, 23.35],
 };
 
 const timeslot: Timeslot = {
@@ -28,25 +28,26 @@ const timeslot: Timeslot = {
 };
 
 describe("buildRenderableSegments", () => {
-  it("resolves segment_idx to the matching coordinates and median", () => {
+  it("resolves segment_idx to its full polyline and median", () => {
     const result = buildRenderableSegments(geometry, timeslot);
 
     expect(result).toEqual([
       {
         segmentIdx: 2,
-        startLat: 42.3,
-        startLon: 23.3,
-        endLat: 42.35,
-        endLon: 23.35,
+        points: [
+          [42.3, 23.3],
+          [42.32, 23.32],
+          [42.35, 23.35],
+        ],
         speedKmh: 30,
         nSamples: 7,
       },
       {
         segmentIdx: 0,
-        startLat: 42.1,
-        startLon: 23.1,
-        endLat: 42.15,
-        endLon: 23.15,
+        points: [
+          [42.1, 23.1],
+          [42.15, 23.15],
+        ],
         speedKmh: 12,
         nSamples: 3,
       },

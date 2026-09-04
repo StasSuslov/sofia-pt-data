@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from export_web import (  # noqa: E402
     COORD_DECIMALS,
+    SIMPLIFY_TOLERANCE_M,
     load_route_info,
     aggregate_day_bins,
     apply_threshold,
@@ -18,8 +19,9 @@ from export_web import (  # noqa: E402
     main,
     point_along_shape,
     segment_pairs,
+    simplify_rdp,
 )
-from segment_speeds import build_shape, load_static  # noqa: E402
+from segment_speeds import _project_onto_segment, build_shape, load_static  # noqa: E402
 
 SHAPE_ID = "S1"
 ROUTE_ID = "R_BUS"
@@ -71,6 +73,25 @@ def test_point_along_shape_clamps_past_shape_end():
     assert far_past_end == at_end
 
 
+def test_simplify_drops_near_collinear_points_but_keeps_a_real_corner():
+    """Metres in the local plane build_geometry simplifies in: 100 m of
+    straight run whose vertices wander under a metre off the line, then a
+    right-angle turn. The wander is what a 200 m bin is full of and what
+    format_version 1 was right to drop; the corner is what it was wrong to."""
+    points = [(0.0, 0.0), (25.0, 0.4), (50.0, -0.6), (75.0, 0.9),
+              (100.0, 0.0), (100.0, 50.0), (100.0, 100.0)]
+    simplified = simplify_rdp(points, SIMPLIFY_TOLERANCE_M)
+    assert simplified == [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)]
+
+    # The guarantee the manifest states: no dropped vertex ends up further
+    # than the tolerance from the line drawn in its place.
+    for px, py in points:
+        assert min(
+            _project_onto_segment(px, py, *simplified[i], *simplified[i + 1])[1]
+            for i in range(len(simplified) - 1)
+        ) <= SIMPLIFY_TOLERANCE_M
+
+
 def test_threshold_drops_only_bins_below_cutoff_and_counts_correctly():
     bins = {
         ("S1", 0, "00:00"): (5.0, 1),
@@ -104,6 +125,11 @@ def test_timeslot_segment_index_resolves_back_to_same_shape_and_segment():
     pairs = segment_pairs(bins)
     geometry, index_of, missing = build_geometry(pairs, shapes_by_id)
     assert missing == 0
+    # format_version 2 CSR: one offset per segment plus a closing one, and
+    # every segment's slice holds at least the two bin endpoints.
+    assert len(geometry["point_offset"]) == len(geometry["segment_index"]) + 1
+    assert geometry["point_offset"][-1] == len(geometry["lat"]) == len(geometry["lon"])
+    assert all(b - a >= 2 for a, b in zip(geometry["point_offset"], geometry["point_offset"][1:]))
 
     timeslot_files = build_timeslot_files(bins, index_of)
     assert set(timeslot_files) == {"00:00", "00:15"}
@@ -305,9 +331,20 @@ def test_export_writes_one_bundle_per_period_plus_an_index(tmp_path: Path, monke
     shape_key = next(iter(shapes_by_key))
     _write_typical_weekday(data_dir / "processed" / "typical_weekday.json", shape_key)
 
+    # A day bundle from an earlier run, which this typical-weekday-only run
+    # is never told about: web/index.json is rebuilt by scanning the output
+    # directory, so it has to keep listing the day anyway.
+    earlier_day = data_dir / "web" / "2026-08-27"
+    earlier_day.mkdir(parents=True)
+    (earlier_day / "manifest.json").write_text("{}", encoding="utf-8")
+
     monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(data_dir),
                                       "--min-samples", "2"])
     main()
+
+    root_index = json.loads((data_dir / "web" / "index.json").read_text(encoding="utf-8"))
+    assert root_index["days"] == [{"date": "2026-08-27", "path": "2026-08-27"}]
+    assert root_index["typical_weekday"]["current_period"] == "autumn00000000"
 
     root = data_dir / "web" / "typical_weekday"
     index = json.loads((root / "manifest.json").read_text(encoding="utf-8"))

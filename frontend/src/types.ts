@@ -34,10 +34,12 @@ export interface Geometry {
   shape_route_type: number[];
   shape_idx: number[];
   segment_index: number[];
-  start_lat: number[];
-  start_lon: number[];
-  end_lat: number[];
-  end_lon: number[];
+  // CSR layout (format 2): segment i owns points [point_offset[i],
+  // point_offset[i + 1]) of the flat lat/lon arrays. Two points is a straight
+  // bin; more means the shape turns inside those 200 m.
+  point_offset: number[];
+  lat: number[];
+  lon: number[];
 }
 
 export interface Timeslot {
@@ -47,13 +49,10 @@ export interface Timeslot {
   n_samples: number[];
 }
 
-/** One segment ready to draw: resolved coordinates plus its median for the slot. */
+/** One segment ready to draw: its polyline plus its median for the slot. */
 export interface RenderSegment {
   segmentIdx: number;
-  startLat: number;
-  startLon: number;
-  endLat: number;
-  endLon: number;
+  points: [number, number][];
   speedKmh: number;
   nSamples: number;
 }

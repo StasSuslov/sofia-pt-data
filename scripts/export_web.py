@@ -12,14 +12,19 @@ download and parse the whole thing before a timeline slider can show a
 single instant. D7 ("static, no backend") was decided before this volume
 was known; the format below is what makes that decision still work.
 
-Format decided here:
-  - Geometry (shape_id, segment_index -> two endpoint coordinates) is
+Format decided here (format_version 2):
+  - Geometry (shape_key, segment_index -> the drawn path of that bin) is
     written once per export and referenced by *index* from every timeslot
     file, instead of repeating shape_id/segment_index/lat/lon in every bin.
-    A segment's geometry is the straight chord between the along-shape
-    positions at segment_index*200m and (segment_index+1)*200m — not the
-    true polyline inside that 200m span. See known_limitations in the
-    manifest this script writes.
+    A segment's path is the shape's own polyline between the along-shape
+    positions at segment_index*200m and (segment_index+1)*200m, simplified
+    with Douglas-Peucker at SIMPLIFY_TOLERANCE_M metres — see that constant
+    for what the chord format_version 1 drew instead cost in accuracy.
+  - Those points ship CSR-style: flat lat[] and lon[] over every point of
+    every segment, plus point_offset[] of length len(segments)+1, so
+    segment i is the slice [point_offset[i], point_offset[i+1]). A segment
+    holds a variable number of points, which the four endpoint arrays of
+    format_version 1 could not express.
   - One small JSON per 15-minute timeslot (Component D feature 1, the
     timeline slider), so scrubbing the timeline only fetches the slots it
     actually visits, not the whole corpus.
@@ -66,6 +71,12 @@ timetable — plus web/typical_weekday/manifest.json, an index naming every
 period, its date range and which one is current. A client fetches the index
 first and follows current_period. The --day switcher is untouched: one day
 ran one timetable, so it needs no split.
+
+One index above all of it: web/index.json names every day bundle on disk
+and points at the typical-weekday tree, because a static site (D7) cannot
+list a directory and the day switcher has to enumerate days from somewhere.
+It is rebuilt from what is actually in the output directory, not from the
+days this run was asked to export — see write_root_index().
 
 Static feed argument: either one zip (one feed for every bin, unchanged
 prior behaviour) or a directory of gtfs_<YYYY-MM-DD>.zip snapshots — see
@@ -115,6 +126,7 @@ from segment_speeds import (  # noqa: E402
     SEGMENT_LENGTH_M,
     TIMESLOT_MINUTES,
     Shape,
+    _project_onto_segment,
     find_static_snapshots,
     load_static,
 )
@@ -148,6 +160,39 @@ MIN_SAMPLES_DEFAULT = 2
 # source data doesn't have. A 4th decimal (~11 m) is comparable to a lane
 # width and would visibly misplace a segment against its own street.
 COORD_DECIMALS = 5
+
+# Douglas-Peucker tolerance for a segment's drawn polyline, in metres of the
+# same local plane point_along_shape() interpolates in — not degrees, where
+# one unit is ~111 km of latitude and ~82 km of longitude at Sofia's ~42.7
+# deg N and a single number would mean two different distances depending on
+# the heading.
+#
+# Why simplify at all. Measured 2026-09-04 over the 26,111 segments this
+# export writes for the current schedule period, against the six snapshots
+# in data/sofia/static: a 200 m bin holds 10.59 points once its own
+# shapes.txt vertices are kept. format_version 1 threw all of them away and
+# drew the chord between the bin's two ends, 2.00 points, which put the line
+# a median of 3.4 m from the true path, 36.0 m at p90, 68.1 m at p99 and
+# 90.6 m at worst, off by more than 5 m on 44.0% of bins. At Sofia's block
+# scale that is the difference between a line on the street and a line
+# through the building beside it.
+#
+# Why 5 m. Douglas-Peucker's retention test is the distance from a dropped
+# vertex to the line drawn in its place, so the tolerance is a bound on the
+# residual error rather than an average of it — measured worst case on the
+# archive above, 4.999 m. 5 m is the coarsest tolerance still under one lane
+# width (~3.5 m) plus the GPS error already in the source: past it the
+# simplification would be the largest term in a drawn position instead of a
+# term under the noise. What it is paid with is points, and points are file
+# size: 2.72 per bin instead of 2.00, geometry.json for that period 327 KB
+# gzipped instead of 256 KB, against a 1 MB first-load budget. Not
+# simplifying at all is what the budget rules out, not what it merely makes
+# expensive — keeping all 10.59 vertices puts geometry.json alone at 1,135 KB
+# gzipped, over the budget before a single timeslot is fetched.
+#
+# Both numbers are cheap to re-measure and will drift as the network
+# changes; re-count before quoting them.
+SIMPLIFY_TOLERANCE_M = 5.0
 
 # Below this calendar-day coverage_pct (from generate_manifest.py's output),
 # or if the day was still in progress when its manifest was built, a day
@@ -243,16 +288,13 @@ def incomplete_day_notes(data_dir: Path, days: list) -> dict:
     return notes
 
 
-# ─── Geometry: one chord per (shape_key, segment_index) ─────────────────────
+# ─── Geometry: one simplified polyline per (shape_key, segment_index) ───────
 
-def point_along_shape(shape: Shape, dist_m: float) -> tuple:
-    """(lat, lon), rounded to COORD_DECIMALS, at along-shape distance
-    `dist_m` — linear interpolation between the two shape vertices bracketing
-    it in the same planar projection segment_speeds.py's project_point()
-    uses for matching. Good enough for a 200m-resolution segment endpoint;
-    not a substitute for the true curve inside a segment (see this module's
-    docstring and the known_limitations this script writes to manifest.json).
-    """
+def xy_along_shape(shape: Shape, dist_m: float) -> tuple:
+    """Local-plane (x, y) metres at along-shape distance `dist_m` — linear
+    interpolation between the two shape vertices bracketing it, in the same
+    projection segment_speeds.py's project_point() uses for matching.
+    Distance past either end of the shape clamps to that end."""
     cum = shape.cum_dist
     dist_m = max(0.0, min(dist_m, cum[-1]))
     i = bisect.bisect_right(cum, dist_m) - 1
@@ -261,11 +303,84 @@ def point_along_shape(shape: Shape, dist_m: float) -> tuple:
     t = 0.0 if span <= 0 else (dist_m - cum[i]) / span
     x = shape.xs[i] + t * (shape.xs[i + 1] - shape.xs[i])
     y = shape.ys[i] + t * (shape.ys[i + 1] - shape.ys[i])
-    # Inverse of segment_speeds.to_local_xy().
+    return x, y
+
+
+def xy_to_latlon(shape: Shape, x: float, y: float) -> tuple:
+    """Inverse of segment_speeds.to_local_xy(), rounded to COORD_DECIMALS."""
     ref_lat_rad = math.radians(shape.ref_lat_deg)
     lat = shape.ref_lat_deg + math.degrees(y / EARTH_RADIUS_M)
     lon = shape.ref_lon + math.degrees(x / (math.cos(ref_lat_rad) * EARTH_RADIUS_M))
     return round(lat, COORD_DECIMALS), round(lon, COORD_DECIMALS)
+
+
+def point_along_shape(shape: Shape, dist_m: float) -> tuple:
+    """(lat, lon), rounded to COORD_DECIMALS, at along-shape distance
+    `dist_m`."""
+    return xy_to_latlon(shape, *xy_along_shape(shape, dist_m))
+
+
+def simplify_rdp(points: list, tolerance_m: float) -> list:
+    """Douglas-Peucker over a list of (x, y) in *metres* (the local plane),
+    keeping the two endpoints and every vertex further than `tolerance_m`
+    from the polyline that would replace it.
+
+    Distance is measured to the retained *segment*, not to the infinite line
+    through its endpoints. That is both the quantity the guarantee is about
+    ("no dropped vertex ends up more than the tolerance from the drawn
+    line") and the variant that stays finite when a sub-polyline closes on
+    itself, which a shape with a turning loop inside one bin does.
+
+    Iterative rather than recursive: the recursion depth of this algorithm is
+    the vertex count in the worst case, and a dense shape's 200 m bin is not
+    worth a stack limit.
+    """
+    if len(points) <= 2:
+        return points
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        ax, ay = points[lo]
+        bx, by = points[hi]
+        far_i, far_dist = -1, tolerance_m
+        for i in range(lo + 1, hi):
+            _, dist = _project_onto_segment(points[i][0], points[i][1], ax, ay, bx, by)
+            if dist > far_dist:
+                far_i, far_dist = i, dist
+        if far_i >= 0:
+            keep[far_i] = True
+            stack.append((lo, far_i))
+            stack.append((far_i, hi))
+    return [p for p, k in zip(points, keep) if k]
+
+
+def segment_polyline(shape: Shape, seg_idx: int, tolerance_m: float = SIMPLIFY_TOLERANCE_M) -> list:
+    """The drawn path of one 200 m bin as [(lat, lon), ...]: the bin's start
+    point, every shapes.txt vertex strictly inside it, the bin's end point —
+    Douglas-Peucker simplified at `tolerance_m` metres.
+
+    "Strictly inside" because a vertex sitting exactly on a bin boundary is
+    already the interpolated endpoint; including it would emit the same
+    point twice. A bin past the end of its shape (possible only through the
+    clamp in xy_along_shape) collapses to two identical points, which is
+    what the chord did before and still draws nothing.
+    """
+    cum = shape.cum_dist
+    # Clamped the same way xy_along_shape clamps, so a bin running past the
+    # end of its shape doesn't pick up the final vertex *and* the endpoint
+    # interpolated onto it as two copies of one point.
+    start_d = max(0.0, min(seg_idx * SEGMENT_LENGTH_M, cum[-1]))
+    end_d = max(0.0, min((seg_idx + 1) * SEGMENT_LENGTH_M, cum[-1]))
+    lo = bisect.bisect_right(cum, start_d)
+    hi = bisect.bisect_left(cum, end_d)
+    points = [xy_along_shape(shape, start_d)]
+    points += [(shape.xs[i], shape.ys[i]) for i in range(lo, hi)]
+    points.append(xy_along_shape(shape, end_d))
+    return [xy_to_latlon(shape, x, y) for x, y in simplify_rdp(points, tolerance_m)]
 
 
 def load_route_info(gtfs_zip_path: Path) -> dict:
@@ -383,18 +498,23 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
     shape_pos = {key: i for i, key in enumerate(keys)}
     ids_per_key = [sorted(shape_ids_by_key.get(key, ())) for key in keys]
 
-    shape_idx, segment_index, start_lat, start_lon, end_lat, end_lon = [], [], [], [], [], []
+    # CSR: one flat lat[] and lon[] for every point of every segment, plus
+    # point_offset[] of length len(segments)+1 — segment i's points are the
+    # slice [point_offset[i], point_offset[i+1]). A segment carries a
+    # variable number of points now (format_version 2), so four fixed
+    # endpoint arrays can no longer hold it, and an array of per-segment
+    # arrays would pay for one JSON bracket pair per segment.
+    shape_idx, segment_index = [], []
+    lat, lon, point_offset = [], [], [0]
     index_of = {}
     for i, (shape_key, seg_idx) in enumerate(ordered):
         shape = shapes_by_key[shape_key]
-        slat, slon = point_along_shape(shape, seg_idx * SEGMENT_LENGTH_M)
-        elat, elon = point_along_shape(shape, (seg_idx + 1) * SEGMENT_LENGTH_M)
+        for plat, plon in segment_polyline(shape, seg_idx):
+            lat.append(plat)
+            lon.append(plon)
+        point_offset.append(len(lat))
         shape_idx.append(shape_pos[shape_key])
         segment_index.append(seg_idx)
-        start_lat.append(slat)
-        start_lon.append(slon)
-        end_lat.append(elat)
-        end_lon.append(elon)
         index_of[(shape_key, seg_idx)] = i
 
     # Route metadata is stored per shape (hundreds of entries), not per
@@ -421,10 +541,9 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
         "shape_route_type": shape_route_type,
         "shape_idx": shape_idx,
         "segment_index": segment_index,
-        "start_lat": start_lat,
-        "start_lon": start_lon,
-        "end_lat": end_lat,
-        "end_lon": end_lon,
+        "point_offset": point_offset,
+        "lat": lat,
+        "lon": lon,
     }
     return geometry, index_of, missing
 
@@ -470,9 +589,12 @@ def build_manifest(
     bins_dropped = bins_before - bins_after
     segments_dropped = pairs_before - pairs_after
     limitations = [
-        "Segment geometry is a straight chord between the two ends of a 200 m bin, not "
-        "the true polyline inside it — a sharp turn or roundabout within one segment "
-        "renders as a straight line, not the vehicle's actual path.",
+        "Segment geometry is the shape's own polyline inside the 200 m bin, simplified "
+        f"with Douglas-Peucker at {SIMPLIFY_TOLERANCE_M:g} m: every dropped shapes.txt "
+        f"vertex lies within {SIMPLIFY_TOLERANCE_M:g} m of the line drawn in its place, "
+        "so a turn or roundabout inside a segment is drawn, but not to the last metre. "
+        "Through format_version 1 this was the straight chord between the bin's two "
+        "ends, which departed from the true path by a median of 3.4 m and up to 90.6 m.",
         "Speed is an integer km/h for map colouring, not the scientific record. The "
         "underlying float m/s and every individual sample it was built from live in "
         "segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).",
@@ -497,7 +619,9 @@ def build_manifest(
             "to that split and would share one period."
         )
     return {
-        "format_version": 1,
+        # 2: segment geometry is a simplified polyline in CSR layout
+        # (lat/lon/point_offset), not four endpoint arrays of a chord.
+        "format_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,  # "typical_weekday" or a specific "YYYY-MM-DD"
         # Which timetable this bundle's days ran, from typical_weekday.json's
@@ -528,6 +652,27 @@ def build_manifest(
             "coordinate_precision_rationale": (
                 "~1.1 m at this latitude, below the accuracy of the GPS units behind the "
                 "underlying feed"
+            ),
+            "geometry_simplification": "douglas_peucker",
+            "simplify_tolerance_m": SIMPLIFY_TOLERANCE_M,
+            "simplify_tolerance_rationale": (
+                "a segment ships the shapes.txt polyline inside its 200 m bin, simplified "
+                "in metres on the same local plane the projection uses, not in degrees, "
+                "where one tolerance would mean two distances depending on heading. "
+                "Measured 2026-09-04 over the 26,111 segments of the current schedule "
+                "period: a bin holds 10.59 points with every vertex kept, and dropping all "
+                "of them for the straight chord of format_version 1 (2.00 points) moved the "
+                "drawn line off the true path by a median of 3.4 m, 36.0 m at p90, 68.1 m "
+                "at p99 and 90.6 m at worst, by more than 5 m on 44.0% of bins. "
+                "Douglas-Peucker's retention test is the distance from a dropped vertex to "
+                "the line replacing it, so this tolerance is a bound on the residual error "
+                "rather than an average of it (worst case measured on that archive: "
+                "4.999 m). 5 m is the coarsest tolerance still under a lane width plus the "
+                "GPS error already in the source, so the simplification stays below the "
+                "noise it sits on. Paid for in points and therefore file size: 2.72 points "
+                "per bin instead of 2.00, and 327 KB of gzipped geometry instead of 256 KB. "
+                "Keeping every vertex is not an option the 1 MB first-load budget leaves "
+                "open: at 10.59 points per bin geometry.json alone gzips to 1,135 KB"
             ),
             "bins_total_before_threshold": bins_before,
             "bins_retained": bins_after,
@@ -678,7 +823,7 @@ def build_period_index(period_entries: list, current: str | None,
     and a dropped public holiday is exactly the kind of omission a reader
     should be able to see rather than infer from a gap in the dates."""
     return {
-        "format_version": 1,
+        "format_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": "typical_weekday_index",
         "current_period": current,
@@ -686,6 +831,48 @@ def build_period_index(period_entries: list, current: str | None,
         "periods": period_entries,
         "days_excluded_from_median": days_excluded,
     }
+
+
+# ─── The root index over everything on disk ─────────────────────────────────
+
+def write_root_index(output_root: Path) -> dict:
+    """web/index.json: which day bundles exist, and where the typical-weekday
+    tree is. A static site (D7) cannot list a directory, so without this the
+    day switcher (Component D feature 2) has nothing to enumerate.
+
+    Built by *scanning output_root*, never from the days this run was asked
+    to export — the same rule the schedule-period split already follows
+    ("plan over the whole archive, process the requested subset"). An
+    `--day 2026-09-03` run must not shrink the index to one day.
+
+    Minimum fields on purpose: everything else a client could want about a
+    day is already in that day's own manifest.json, one fetch away, and a
+    second copy here would be a second thing to keep true."""
+    days = []
+    for d in sorted(output_root.glob("????-??-??")):
+        if (d / "manifest.json").exists():
+            days.append({"date": d.name, "path": d.name})
+
+    typical = None
+    typical_index = output_root / "typical_weekday" / "manifest.json"
+    if typical_index.exists():
+        typical = {
+            "path": "typical_weekday",
+            "current_period": json.loads(typical_index.read_text(encoding="utf-8"))["current_period"],
+        }
+
+    index = {
+        "format_version": 2,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "days": days,
+        "typical_weekday": typical,
+    }
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "index.json").write_text(
+        json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"\n{output_root / 'index.json'}: {len(days)} day bundle(s), "
+          f"typical_weekday {'present' if typical else 'absent'}")
+    return index
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
@@ -737,6 +924,7 @@ def main():
             incomplete_days=incomplete_day_notes(args.data_dir, [args.day]),
             **common,
         )
+        write_root_index(output_root)
         return
 
     typical_path = processed_dir / "typical_weekday.json"
@@ -808,6 +996,8 @@ def main():
     for e in index_entries:
         print(f"  {e['period_key']}  {e['first_date']}..{e['last_date']}  "
               f"{len(e['days_in_median'])} weekday day(s), {e['bins_retained']:,} bins retained")
+
+    write_root_index(output_root)
 
 
 if __name__ == "__main__":

@@ -27,17 +27,13 @@ function geometryBounds(geometry: Geometry): L.LatLngBounds {
   let maxLat = -Infinity;
   let minLon = Infinity;
   let maxLon = -Infinity;
-  for (let i = 0; i < geometry.start_lat.length; i++) {
-    const lats = [geometry.start_lat[i], geometry.end_lat[i]];
-    const lons = [geometry.start_lon[i], geometry.end_lon[i]];
-    for (const lat of lats) {
-      if (lat < minLat) minLat = lat;
-      if (lat > maxLat) maxLat = lat;
-    }
-    for (const lon of lons) {
-      if (lon < minLon) minLon = lon;
-      if (lon > maxLon) maxLon = lon;
-    }
+  for (const lat of geometry.lat) {
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  for (const lon of geometry.lon) {
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
   }
   return L.latLngBounds([minLat, minLon], [maxLat, maxLon]);
 }
@@ -124,17 +120,11 @@ async function main(): Promise<void> {
 
   const renderSegments = buildRenderableSegments(geometry, timeslot);
   for (const seg of renderSegments) {
-    L.polyline(
-      [
-        [seg.startLat, seg.startLon],
-        [seg.endLat, seg.endLon],
-      ],
-      {
-        color: speedToColor(seg.speedKmh),
-        opacity: samplesToOpacity(seg.nSamples),
-        weight: 3,
-      },
-    ).addTo(map);
+    L.polyline(seg.points, {
+      color: speedToColor(seg.speedKmh),
+      opacity: samplesToOpacity(seg.nSamples),
+      weight: 3,
+    }).addTo(map);
   }
 
   const elapsedMs = Math.round(performance.now() - t0);
@@ -143,7 +133,7 @@ async function main(): Promise<void> {
   );
 
   const periodLabel = `Typical weekday median, ${period.first_date} – ${period.last_date} (${period.days_in_median.length} weekdays, ${period.route_count} routes, ${period.trip_count} trips), timeslot ${TIMESLOT_LABEL}.`;
-  const coverageSummary = `${renderSegments.length.toLocaleString("en")} of ${geometry.start_lat.length.toLocaleString("en")} segments have a median at ${TIMESLOT_LABEL}; the rest were not observed often enough at this time of day to aggregate.`;
+  const coverageSummary = `${renderSegments.length.toLocaleString("en")} of ${geometry.segment_index.length.toLocaleString("en")} segments have a median at ${TIMESLOT_LABEL}; the rest were not observed often enough at this time of day to aggregate.`;
   const excludedSummary =
     manifest.days_excluded_from_median.length > 0
       ? `${manifest.days_excluded_from_median.length} day(s) excluded from the median: ${manifest.days_excluded_from_median
