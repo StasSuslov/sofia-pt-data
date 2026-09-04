@@ -33,12 +33,13 @@ log() {
 
 log "starting scheduled fetch"
 
-# Keep in sync with MANIFEST_FAILED_EXIT_CODE in fetch_data.sh: that's the
-# code it returns when rsync succeeded but generate_manifest.py afterwards
-# didn't. Data landed fine in that case — reporting it as a failed pull
-# would be wrong, so it gets its own log line and notification instead of
-# falling into the generic "fetch_data.sh FAILED" branch below.
-MANIFEST_FAILED_EXIT_CODE=42
+# Keep in sync with POST_PULL_FAILED_EXIT_CODE in fetch_data.sh: that's the
+# code it returns when rsync succeeded but a step after it didn't —
+# generate_manifest.py, remote verification, or the segment_speeds/export_web
+# pass over a day that just closed. Data landed fine in every one of those
+# cases, so reporting it as a failed pull would be wrong; it gets its own log
+# line and notification instead of falling into "fetch_data.sh FAILED" below.
+POST_PULL_FAILED_EXIT_CODE=42
 # Keep in sync with CHECKSUM_MISMATCH_EXIT_CODE in fetch_data.sh /
 # MISMATCH_EXIT_CODE in verify_remote_checksums.py. This is the loud one:
 # the local archive may not be what the collector wrote on the VPS. An
@@ -46,7 +47,7 @@ MANIFEST_FAILED_EXIT_CODE=42
 # network noise that verify_remote_checksums.py just logs and retries next
 # run, so it never reaches this branch at all.
 CHECKSUM_MISMATCH_EXIT_CODE=43
-manifest_generation_failed=0
+post_pull_failed=0
 
 "$REPO_ROOT/scripts/fetch_data.sh" >> "$LOG_FILE" 2>&1
 fetch_exit=$?
@@ -55,10 +56,10 @@ if [[ "$fetch_exit" -eq "$CHECKSUM_MISMATCH_EXIT_CODE" ]]; then
     log "fetch_data.sh: REMOTE CHECKSUM MISMATCH — a locally archived day no longer matches the VPS copy"
     notify "Sofia PT collector" "Checksum mismatch: a locally archived day does not match the VPS — check logs/fetch.log and that day's manifest before publishing anything"
     exit 1
-elif [[ "$fetch_exit" -eq "$MANIFEST_FAILED_EXIT_CODE" ]]; then
-    log "fetch_data.sh: data pulled OK, generate_manifest.py FAILED"
-    notify "Sofia PT collector" "Data pulled OK but manifest generation failed — check logs/fetch.log"
-    manifest_generation_failed=1
+elif [[ "$fetch_exit" -eq "$POST_PULL_FAILED_EXIT_CODE" ]]; then
+    log "fetch_data.sh: data pulled OK, a step after the pull FAILED"
+    notify "Sofia PT collector" "Data pulled OK but manifests or derived outputs did not update — check logs/fetch.log"
+    post_pull_failed=1
 elif [[ "$fetch_exit" -ne 0 ]]; then
     log "fetch_data.sh FAILED (exit $fetch_exit)"
     notify "Sofia PT collector" "Scheduled data pull failed — check logs/fetch.log"
@@ -103,6 +104,6 @@ log "done"
 # Data pulled fine, but exit non-zero (and distinct from a pull failure) so
 # this doesn't silently read as full success in launchd's own job status —
 # the log line and notification above already said what actually failed.
-if [[ "$manifest_generation_failed" -eq 1 ]]; then
-    exit "$MANIFEST_FAILED_EXIT_CODE"
+if [[ "$post_pull_failed" -eq 1 ]]; then
+    exit "$POST_PULL_FAILED_EXIT_CODE"
 fi

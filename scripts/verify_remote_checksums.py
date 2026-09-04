@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Callable
 
 # Keep in sync with CHECKSUM_MISMATCH_EXIT_CODE in scripts/fetch_data.sh and
-# scripts/scheduled_fetch.sh — same convention as MANIFEST_FAILED_EXIT_CODE
+# scripts/scheduled_fetch.sh — same convention as POST_PULL_FAILED_EXIT_CODE
 # already uses to let a shell caller tell exit codes apart without parsing
 # stdout.
 MISMATCH_EXIT_CODE = 43

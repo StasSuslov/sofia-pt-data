@@ -13,6 +13,9 @@
 # never ends up in version control. Copy .env.local.example to .env.local
 # and fill in your own host.
 #
+# Also regenerates manifests and, for any day that has closed since the
+last run, the processed/ and web/ outputs derived from it.
+#
 # Usage: scripts/fetch_data.sh
 
 set -euo pipefail
@@ -38,11 +41,12 @@ fi
 : "${PYTHON3:=/usr/local/bin/python3}"
 
 LOCAL_DIR="$REPO_ROOT/data/"
-# Exit code fetch_data.sh uses when rsync succeeded but manifest generation
-# failed afterwards — deliberately distinct from rsync's own exit codes
-# (0-255, with well-known meanings like 23/30) so scheduled_fetch.sh can tell
-# "the pull failed" apart from "the pull was fine, manifests didn't update".
-MANIFEST_FAILED_EXIT_CODE=42
+# Exit code fetch_data.sh uses when rsync succeeded but something after it
+# didn't: manifests, remote verification, or the processing pass at the
+# bottom. Deliberately distinct from rsync's own exit codes (0-255, with
+# well-known meanings like 23/30) so scheduled_fetch.sh can tell "the pull
+# failed" apart from "the pull was fine, what it feeds went stale".
+POST_PULL_FAILED_EXIT_CODE=42
 # Keep in sync with MISMATCH_EXIT_CODE in scripts/verify_remote_checksums.py
 # and with the matching constant in scheduled_fetch.sh. A real checksum
 # mismatch means the local archive may not be what the collector actually
@@ -82,7 +86,7 @@ done
 
 # Data is safely on disk from here on — a manifest-generation failure past
 # this point is a different problem than a failed pull and must be reported
-# as one (see MANIFEST_FAILED_EXIT_CODE above and scripts/scheduled_fetch.sh,
+# as one (see POST_PULL_FAILED_EXIT_CODE above and scripts/scheduled_fetch.sh,
 # which branches on this exit code). Manifests are cheap to skip when
 # current (see generate_manifest.py's --force / manifest_is_current), so
 # this runs on every fetch, not just on a schedule of its own.
@@ -105,7 +109,7 @@ for city_dir in "$LOCAL_DIR"*/; do
 
     if ! "$PYTHON3" "$REPO_ROOT/scripts/generate_manifest.py" "$city_dir"; then
         echo "generate_manifest.py failed for ${city_dir} — data pulled fine, manifests are stale" >&2
-        exit "$MANIFEST_FAILED_EXIT_CODE"
+        exit "$POST_PULL_FAILED_EXIT_CODE"
     fi
     manifested=$((manifested + 1))
 
@@ -125,7 +129,50 @@ for city_dir in "$LOCAL_DIR"*/; do
         exit "$CHECKSUM_MISMATCH_EXIT_CODE"
     elif [[ "$verify_exit" -ne 0 ]]; then
         echo "verify_remote_checksums.py failed for ${city_dir} (exit $verify_exit) — data pulled fine, remote verification just didn't run this time" >&2
-        exit "$MANIFEST_FAILED_EXIT_CODE"
+        exit "$POST_PULL_FAILED_EXIT_CODE"
+    fi
+
+    # Which days closed since the last run and still have no processed
+    # output. "Closed" is read off day_in_progress in the manifest
+    # generate_manifest.py wrote seconds ago, so the call is made once, in
+    # Python, against the city's own timezone — this script never has to
+    # know what date it currently is in Sofia, and a laptop clock in another
+    # zone can't mark a day finished while the collector is still writing it.
+    pending_days=$("$PYTHON3" - "$city_dir" <<'PY'
+import json, pathlib, sys
+city = pathlib.Path(sys.argv[1])
+for manifest in sorted(city.glob("????-??-??.manifest.json")):
+    day = manifest.name[:10]
+    if json.loads(manifest.read_text()).get("day_in_progress", True):
+        continue
+    if not (city / "processed" / f"segment_speeds_{day}.jsonl").exists():
+        print(day)
+PY
+)
+
+    # segment_speeds.py rebuilds typical_weekday.json out of every day it can
+    # see (the median spans the whole archive, D4), so this reprocesses all
+    # of them rather than appending one — ~25s per day, affordable only
+    # because a day turns pending exactly once and then never again.
+    # ponytail: full reprocess, revisit if the archive outgrows the gap
+    # between two scheduled fetches.
+    #
+    # errexit is off inside an `if !` condition, hence the explicit set -e in
+    # the subshell: without it a failing segment_speeds.py would still let
+    # export_web.py run on top of a half-written typical_weekday.json.
+    if [[ -n "$pending_days" ]]; then
+        echo "Processing newly closed day(s):" $pending_days
+        if ! (
+            set -e
+            "$PYTHON3" "$REPO_ROOT/scripts/segment_speeds.py" "${city_dir}static" "$city_dir"
+            "$PYTHON3" "$REPO_ROOT/scripts/export_web.py" "${city_dir}static" "$city_dir"
+            for day in $pending_days; do
+                "$PYTHON3" "$REPO_ROOT/scripts/export_web.py" "${city_dir}static" "$city_dir" --day "$day"
+            done
+        ); then
+            echo "processing failed for ${city_dir} — data pulled fine, but processed/ and web/ are stale" >&2
+            exit "$POST_PULL_FAILED_EXIT_CODE"
+        fi
     fi
 done
 
@@ -134,5 +181,5 @@ done
 # without being regenerated in the first place.
 if [[ "$manifested" -eq 0 ]]; then
     echo "No <date>.jsonl day files found under ${LOCAL_DIR} — nothing to checksum" >&2
-    exit "$MANIFEST_FAILED_EXIT_CODE"
+    exit "$POST_PULL_FAILED_EXIT_CODE"
 fi
