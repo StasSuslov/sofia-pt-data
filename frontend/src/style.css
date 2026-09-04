@@ -126,3 +126,68 @@ a {
     max-width: none;
   }
 }
+
+#controls {
+  padding: 10px 12px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.control label,
+.control legend {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+  padding: 0;
+}
+
+#day-select,
+#timeslot-slider {
+  width: 100%;
+  font: inherit;
+}
+
+#day-select {
+  padding: 4px;
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+#timeslot-label {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+#type-filters {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+#type-filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+#type-filters input {
+  margin: 0;
+}
+
+.error {
+  color: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error {
+    color: #f2b8b5;
+  }
+}

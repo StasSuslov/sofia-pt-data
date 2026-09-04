@@ -1,6 +1,14 @@
 // Shapes of data/sofia/web/**. See CLAUDE.md section on the data contract —
 // this file must not add fields the pipeline doesn't emit.
 
+/** web/index.json — the root listing every bundle the export wrote. */
+export interface RootIndex {
+  format_version: number;
+  generated_at: string;
+  days: { date: string; path: string }[];
+  typical_weekday: { path: string; current_period: string };
+}
+
 export interface PeriodInfo {
   period_key: string;
   path: string;
@@ -18,11 +26,26 @@ export interface ExcludedDay {
   reason: string;
 }
 
+/** web/typical_weekday/manifest.json — the index over schedule periods. */
 export interface Manifest {
   current_period: string;
   period_count: number;
   periods: PeriodInfo[];
   days_excluded_from_median: ExcludedDay[];
+}
+
+/**
+ * A bundle's own manifest: web/<date>/manifest.json or
+ * web/typical_weekday/<period_key>/manifest.json. `mode` is "typical_weekday"
+ * or the date, and `timeslots` is the authoritative slot domain for the
+ * slider — the count is not a constant of the format.
+ */
+export interface BundleManifest {
+  mode: string;
+  segment_count: number;
+  timeslot_count: number;
+  timeslots: string[];
+  days_in_median: string[];
 }
 
 export interface Geometry {
@@ -31,7 +54,9 @@ export interface Geometry {
   shape_ids: string[][];
   shape_route_ids: string[][];
   shape_route_names: string[][];
-  shape_route_type: number[];
+  // null where a shape's routes disagree on GTFS route_type — the exporter
+  // writes null rather than picking one (see export_web.py write_manifest).
+  shape_route_type: (number | null)[];
   shape_idx: number[];
   segment_index: number[];
   // CSR layout (format 2): segment i owns points [point_offset[i],

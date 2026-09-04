@@ -8,8 +8,19 @@
   <body>
     <div id="map"></div>
     <aside id="panel">
+      <div id="controls">
+        <div class="control">
+          <label for="day-select">Day</label>
+          <select id="day-select" aria-label="Day or typical weekday median"></select>
+        </div>
+        <div class="control">
+          <label for="timeslot-slider">Time <output id="timeslot-label" for="timeslot-slider">&nbsp;</output></label>
+          <input id="timeslot-slider" type="range" min="0" max="0" step="1" value="0" aria-label="Time of day" />
+        </div>
+        <fieldset id="type-filters" class="control"></fieldset>
+      </div>
       <button id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel-body">Legend &amp; sources</button>
-      <div id="panel-body"></div>
+      <div id="panel-body"><div id="summary"></div><div id="legend"></div></div>
     </aside>
     <script type="module" src="/src/main.ts"></script>
   </body>
