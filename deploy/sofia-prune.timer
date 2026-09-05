@@ -1,0 +1,19 @@
+[Unit]
+Description=Daily trigger for sofia-prune.service
+
+[Timer]
+# One OnCalendar line, not two: systemd accumulates them, so a leftover
+# `OnCalendar=daily` above this would keep firing the job at midnight too.
+# Runs at 03:00 rather than midnight so it lands after
+# sofia-compress.service (OnCalendar=daily, i.e. 00:00) has finished the
+# night's gzip pass. Nothing breaks if the order flips — the two select
+# disjoint ages — but a day should reach its compressed form before anything
+# starts measuring it for deletion.
+OnCalendar=*-*-* 03:00:00
+# Same reasoning as sofia-compress.timer: a droplet that was down at the
+# scheduled instant must run the missed pass at next boot, or the disk-fill
+# date stops being something you can reason about.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

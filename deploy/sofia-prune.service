@@ -1,0 +1,45 @@
+[Unit]
+Description=Sofia PT archive retention (drop day files and static snapshots older than the publication window)
+
+[Service]
+Type=oneshot
+# The first thing on this box that destroys data, so the window is derived,
+# not picked. The VPS copy is the only one that survives the laptop being
+# gone, until a day reaches a published Zenodo dataset version — so the
+# window must never be shorter than the gap between those versions. The
+# cadence is quarterly until v2 (CLAUDE.md section 3, [F]), hence 90 days.
+# When versions go monthly, 45 is enough and takes the disk from ~71% to
+# ~54%; revisit then rather than trimming for its own sake.
+#
+# Measured on the live box 2026-09-05: 8.7 GB disk, 2.7 GB of it system,
+# growth 34 MB/day (16.3 MB/day for gzipped day files averaged over a week,
+# 18 MB/day for static snapshots — the agency changes the feed daily, five
+# snapshots in five days) plus a standing ~430 MB in the three uncompressed
+# days sofia-compress.service has not reached yet. Unpruned, that hits the
+# 80% DigitalOcean alert in 108 days and fills the disk in 159. At 90 days
+# the steady state is ~6.2 GB (71%), which leaves the alert meaning
+# "something is wrong" instead of "the calendar advanced".
+#
+# What the name tests select, and why each one is written this way:
+#   ????-??-??.jsonl[.gz]  the day files, the bulk of the archive. Both forms
+#                          because a 90-day-old uncompressed day means
+#                          sofia-compress.service is broken, and this should
+#                          still reclaim it. gzip keeps the original mtime,
+#                          so a compressed day is still aged from its own
+#                          date, not from the night it was compressed.
+#   gtfs_*.zip             static snapshots, 18 MB each and half the growth.
+# Deliberately NOT matched: *.polls.jsonl[.gz] (the date glob is exact, so
+# the heartbeat companions fall outside it) and *.manifest.json. The
+# heartbeats cost ~15 MB/year and hold the poll-by-poll trace the manifests
+# only summarise; the manifests are kilobytes and live in git.
+#
+# Age-based and server-side on purpose. Deleting only what fetch_data.sh has
+# verified against the laptop would be safer on paper, but that check runs
+# from the laptop, and the disk fills precisely in the stretches when the
+# laptop is off — which is the case this timer exists for.
+#
+# -mtime +90 means at least 91 whole days: GNU find truncates the age to
+# whole days, the same off-by-a-day-in-the-safe-direction as
+# sofia-compress.service.
+ExecStart=/usr/bin/find /opt/sofia-pt/data -type f ( -name '????-??-??.jsonl' -o -name '????-??-??.jsonl.gz' -o -name 'gtfs_*.zip' ) -mtime +90 -delete
+User=root
