@@ -83,6 +83,36 @@ body {
   font-size: 12px;
 }
 
+/* Full weight, primary colour, its own rule: an incomplete input is the first
+   thing the reader has to know, so it must not read as a footnote. */
+.notice {
+  margin: 6px 0;
+  padding: 2px 0 2px 8px;
+  border-left: 3px solid currentColor;
+  font-weight: 600;
+}
+
+#limitations {
+  margin-bottom: 12px;
+}
+
+#limitations summary {
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#limitations ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+#limitations li {
+  margin-bottom: 4px;
+}
+
 .ramp {
   height: 12px;
   border-radius: 3px;

@@ -3,13 +3,14 @@ import {
   UNKNOWN_ROUTE_TYPE,
   countEnabledSegments,
   filterByRouteType,
+  incompleteNotice,
   pickTimeslotIndex,
   routeTypeLabel,
   routeTypesPresent,
   segmentRouteTypes,
   timeslotFile,
 } from "./bundle.ts";
-import type { Geometry, RenderSegment } from "./types.ts";
+import type { BundleManifest, Geometry, RenderSegment } from "./types.ts";
 
 // Four segments over three shapes: a bus shape (segments 0 and 1), a tram
 // shape (segment 2) and one whose routes disagreed on route_type, which the
@@ -131,5 +132,82 @@ describe("countEnabledSegments", () => {
     expect(
       countEnabledSegments(types, new Set([UNKNOWN_ROUTE_TYPE, 0, 3])),
     ).toBe(4);
+  });
+});
+
+// Bundle manifest as export_web.py writes one, cut to the fields the panel
+// reads. This is 2026-08-27: the day the collector started at 11:07, so its
+// own manifest carries a coverage note and its slot list starts at 11:00.
+const slotsFrom11 = Array.from({ length: 52 }, (_, i) => {
+  const minute = 11 * 60 + i * 15;
+  return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+});
+
+const dayManifest: BundleManifest = {
+  mode: "2026-08-27",
+  segment_count: 9155,
+  timeslot_count: 52,
+  timeslots: slotsFrom11,
+  days_in_median: ["2026-08-27"],
+  incomplete_days: { "2026-08-27": "only 52.45% coverage of the calendar day" },
+  preprocessing_thresholds: { timeslot_minutes: 15 },
+  known_limitations: [],
+};
+
+describe("incompleteNotice", () => {
+  it("quotes the exporter's reason and counts the slots off the manifest", () => {
+    // timeslot_count is the exporter's own count of the same list; the notice
+    // must agree with the list that drives the slider, not with a constant.
+    const notice = incompleteNotice(dayManifest)!;
+
+    expect(notice).toContain("2026-08-27: only 52.45% coverage of the calendar day");
+    expect(notice).toContain("52 of 96 15-minute slots, 11:00 through 23:45");
+  });
+
+  it("counts a full day at the manifest's own bin width, not at 15 minutes", () => {
+    expect(
+      incompleteNotice({
+        ...dayManifest,
+        timeslots: ["06:00", "06:30"],
+        preprocessing_thresholds: { timeslot_minutes: 30 },
+      }),
+    ).toContain("2 of 48 30-minute slots, 06:00 through 06:30");
+  });
+
+  it("says nothing when every day behind the bundle is whole", () => {
+    expect(
+      incompleteNotice({ ...dayManifest, incomplete_days: {} }),
+    ).toBeUndefined();
+  });
+
+  it("ignores a reason keyed to a day this bundle does not draw", () => {
+    // The median splits by schedule period: a note about a day in the other
+    // period is about the other bundle. Reporting it here would put a number
+    // from one object next to a map built from another.
+    expect(
+      incompleteNotice({
+        ...dayManifest,
+        mode: "typical_weekday",
+        days_in_median: ["2026-08-31", "2026-09-01"],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("names every incomplete day the median actually used", () => {
+    const notice = incompleteNotice({
+      ...dayManifest,
+      mode: "typical_weekday",
+      days_in_median: ["2026-08-27", "2026-08-28"],
+      incomplete_days: {
+        "2026-08-27": "reason A",
+        "2026-08-28": "reason B",
+        "2026-09-07": "reason C",
+      },
+    })!;
+
+    expect(notice).toContain("Incomplete days");
+    expect(notice).toContain("2026-08-27: reason A");
+    expect(notice).toContain("2026-08-28: reason B");
+    expect(notice).not.toContain("2026-09-07");
   });
 });

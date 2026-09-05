@@ -61,3 +61,27 @@ describe("buildRenderableSegments", () => {
     expect(result).toHaveLength(2);
   });
 });
+
+describe("a timeslot that disagrees with the geometry", () => {
+  it("throws on a segment_idx the geometry has no polyline for", () => {
+    // Reading past point_offset yields an empty polyline instead: nothing on
+    // the map, still counted as a drawn segment in the panel.
+    expect(() =>
+      buildRenderableSegments(geometry, {
+        ...timeslot,
+        segment_idx: [0, 3],
+        speed_kmh: [12, 30],
+        n_samples: [3, 7],
+      }),
+    ).toThrow(/segment_idx 3/);
+  });
+
+  it("throws on a segment whose offsets hold fewer than two points", () => {
+    expect(() =>
+      buildRenderableSegments(
+        { ...geometry, point_offset: [0, 1, 4, 7] },
+        { ...timeslot, segment_idx: [0], speed_kmh: [12], n_samples: [3] },
+      ),
+    ).toThrow(/1 points/);
+  });
+});

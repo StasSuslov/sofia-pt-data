@@ -12,6 +12,7 @@ import { buildRenderableSegments } from "./segments.ts";
 import {
   countEnabledSegments,
   filterByRouteType,
+  incompleteNotice,
   pickTimeslotIndex,
   routeTypeLabel,
   routeTypesPresent,
@@ -56,6 +57,7 @@ const slider = document.getElementById("timeslot-slider") as HTMLInputElement;
 const timeLabel = document.getElementById("timeslot-label")!;
 const typeFilters = document.getElementById("type-filters") as HTMLFieldSetElement;
 const summaryEl = document.getElementById("summary")!;
+const limitationsEl = document.getElementById("limitations")!;
 const legendEl = document.getElementById("legend")!;
 const panelBody = document.getElementById("panel-body")!;
 const panelToggle = document.getElementById("panel-toggle")!;
@@ -202,6 +204,11 @@ function summaryHtml(
       ? "No transport type is selected, so nothing is drawn."
       : `${count(drawn)} of ${count(drawable)} segments${scope} have a median at ${timeslot}; the rest were not observed often enough at this time of day to aggregate.`;
 
+  // Next to the coverage line, not folded into the limitations list: a day
+  // with a hole in it changes how the map in front of the reader is read.
+  const notice = incompleteNotice(manifest);
+  const incomplete = notice ? `<p class="notice">${notice}</p>` : "";
+
   const excluded =
     manifest.mode === "typical_weekday"
       ? excludedDays.length > 0
@@ -214,8 +221,24 @@ function summaryHtml(
       <h3>What this shows</h3>
       <p>${what}</p>
       <p class="hint">${coverage}</p>
+      ${incomplete}
       ${excluded}
     </div>`;
+}
+
+/**
+ * The exporter's known_limitations, quoted rather than retold — textContent,
+ * so a string that contains markup stays a string. Collapsed by default and
+ * rewritten only on a bundle change, so opening it survives a slider drag.
+ */
+function installLimitations(manifest: BundleManifest): void {
+  limitationsEl.innerHTML = `<summary>Known limitations (${manifest.known_limitations.length})</summary><ul></ul>`;
+  const list = limitationsEl.querySelector("ul")!;
+  for (const text of manifest.known_limitations) {
+    const item = document.createElement("li");
+    item.textContent = text;
+    list.append(item);
+  }
 }
 
 function showError(err: unknown): void {
@@ -224,6 +247,11 @@ function showError(err: unknown): void {
   panelToggle.setAttribute("aria-expanded", "true");
   summaryEl.innerHTML = `<div class="legend-block"><h3>Failed to load</h3><p class="error"></p></div>`;
   summaryEl.querySelector("p")!.textContent = String(err);
+  // Everything under the summary describes the bundle that loaded last, not
+  // the one the controls now name. Take it away instead of letting it caption
+  // a map the reader isn't looking at.
+  limitationsEl.hidden = true;
+  typeFilters.disabled = true;
 }
 
 /** Checkboxes for the types this geometry actually has, not a fixed list. */
@@ -310,6 +338,12 @@ async function refresh(): Promise<void> {
     // and in the panel is one consistent bundle/slot/filter triple.
     if (mySeq !== refreshSeq) return;
 
+    // Outside the bundle-change block on purpose: a failed load hides these,
+    // and returning to the bundle that is still installed draws a correct map
+    // without passing through the install branch.
+    limitationsEl.hidden = false;
+    typeFilters.disabled = false;
+
     selectedTimeslot = timeslot;
     currentTimeslots = manifest.timeslots;
     // The slider belongs to the hand on it. Writing it on every refresh yanks
@@ -321,11 +355,20 @@ async function refresh(): Promise<void> {
       slider.value = String(index);
       timeLabel.textContent = timeslot;
       installTypeFilters(routeTypesPresent(segmentRouteTypes(geometry)));
+      installLimitations(manifest);
       installedBundle = bundlePath;
     }
+    // Past here the knob's domain is this bundle's, so the hand may have it
+    // back (a no-op unless a bundle change locked it).
+    slider.disabled = false;
     draw(manifest, geometry, slot, timeslot);
   } catch (err: unknown) {
-    if (mySeq === refreshSeq) showError(err);
+    if (mySeq === refreshSeq) {
+      showError(err);
+      // The bundle never arrived, so the slider still names the slots of the
+      // one on screen — the failure must not leave the control dead.
+      slider.disabled = false;
+    }
   }
 }
 
@@ -343,7 +386,15 @@ slider.addEventListener("input", () => {
   scheduleRefresh(SLIDER_DEBOUNCE_MS);
 });
 
-daySelect.addEventListener("change", () => scheduleRefresh(0));
+daySelect.addEventListener("change", () => {
+  // Until the new bundle lands, `currentTimeslots` and `slider.max` still
+  // describe the bundle being left, and a bundle is not required to carry all
+  // 96 slots. A drag started now would put the knob and the label on a time
+  // the incoming bundle may not have. Locking is what keeps the rule above —
+  // only a bundle change moves the knob — from needing an exception.
+  slider.disabled = true;
+  scheduleRefresh(0);
+});
 
 typeFilters.addEventListener("change", (event) => {
   const box = event.target as HTMLInputElement;

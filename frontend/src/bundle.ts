@@ -1,4 +1,42 @@
-import type { Geometry, RenderSegment } from "./types.ts";
+import type { BundleManifest, Geometry, RenderSegment } from "./types.ts";
+
+const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * What to say about a bundle built on days that were not whole, or undefined
+ * when it was built on whole ones.
+ *
+ * Only the days this bundle draws count: `incomplete_days` is keyed by date,
+ * and what a bundle draws is `days_in_median` — its own date for a day
+ * bundle, the period's weekdays for the median. A reason keyed to any other
+ * date describes a different bundle and must not be reported as this one's.
+ *
+ * The reason is the exporter's string verbatim; the slot span next to it is
+ * counted from this same manifest (the list that drives the slider, against a
+ * full day at the manifest's own bin width) so a reader can check both
+ * numbers against the file they came from.
+ */
+export function incompleteNotice(
+  manifest: BundleManifest,
+): string | undefined {
+  const drawn = manifest.days_in_median.filter(
+    (d) => manifest.incomplete_days[d] !== undefined,
+  );
+  if (drawn.length === 0) return undefined;
+
+  const reasons = drawn
+    .map((d) => `${d}: ${manifest.incomplete_days[d]}`)
+    .join("; ");
+  const minutes = manifest.preprocessing_thresholds.timeslot_minutes;
+  const slots = manifest.timeslots;
+  const span =
+    `${slots.length} of ${MINUTES_PER_DAY / minutes} ${minutes}-minute slots, ` +
+    `${slots[0]} through ${slots[slots.length - 1]}`;
+  return (
+    `Incomplete ${drawn.length === 1 ? "day" : "days"} behind this view — ` +
+    `${reasons}. This bundle carries ${span}.`
+  );
+}
 
 /** "08:00" -> "0800": timeslot files drop the colon. */
 export function timeslotFile(timeslot: string): string {

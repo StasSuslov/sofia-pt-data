@@ -46,6 +46,13 @@ export interface BundleManifest {
   timeslot_count: number;
   timeslots: string[];
   days_in_median: string[];
+  // date -> the exporter's own reason, for days that were not a complete
+  // closed calendar day. Empty object when every day is whole.
+  incomplete_days: Record<string, string>;
+  // Only the field the panel needs: the bin width the slot labels were cut
+  // on, so "N of a full day's slots" is computed, not assumed.
+  preprocessing_thresholds: { timeslot_minutes: number };
+  known_limitations: string[];
 }
 
 export interface Geometry {
