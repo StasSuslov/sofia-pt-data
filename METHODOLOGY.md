@@ -392,7 +392,11 @@ I would rather name these myself than leave you to find them:
 - The bounding-box filter can lose data at its edges by construction, even
   with the box derived from the network's own extent. Each day's manifest
   publishes the observed drop-out-of-bbox rate, so the loss is a number you
-  can read.
+  can read. So far that number is zero: of the 5,098,818 vehicle positions
+  the feed reported between the corrected box coming into force
+  (2026-08-28 17:04 local) and 2026-09-05, not one fell outside it. The
+  filter is insurance against a documented failure mode of GTFS-RT feeds,
+  and on this feed it has not yet had anything to catch.
 - That risk was realised at the start of the archive. The box in force
   until 2026-08-28 17:04 local time was hand-picked and narrower than the
   network on all four sides: checked against the 2026-08-27 static
