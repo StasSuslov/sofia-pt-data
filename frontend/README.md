@@ -1,9 +1,9 @@
 # Sofia PT frontend
 
-Scaffold only: proves the `data/sofia/web` contract end-to-end by drawing the
-typical-weekday median speed for the current schedule period on a Leaflet
-map. No timeline slider, day switcher, transport filter, congestion layer,
-or heatmap yet — see `CLAUDE.md` section 3 for the feature roadmap.
+Draws the typical-weekday median speed on a Leaflet map, with a timeslot
+slider, a day switcher, and a transport-type filter. No congestion layer,
+stop info, coverage heatmap, or duplicate-route detection yet — see
+`CLAUDE.md` section 3 for the feature roadmap.
 
 Vite + TypeScript (vanilla, no framework) + Leaflet, per the project's stack
 conventions (`CLAUDE.md` section 5).
