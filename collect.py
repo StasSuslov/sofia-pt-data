@@ -29,6 +29,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,7 @@ from config import (
     DEFAULT_INTERVAL_SEC,
     DEFAULT_TIMEZONE,
     NETWORK_BBOX,
+    USER_AGENT,
 )
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -272,17 +274,18 @@ def run_collection(
     empty_snapshots = 0
     fetch_errors = 0
 
-    # Graceful shutdown on Ctrl+C (SIGINT) or `systemctl stop` (SIGTERM)
-    interrupted = False
+    # Graceful shutdown on Ctrl+C (SIGINT) or `systemctl stop` (SIGTERM).
+    # An Event rather than a flag because the loop idles inside it: see the
+    # wait() at the bottom of the loop.
+    stop = threading.Event()
     def _handler(sig, frame):
-        nonlocal interrupted
-        interrupted = True
+        stop.set()
         print("\n[INFO] Interrupted — finishing current snapshot and closing file.")
     signal.signal(signal.SIGINT, _handler)
     signal.signal(signal.SIGTERM, _handler)
 
     session = requests.Session()
-    session.headers["User-Agent"] = "sofia-transport-research/1.0"
+    session.headers["User-Agent"] = USER_AGENT
 
     if rotating:
         tz = ZoneInfo(tz_name)
@@ -306,7 +309,7 @@ def run_collection(
     print("Press Ctrl+C to stop early.\n")
 
     try:
-        while time.time() < deadline and not interrupted:
+        while time.time() < deadline and not stop.is_set():
             loop_start = time.time()
 
             if rotating:
@@ -359,9 +362,13 @@ def run_collection(
                 note = f" | {poll.dropped_out_of_bbox} dropped (bbox)" if poll.dropped_out_of_bbox else ""
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] poll #{poll_count:>4} | empty snapshot (#{empty_snapshots}){note}")
 
+            # Event.wait, not time.sleep: an interrupted sleep resumes once
+            # the handler returns (PEP 475), so a SIGTERM landing in the idle
+            # stretch printed "finishing current snapshot" and then held the
+            # process for the rest of the interval — 45 s on the deployed
+            # cadence, on every systemctl stop or restart.
             elapsed = time.time() - loop_start
-            sleep_for = max(0, interval - elapsed)
-            time.sleep(sleep_for)
+            stop.wait(max(0, interval - elapsed))
     finally:
         f.close()
         hb_f.close()
@@ -403,7 +410,7 @@ def main():
 
     if args.discover:
         session = requests.Session()
-        session.headers["User-Agent"] = "sofia-transport-research/1.0"
+        session.headers["User-Agent"] = USER_AGENT
         discover_endpoint(session)
         session.close()
         return

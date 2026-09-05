@@ -65,7 +65,7 @@ from zoneinfo import ZoneInfo
 # kind of reuse, and never from another scripts/*.py file that could grow a
 # dependency later without anyone thinking of this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import BASE_URL, DEFAULT_TIMEZONE  # noqa: E402
+from config import BASE_URL, DEFAULT_TIMEZONE, USER_AGENT  # noqa: E402
 
 DEFAULT_URL = BASE_URL + "/api/v1/static"
 
@@ -153,7 +153,7 @@ def download_to_temp(url: str, dest_dir: Path, timeout: int = 60) -> Path:
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as out:
-            req = urllib.request.Request(url, headers={"User-Agent": "sofia-transport-research/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 shutil.copyfileobj(resp, out)
     except BaseException:

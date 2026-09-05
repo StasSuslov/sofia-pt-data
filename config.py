@@ -31,6 +31,12 @@ DEFAULT_HOURS = 24
 DEFAULT_TIMEZONE = "Europe/Sofia"
 BASE_URL = "https://gtfs.sofiatraffic.bg"
 
+# Sent by every request this project makes to the agency, so an operator
+# reading their logs can tell what the traffic is and who to write to.
+# Here rather than in collect.py for the same reason as BASE_URL: it names
+# the city, and collect.py and scripts/archive_static_feed.py both send it.
+USER_AGENT = "sofia-transport-research/1.0"
+
 # Bounding box of the configured city's network (currently Sofia). Coordinates
 # outside it are discarded at collection time (known GTFS-RT teleportation bug
 # where vehicles appear far outside the service area, e.g. the Black Sea).

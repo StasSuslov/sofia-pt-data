@@ -1,3 +1,6 @@
+import os
+import signal
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -6,7 +9,9 @@ import pytest
 import requests
 from google.transit import gtfs_realtime_pb2
 
+import collect
 from collect import (
+    PollResult,
     dated_output_path,
     fetch_vehicle_positions,
     heartbeat_path_for,
@@ -161,3 +166,28 @@ def test_ping_healthcheck_swallows_non_request_errors_too(monkeypatch):
 
     monkeypatch.setattr(requests, "get", _raise)
     ping_healthcheck("https://hc-ping.com/abc")
+
+
+def test_run_collection_returns_at_once_on_sigterm(tmp_path, monkeypatch):
+    """
+    The handler announces "finishing current snapshot and closing file", so
+    the process must actually be finishing. A plain time.sleep() resumes
+    after the handler returns (PEP 475), which would hold the collector for
+    the rest of the interval — 45 s on the deployed cadence, on every
+    systemctl stop. Measured by the clock, because the flag was set the whole
+    time this was broken.
+    """
+    def _fetch_then_sigterm(url, session):
+        os.kill(os.getpid(), signal.SIGTERM)
+        return PollResult([], True, 0, 0, 0, 0)
+
+    monkeypatch.setattr(collect, "fetch_vehicle_positions", _fetch_then_sigterm)
+    previous = signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
+    started = time.monotonic()
+    try:
+        collect.run_collection(30, 0, "http://example.test", output_dir=tmp_path)
+    finally:
+        signal.signal(signal.SIGINT, previous[0])
+        signal.signal(signal.SIGTERM, previous[1])
+
+    assert time.monotonic() - started < 5
