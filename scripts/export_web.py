@@ -184,11 +184,13 @@ COORD_DECIMALS = 5
 # width (~3.5 m) plus the GPS error already in the source: past it the
 # simplification would be the largest term in a drawn position instead of a
 # term under the noise. What it is paid with is points, and points are file
-# size: 2.72 per bin instead of 2.00, geometry.json for that period 327 KB
-# gzipped instead of 256 KB, against a 1 MB first-load budget. Not
-# simplifying at all is what the budget rules out, not what it merely makes
-# expensive — keeping all 10.59 vertices puts geometry.json alone at 1,135 KB
-# gzipped, over the budget before a single timeslot is fetched.
+# size — re-measured 2026-09-08 over the 27,138 segments the current period
+# then held: 2.72 points per bin instead of 2.00, geometry.json 345,488 B
+# gzipped against the 251,598 B the same segments cost as chords in this same
+# CSR layout, under a 1 MB first-load budget. Not simplifying at all is what
+# the budget rules out, not what it merely makes expensive — keeping all
+# 10.55 vertices puts geometry.json alone at 1,203,512 B gzipped, over the
+# budget before a single timeslot is fetched.
 #
 # Both numbers are cheap to re-measure and will drift as the network
 # changes; re-count before quoting them.
@@ -675,20 +677,25 @@ def build_manifest(
                 "a segment ships the shapes.txt polyline inside its 200 m bin, simplified "
                 "in metres on the same local plane the projection uses, not in degrees, "
                 "where one tolerance would mean two distances depending on heading. "
-                "Measured 2026-09-04 over the 26,111 segments of the current schedule "
-                "period: a bin holds 10.59 points with every vertex kept, and dropping all "
-                "of them for the straight chord of format_version 1 (2.00 points) moved the "
-                "drawn line off the true path by a median of 3.4 m, 36.0 m at p90, 68.1 m "
-                "at p99 and 90.6 m at worst, by more than 5 m on 44.0% of bins. "
+                "Re-measured 2026-09-08 over the 27,138 segments the current schedule "
+                "period then held: a bin holds 10.55 points with every vertex kept, and "
+                "dropping all of them for the straight chord of format_version 1 (2.00 "
+                "points) moved the drawn line off the true path by a median of 3.3 m, "
+                "35.7 m at p90, 68.1 m at p99 and 90.6 m at worst, by more than 5 m on "
+                "43.9% of bins. "
                 "Douglas-Peucker's retention test is the distance from a dropped vertex to "
                 "the line replacing it, so this tolerance is a bound on the residual error "
                 "rather than an average of it (worst case measured on that archive: "
                 "4.999 m). 5 m is the coarsest tolerance still under a lane width plus the "
                 "GPS error already in the source, so the simplification stays below the "
                 "noise it sits on. Paid for in points and therefore file size: 2.72 points "
-                "per bin instead of 2.00, and 327 KB of gzipped geometry instead of 256 KB. "
-                "Keeping every vertex is not an option the 1 MB first-load budget leaves "
-                "open: at 10.59 points per bin geometry.json alone gzips to 1,135 KB"
+                "per bin instead of 2.00, and 345,488 B of gzipped geometry against the "
+                "251,598 B the same segments cost as chords in this same layout — the "
+                "chord release served them from four endpoint arrays with no point_offset, "
+                "a layout in which they would be 269,539 B, so the two releases are not a "
+                "like-for-like pair. Keeping every vertex is not an option the 1 MB "
+                "first-load budget leaves open: at 10.55 points per bin geometry.json "
+                "alone gzips to 1,203,512 B"
             ),
             "bins_total_before_threshold": bins_before,
             "bins_retained": bins_after,
@@ -787,20 +794,24 @@ def write_export(
     # --- size report: measure the budget, don't assume it holds ---
     slot_paths = sorted(slots_dir.glob("*.json"))
     slot_sizes = [(p.stat().st_size, gzip_size(p)) for p in slot_paths]
-    first_slot_gz = slot_sizes[0][1] if slot_sizes else 0
     avg_gz = sum(g for _, g in slot_sizes) / len(slot_sizes) if slot_sizes else 0
     max_gz = max((g for _, g in slot_sizes), default=0)
 
     manifest_gz = gzip_size(manifest_path)
     geometry_gz = gzip_size(geometry_path)
-    first_load_gz = manifest_gz + geometry_gz + first_slot_gz
+    # The heaviest slot, not slot_paths[0]. Alphabetically first is 0000.json,
+    # the emptiest file of the day (5 KB gz here against 40 KB at the morning
+    # peak), and the frontend opens on 08:00 anyway. A budget check that picks
+    # the cheapest slot reports a load nobody performs.
+    first_load_gz = manifest_gz + geometry_gz + max_gz
 
     print(f"\n{out_dir}")
     print(f"  manifest.json  {manifest_path.stat().st_size:,}B raw / {manifest_gz:,}B gz")
     print(f"  geometry.json  {geometry_path.stat().st_size:,}B raw / {geometry_gz:,}B gz  "
           f"({len(geometry['shape_idx']):,} segments, {len(geometry['shape_ids']):,} shapes)")
     print(f"  {len(slot_paths)} timeslot files, avg {avg_gz:,.0f}B gz, largest {max_gz:,}B gz")
-    print(f"  first load (manifest + geometry + 1 slot): {first_load_gz:,}B gz  (budget: ~1,000,000B)")
+    print(f"  first load (manifest + geometry + heaviest slot): {first_load_gz:,}B gz  "
+          f"(budget: ~1,000,000B)")
     print(f"  bins: {n_before:,} -> {n_after:,} retained (min_samples={min_samples}), "
           f"segments: {len(pairs_before):,} -> {len(pairs_after):,}")
     if missing_shapes:

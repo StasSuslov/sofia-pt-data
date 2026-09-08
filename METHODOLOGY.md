@@ -146,15 +146,15 @@ weekend days, plus 64 on the 31st. The other four days contribute none. A
 stale snapshot surfaces as one day's counter climbing, which is why the
 per-day breakdown sits next to the total instead of being averaged into it.
 
-Before 2026-09-03 that counter read 7,348, and the extra 4,770 belonged to a
-second route, `A109` (short name 30): 2,367 records on 2026-08-29 and 2,403
-on 2026-08-30, over 48 distinct `trip_id`s, 100% of that route's records on
-both days. They spread across the service day at about 200 records an hour
-from 05:00 to 23:00 local, so the pattern looked nothing like a peak-hour or
-a school-hour addition. Those identifiers all appear in the 2026-08-31
-snapshot, and the pipeline now resolves them against it (see Known
-limitations). `A75`'s do not appear in any snapshot this archive holds, so
-they stay unmatched.
+Before 2026-09-03 the counter for those same three days read 7,348, and the
+extra 4,770 belonged to a second route, `A109` (short name 30): 2,367
+records on 2026-08-29 and 2,403 on 2026-08-30, over 48 distinct `trip_id`s,
+100% of that route's records on both days. They spread across the service
+day at about 200 records an hour from 05:00 to 23:00 local, so the pattern
+looked nothing like a peak-hour or a school-hour addition. Those identifiers
+all appear in the 2026-08-31 snapshot, and the pipeline now resolves them
+against it (see Known limitations). `A75`'s do not appear in any snapshot
+this archive holds, so they stay unmatched.
 
 The mechanism is the agency's `trip_id` format. A `trip_id` reads
 `<route_id>-<shape_id>-<direction>-<sequence>-<service_id>`, so renumbering
@@ -190,25 +190,29 @@ references it by index from one file per 15-minute slot, so a timeline
 scrubs without downloading the whole corpus. Bins below the `--min-samples`
 threshold (default 2, the smallest count at which a median aggregates
 anything at all) are dropped, per schedule period: on the current archive
-that retains 287,024 of 572,109 bins in the two-day period and 609,461 of
-799,934 in the four-day one. `n_samples` ships with every surviving bin. Speed ships as an
-integer km/h for map colouring, with the float m/s and every sample behind
-it left in `segment_speeds_<date>.jsonl` and `typical_weekday.json`. The
-drawn geometry of a segment is the shape's own polyline inside the 200 m
-bin, simplified with the Douglas-Peucker algorithm at a 5 m tolerance
-applied in the local metric plane, not in degrees. Every `shapes.txt`
-vertex the simplification drops lies within 5 m of the line drawn in its
-place, so a turn or a roundabout inside a segment is drawn rather than cut
-across, but not to the last metre. Earlier versions of this export drew the
-straight chord between the bin's two endpoints instead, which put the line
-a median of 3.4 m from the true path, 90.6 m away at worst, and more than
-5 m away on 44.0% of the 26,111 segments in the current schedule period.
-Keeping every vertex is what the page-load budget rules out: at 10.59
-points per bin `geometry.json` alone gzips to 1,135 KB, past the 1 MB
-budgeted for a first load, against 327 KB for the simplified file and
-256 KB for the chord it replaced. `web/index.json` lists the day bundles
-and names the current schedule period, since a static site cannot list a
-directory.
+that retains 287,024 of 572,109 bins in the two-day period and 672,019 of
+837,130 in the five-day one. `n_samples` ships with every surviving bin.
+Speed ships as an integer km/h for map colouring, with the float m/s and
+every sample behind it left in `segment_speeds_<date>.jsonl` and
+`typical_weekday.json`. The drawn geometry of a segment is the shape's own
+polyline inside the 200 m bin, simplified with the Douglas-Peucker algorithm
+at a 5 m tolerance applied in the local metric plane, not in degrees. Every
+`shapes.txt` vertex the simplification drops lies within 5 m of the line
+drawn in its place, so a turn or a roundabout inside a segment is drawn
+rather than cut across, but not to the last metre. Earlier versions of this
+export drew the straight chord between the bin's two endpoints instead,
+which put the line a median of 3.3 m from the true path, 90.6 m away at
+worst, and more than 5 m away on 43.9% of the 27,138 segments the current
+schedule period held when this was last measured, on 2026-09-08. Keeping
+every vertex is what the page-load budget rules out: at 10.55 points per bin
+`geometry.json` alone gzips to 1,203,512 B, past the 1 MB budgeted for a
+first load, against 345,488 B for the simplified file and 251,598 B for the
+same segments drawn as chords in the same layout. The chord release served
+them from four endpoint arrays carrying no `point_offset`, a layout in which
+they would be 269,539 B, so a figure quoted from that release is not a
+like-for-like measure of what the simplification costs. `web/index.json`
+lists the day bundles and names the current schedule period, since a static
+site cannot list a directory.
 
 ## Aggregation
 
