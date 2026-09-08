@@ -125,3 +125,42 @@ export function countEnabledSegments(
   for (const t of types) if (enabled.has(t)) n++;
   return n;
 }
+
+// Thresholds behind highlightedSegments — see JOURNAL.md 2026-09-08 for how
+// these were measured. 0.70 catches a relative drop, 4 km/h is an absolute
+// floor so a slow segment's own noise doesn't light up; both are required
+// because either alone flags too much (ratio alone: noise on segments that
+// are always slow; the 4 km/h floor alone: a fast segment's ordinary dip).
+export const HIGHLIGHT_RATIO_MAX = 0.7;
+export const HIGHLIGHT_ABS_MIN_KMH = 4;
+
+/**
+ * Segments notably slower right now than their own typical speed for this
+ * timeslot. `typicalKmh` is geometry.json's optional per-segment array
+ * (indexed by segment position, i.e. the same index space as segment_idx);
+ * `segmentIdx`/`speedKmh` are a timeslot's own parallel arrays. Undefined
+ * `typicalKmh` (day bundles never carry it), a null entry (segment below the
+ * gate) and a segment_idx past the end of typicalKmh (geometry/timeslot
+ * disagree) all resolve the same way: not flagged, never thrown.
+ */
+export function highlightedSegments(
+  typicalKmh: (number | null)[] | undefined,
+  segmentIdx: number[],
+  speedKmh: number[],
+): Set<number> {
+  const flagged = new Set<number>();
+  if (!typicalKmh) return flagged;
+  for (let i = 0; i < segmentIdx.length; i++) {
+    const idx = segmentIdx[i];
+    const typical = typicalKmh[idx];
+    if (typical === null || typical === undefined) continue;
+    const slot = speedKmh[i];
+    if (
+      slot <= HIGHLIGHT_RATIO_MAX * typical &&
+      typical - slot >= HIGHLIGHT_ABS_MIN_KMH
+    ) {
+      flagged.add(idx);
+    }
+  }
+  return flagged;
+}

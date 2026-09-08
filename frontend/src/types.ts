@@ -88,6 +88,13 @@ export interface Geometry {
   point_offset: number[];
   lat: number[];
   lon: number[];
+  // Per-segment typical speed for this bundle's schedule period: the median
+  // of the segment's own per-slot medians, gated at >= 15 filled slots
+  // (null below the gate). Parallel to shape_idx/segment_index — indexed by
+  // segment position, not by timeslot. Absent entirely on day bundles (a
+  // day has no period to be typical of); a bundle without it draws no
+  // highlight, silently.
+  typical_kmh?: (number | null)[];
 }
 
 export interface Timeslot {

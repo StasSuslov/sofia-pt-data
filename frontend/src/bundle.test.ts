@@ -3,6 +3,7 @@ import {
   UNKNOWN_ROUTE_TYPE,
   countEnabledSegments,
   filterByRouteType,
+  highlightedSegments,
   incompleteNotice,
   pickTimeslotIndex,
   routeTypeLabel,
@@ -218,5 +219,67 @@ describe("incompleteNotice", () => {
     expect(notice).toContain("2026-08-27: reason A");
     expect(notice).toContain("2026-08-28: reason B");
     expect(notice).not.toContain("2026-09-07");
+  });
+});
+
+describe("highlightedSegments", () => {
+  it("flags a segment where both the ratio and the absolute drop hold", () => {
+    // typical 20, slot 10: 10 <= 0.7*20 (14) and 20-10 (10) >= 4.
+    const flagged = highlightedSegments([20], [0], [10]);
+    expect(flagged).toEqual(new Set([0]));
+  });
+
+  it("does not flag on the ratio alone — the absolute floor also fails", () => {
+    // typical 10, slot 6.5: ratio holds (6.5 <= 7) but the drop is 3.5 < 4.
+    expect(highlightedSegments([10], [0], [6.5])).toEqual(new Set());
+  });
+
+  it("does not flag on the absolute drop alone — the ratio also fails", () => {
+    // typical 100, slot 90: drop is 10 >= 4, but 90 > 0.7*100 (70).
+    expect(highlightedSegments([100], [0], [90])).toEqual(new Set());
+  });
+
+  it("flags exactly at the 0.70 ratio boundary", () => {
+    // typical 20, slot 14: 14 == 0.7*20 exactly, drop is 6 >= 4.
+    expect(highlightedSegments([20], [0], [14])).toEqual(new Set([0]));
+  });
+
+  it("does not flag just above the 0.70 ratio boundary", () => {
+    expect(highlightedSegments([20], [0], [14.01])).toEqual(new Set());
+  });
+
+  it("flags exactly at the 4 km/h absolute boundary", () => {
+    // typical 10, slot 6: drop is exactly 4, ratio holds (6 <= 7).
+    expect(highlightedSegments([10], [0], [6])).toEqual(new Set([0]));
+  });
+
+  it("does not flag just below the 4 km/h absolute boundary", () => {
+    expect(highlightedSegments([10], [0], [6.01])).toEqual(new Set());
+  });
+
+  it("never flags a segment whose typical is null (below the fill gate)", () => {
+    expect(highlightedSegments([null], [0], [1])).toEqual(new Set());
+  });
+
+  it("flags nothing when the bundle carries no typical_kmh at all", () => {
+    expect(highlightedSegments(undefined, [0, 1], [1, 2])).toEqual(new Set());
+  });
+
+  it("does not flag a slot segment that falls outside typical_kmh's range", () => {
+    // segment_idx 5 has no entry in a 2-long typical_kmh array — geometry and
+    // the timeslot disagree, but this function reports "not flagged", not an
+    // error; buildRenderableSegments is what throws on that disagreement.
+    expect(highlightedSegments([20, 20], [5], [1])).toEqual(new Set());
+  });
+
+  it("picks out only the flagged segments among several in one timeslot", () => {
+    const flagged = highlightedSegments(
+      [20, 20, null, 20],
+      [0, 1, 2, 3],
+      [10, 18, 5, 6],
+    );
+    // 0: 10<=14 & drop 10>=4 -> flagged. 1: 18>14 -> not. 2: null -> not.
+    // 3: 6<=14 & drop 14>=4 -> flagged.
+    expect(flagged).toEqual(new Set([0, 3]));
   });
 });

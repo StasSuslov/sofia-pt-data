@@ -7,6 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from export_web import (  # noqa: E402
     COORD_DECIMALS,
     SIMPLIFY_TOLERANCE_M,
+    SLOWDOWN_ABS_MIN_KMH,
+    SLOWDOWN_RATIO_MAX,
+    TYPICAL_MIN_SLOTS,
     load_route_info,
     aggregate_day_bins,
     apply_threshold,
@@ -14,6 +17,7 @@ from export_web import (  # noqa: E402
     build_manifest,
     build_period_index,
     build_timeslot_files,
+    build_typical_kmh,
     current_period_key,
     load_typical_weekday_bins,
     main,
@@ -451,8 +455,8 @@ def test_manifest_names_the_schedule_period_as_a_limitation():
         shapes_observed=3, shapes_written=3, total_static_shapes=10, multi_route_shapes=1,
     )
     assert with_period["schedule_period"] == period
-    assert len(with_period["known_limitations"]) == len(without["known_limitations"]) + 1
     assert any("2026-09-08 to 2026-09-12" in line for line in with_period["known_limitations"])
+    assert not any("published timetable" in line for line in without["known_limitations"])
     # The day switcher exports one day, which ran one timetable -- no period
     # field, no extra caveat.
     assert without["schedule_period"] is None
@@ -478,3 +482,99 @@ def test_manifest_limitation_counts_shapes_written_not_observed():
         shapes_observed=4, shapes_written=3, total_static_shapes=10, multi_route_shapes=1,
     )
     assert any("1 further shape was observed" in l for l in one["known_limitations"])
+
+
+# ─── typical_kmh: a segment's own baseline, for the slowdown highlight ──────
+
+def _slots(*per_slot: list) -> dict:
+    """timeslot_files shaped like build_timeslot_files() returns them, from
+    a list of (segment_idx, speed_kmh) pairs per slot."""
+    return {
+        f"{i:02d}:00": {
+            "timeslot": f"{i:02d}:00",
+            "segment_idx": [pos for pos, _ in pairs],
+            "speed_kmh": [kmh for _, kmh in pairs],
+            "n_samples": [5] * len(pairs),
+        }
+        for i, pairs in enumerate(per_slot)
+    }
+
+
+def test_typical_kmh_is_the_median_of_a_segments_own_slot_medians():
+    # Segment 0 gets 15 slots (the gate exactly) of 10,11,...,24 km/h: the
+    # median of those is 17, and it must be that and not the mean (17.0) by
+    # accident -- one outlier is added to make the two disagree.
+    speeds = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 90]
+    timeslot_files = _slots(*[[(0, v)] for v in speeds])
+    typical = build_typical_kmh(timeslot_files, segment_count=1)
+    assert typical == [17]
+    assert len(speeds) == TYPICAL_MIN_SLOTS
+
+
+def test_typical_kmh_is_null_below_the_filled_slot_gate():
+    """A segment seen in 14 slots gets no baseline: at that fill the baseline
+    is partly night traffic, and marking a daytime slot against it would be
+    marking it for being daytime."""
+    below = _slots(*[[(0, 20)] for _ in range(TYPICAL_MIN_SLOTS - 1)])
+    assert build_typical_kmh(below, segment_count=1) == [None]
+
+    at_gate = _slots(*[[(0, 20)] for _ in range(TYPICAL_MIN_SLOTS)])
+    assert build_typical_kmh(at_gate, segment_count=1) == [20]
+
+
+def test_typical_kmh_is_parallel_to_the_geometry_arrays():
+    # Segment 1 is filled, segments 0 and 2 are not: the array still has one
+    # entry per geometry segment, in geometry order, or the frontend would
+    # read another segment's baseline.
+    timeslot_files = _slots(*[[(1, 30)] for _ in range(TYPICAL_MIN_SLOTS)])
+    assert build_typical_kmh(timeslot_files, segment_count=3) == [None, 30, None]
+
+
+def test_typical_kmh_ships_only_in_the_typical_weekday_bundle(tmp_path: Path, monkeypatch):
+    """The thresholds it is read against were measured on a period's medians.
+    A day bundle is a different object, so it carries no baseline at all
+    rather than one the rule was never calibrated for."""
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    _write_static_zip(static_dir).rename(static_dir / "gtfs_2026-09-03.zip")
+
+    data_dir = tmp_path / "data"
+    _, shapes_by_key, _ = load_static(static_dir / "gtfs_2026-09-03.zip")
+    shape_key = next(iter(shapes_by_key))
+    _write_typical_weekday(data_dir / "processed" / "typical_weekday.json", shape_key)
+
+    speeds_path = data_dir / "processed" / "segment_speeds_2026-09-08.jsonl"
+    speeds_path.write_text("\n".join(
+        json.dumps({"shape_id": SHAPE_ID, "shape_key": shape_key, "segment_index": 0,
+                    "timeslot": f"{h:02d}:00", "speed_ms": 5.0})
+        for h in range(24) for _ in range(2)
+    ) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(data_dir)])
+    main()
+    monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(data_dir),
+                                      "--day", "2026-09-08"])
+    main()
+
+    period = data_dir / "web" / "typical_weekday" / "autumn00000000"
+    geometry = json.loads((period / "geometry.json").read_text(encoding="utf-8"))
+    assert "typical_kmh" in geometry
+    assert len(geometry["typical_kmh"]) == len(geometry["shape_idx"])
+    # That fixture period has two slots, well under the gate.
+    assert set(geometry["typical_kmh"]) == {None}
+
+    day_geometry = json.loads(
+        (data_dir / "web" / "2026-09-08" / "geometry.json").read_text(encoding="utf-8"))
+    assert "typical_kmh" not in day_geometry
+
+    period_manifest = json.loads((period / "manifest.json").read_text(encoding="utf-8"))
+    highlight = period_manifest["web_export"]["slowdown_highlight"]
+    assert highlight["ratio_max"] == SLOWDOWN_RATIO_MAX
+    assert highlight["absolute_min_kmh"] == SLOWDOWN_ABS_MIN_KMH
+    assert highlight["min_filled_slots"] == TYPICAL_MIN_SLOTS
+    assert any("36.9%" in line for line in period_manifest["known_limitations"])
+
+    day_manifest = json.loads(
+        (data_dir / "web" / "2026-09-08" / "manifest.json").read_text(encoding="utf-8"))
+    assert "slowdown_highlight" not in day_manifest["web_export"]
+    assert not any("typical_kmh" in line for line in day_manifest["known_limitations"])

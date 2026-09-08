@@ -35,6 +35,10 @@ Format decided here (format_version 2):
     scientific record. The float m/s and every sample it came from still
     live in segment_speeds_<date>.jsonl and typical_weekday.json, published
     as-is (D5).
+  - typical_kmh, one per segment, in a typical-weekday bundle only: the
+    median of that segment's own per-slot medians, so the client can mark a
+    segment that is slower than itself right now without refetching every
+    slot. Null below TYPICAL_MIN_SLOTS filled slots — see that constant.
   - Route metadata (route ids, short names, GTFS route_type) is stored once
     per shape rather than per segment, so the transport-type filter
     (Component D feature 3) has something to key on without inflating the
@@ -197,6 +201,45 @@ COORD_DECIMALS = 5
 # Both numbers are cheap to re-measure and will drift as the network
 # changes; re-count before quoting them.
 SIMPLIFY_TOLERANCE_M = 5.0
+
+# ─── Slowdown highlight: "slower than this segment usually is" ─────────────
+#
+# A typical-weekday bundle's geometry.json carries typical_kmh: per segment,
+# the median of its own per-slot medians over the slots it has, in the same
+# integer km/h the timeslot files publish. The absolute colour scale answers
+# "is this street slow", which is a different question from "is this street
+# slower than usual right now" — measured 2026-09-08 on the current period,
+# of the 1,209 segments below 10 km/h at 08:00, 55.4% are still below it at
+# 19:00 and 48.1% at 22:00, so one colour was answering both questions and a
+# reader could not tell the halves apart. The base colour stays absolute and
+# a segment is marked *additionally*, so a permanently congested street does
+# not disappear from the map when it is congested on schedule.
+#
+# The predicate is the frontend's to evaluate; the two numbers it needs are
+# published here (manifest web_export.slowdown_highlight) so a reader of the
+# export can check the map against them. A segment is marked when BOTH hold:
+#     slot_kmh <= SLOWDOWN_RATIO_MAX * typical_kmh
+#     typical_kmh - slot_kmh >= SLOWDOWN_ABS_MIN_KMH
+#
+# 4 km/h is the one number the data picks: separation between segments that
+# ease off by evening and segments that are always stopped peaks at 4 in
+# eight of the nine ratio/gate configurations measured. 0.70 is not — the
+# data leaves it unbounded from below, exactly as PERIOD_TOLERANCE_PCT's
+# 0.5% is unbounded, and it is insurance rather than a fitted value. What
+# bounds it from above is day-to-day spread: a single day sits below 0.80 of
+# its own across-day median in 20.2% of (segment, slot) cells, so a looser
+# ratio would mark ordinary variation between weekdays.
+SLOWDOWN_RATIO_MAX = 0.70
+SLOWDOWN_ABS_MIN_KMH = 4
+
+# Segments with fewer filled slots than this get typical_kmh = null: the rule
+# knows nothing about them. Not a cliff in the false-flag rate (19.3% at 15
+# against 26.0% at 10 and 10.7% at 30) but the point where the baseline stops
+# being made of night: at 1-4 filled slots, 19.8% of them are night slots; at
+# >= 15, none are. A baseline that is half free-flow night traffic would mark
+# a segment for being busy in daylight.
+TYPICAL_MIN_SLOTS = 15
+
 
 # Below this calendar-day coverage_pct (from generate_manifest.py's output),
 # or if the day was still in progress when its manifest was built, a day
@@ -570,6 +613,30 @@ def build_timeslot_files(bins: dict, index_of: dict) -> dict:
     return {slot: {"timeslot": slot, **d} for slot, d in by_slot.items()}
 
 
+def build_typical_kmh(timeslot_files: dict, segment_count: int) -> list:
+    """One entry per geometry segment: the median of that segment's own
+    per-slot medians, integer km/h, or None below TYPICAL_MIN_SLOTS filled
+    slots. Parallel to geometry's shape_idx/segment_index arrays.
+
+    Built from `timeslot_files`, i.e. from the same rounded integers that
+    ship in timeslots/HHMM.json, and not from the pre-threshold bins: a
+    published baseline that cannot be recomputed from the published files is
+    a number the reader has to take on trust.
+
+    Median of medians, and named as such — the measurement does not choose
+    the formula (mean, p60 and p75 land within a few points of it with no
+    stable winner); it is a median because D4 already made the typical
+    weekday a median."""
+    by_segment = defaultdict(list)
+    for payload in timeslot_files.values():
+        for pos, kmh in zip(payload["segment_idx"], payload["speed_kmh"]):
+            by_segment[pos].append(kmh)
+    return [
+        round(statistics.median(by_segment[i])) if len(by_segment.get(i, ())) >= TYPICAL_MIN_SLOTS else None
+        for i in range(segment_count)
+    ]
+
+
 # ─── Manifest ────────────────────────────────────────────────────────────────
 
 def build_manifest(
@@ -631,6 +698,16 @@ def build_manifest(
         "is a single GTFS value (0 tram, 1 metro, 3 bus, 11 trolleybus) and is null if "
         "that ever stops holding.",
     ]
+    if mode == "typical_weekday":
+        limitations.append(
+            "typical_kmh is a baseline, not a verdict on one street. A segment is marked "
+            f"slower than usual when the slot shown is at or below {SLOWDOWN_RATIO_MAX:g} of its "
+            f"typical_kmh and at least {SLOWDOWN_ABS_MIN_KMH} km/h under it, and a single such "
+            "mark reproduces between the two halves of this period in 36.9% of cases. Read the "
+            "marks as where the network slows at peak, not as evidence about one segment; "
+            "segments with fewer than "
+            f"{TYPICAL_MIN_SLOTS} filled slots carry typical_kmh null and are never marked."
+        )
     # Whatever this particular city's feed does not cover — Sofia's metro, for
     # one — comes from its profile rather than from a list in this file, which
     # every city's export passes through.
@@ -645,6 +722,96 @@ def build_manifest(
             "departure times, with every route's trip count unchanged, are indistinguishable "
             "to that split and would share one period."
         )
+    web_export = {
+        "min_samples_threshold": min_samples,
+        "min_samples_rationale": (
+            "a median needs at least two independent observations to be an aggregate "
+            "rather than a single relabeled raw sample; n_samples still ships with every "
+            "surviving bin so a thin median stays visually distinguishable client-side "
+            "instead of this cutoff hiding it (D4; CLAUDE.md section 6, 'name the "
+            "limitation before someone else does')"
+        ),
+        "coordinate_decimal_places": COORD_DECIMALS,
+        "coordinate_precision_rationale": (
+            "~1.1 m at this latitude, below the accuracy of the GPS units behind the "
+            "underlying feed"
+        ),
+        "geometry_simplification": "douglas_peucker",
+        "simplify_tolerance_m": SIMPLIFY_TOLERANCE_M,
+        "simplify_tolerance_rationale": (
+            "a segment ships the shapes.txt polyline inside its 200 m bin, simplified "
+            "in metres on the same local plane the projection uses, not in degrees, "
+            "where one tolerance would mean two distances depending on heading. "
+            "Re-measured 2026-09-08 over the 27,138 segments the current schedule "
+            "period then held: a bin holds 10.55 points with every vertex kept, and "
+            "dropping all of them for the straight chord of format_version 1 (2.00 "
+            "points) moved the drawn line off the true path by a median of 3.3 m, "
+            "35.7 m at p90, 68.1 m at p99 and 90.6 m at worst, by more than 5 m on "
+            "43.9% of bins. "
+            "Douglas-Peucker's retention test is the distance from a dropped vertex to "
+            "the line replacing it, so this tolerance is a bound on the residual error "
+            "rather than an average of it (worst case measured on that archive: "
+            "4.999 m). 5 m is the coarsest tolerance still under a lane width plus the "
+            "GPS error already in the source, so the simplification stays below the "
+            "noise it sits on. Paid for in points and therefore file size: 2.72 points "
+            "per bin instead of 2.00, and 345,488 B of gzipped geometry against the "
+            "251,598 B the same segments cost as chords in this same layout — the "
+            "chord release served them from four endpoint arrays with no point_offset, "
+            "a layout in which they would be 269,539 B, so the two releases are not a "
+            "like-for-like pair. Keeping every vertex is not an option the 1 MB "
+            "first-load budget leaves open: at 10.55 points per bin geometry.json "
+            "alone gzips to 1,203,512 B"
+        ),
+        "bins_total_before_threshold": bins_before,
+        "bins_retained": bins_after,
+        "bins_dropped": bins_dropped,
+        "bins_dropped_pct": round(100 * bins_dropped / bins_before, 2) if bins_before else None,
+        "segments_total_before_threshold": pairs_before,
+        "segments_retained": pairs_after,
+        "segments_dropped_pct": round(100 * segments_dropped / pairs_before, 2) if pairs_before else None,
+        "segments_missing_from_static_feed": missing_shapes,
+    }
+    if mode == "typical_weekday":
+        web_export["slowdown_highlight"] = {
+            "typical_speed_field": "typical_kmh (geometry.json)",
+            "typical_speed_formula": "median of the segment's per-slot medians over its filled slots",
+            "min_filled_slots": TYPICAL_MIN_SLOTS,
+            "ratio_max": SLOWDOWN_RATIO_MAX,
+            "absolute_min_kmh": SLOWDOWN_ABS_MIN_KMH,
+            "predicate": (
+                f"a segment is marked slower than usual in a slot when "
+                f"slot_kmh <= {SLOWDOWN_RATIO_MAX:g} * typical_kmh AND "
+                f"typical_kmh - slot_kmh >= {SLOWDOWN_ABS_MIN_KMH} km/h; both conditions, not "
+                "either. Evaluated client-side against the arrays published here, so the same "
+                "numbers reproduce the marks on the map"
+            ),
+            "rationale": (
+                "the absolute colour scale answers whether a street is slow, which is not the "
+                "question of whether it is slower than it usually is: of the 1,209 segments "
+                "below 10 km/h at 08:00 in the current period, 55.4% are still below it at "
+                "19:00 and 48.1% at 22:00, so one colour was carrying two meanings. The mark is "
+                "drawn over the absolute colour rather than replacing it, so a permanently "
+                "congested segment stays dark. "
+                f"The {SLOWDOWN_ABS_MIN_KMH} km/h floor is the number the measurement chooses: "
+                "separation between segments that ease off by evening and segments that are "
+                "always stopped peaks at 4 km/h in eight of the nine ratio/gate configurations "
+                f"measured. The {SLOWDOWN_RATIO_MAX:g} ratio is not chosen by the data and is "
+                "named as insurance rather than a fitted value, the same way the 0.5% schedule-"
+                "period churn tolerance is: nothing in the archive bounds it from below. What "
+                "bounds it from above is day-to-day spread — a single day sits below 0.80 of its "
+                "own across-day median in 20.2% of (segment, slot) cells, so a looser ratio "
+                f"would mark ordinary variation between weekdays. The {TYPICAL_MIN_SLOTS}-slot "
+                "gate is not a cliff in the false-flag rate either (19.3% at 15 slots against "
+                "26.0% at 10 and 10.7% at 30, no break between them); it is where the baseline "
+                "stops being made of night traffic, which is the free-flow reading a daytime "
+                "slot would then be marked against: at 1-4 filled slots 19.8% of them are night "
+                "slots, at 15 or more none are. The formula for the baseline is not chosen by "
+                "the data at all — median, mean, p60 and p75 differ by 1 to 4 points of "
+                "separation with no stable winner — and it is a median because D4 already "
+                "defines the typical weekday as one"
+            ),
+        }
+
     return {
         # 2: segment geometry is a simplified polyline in CSR layout
         # (lat/lon/point_offset), not four endpoint arrays of a chord.
@@ -671,60 +838,14 @@ def build_manifest(
             "backward_tolerance_m": BACKWARD_TOLERANCE_M,
             "search_margin_m": SEARCH_MARGIN_M,
         },
-        "web_export": {
-            "min_samples_threshold": min_samples,
-            "min_samples_rationale": (
-                "a median needs at least two independent observations to be an aggregate "
-                "rather than a single relabeled raw sample; n_samples still ships with every "
-                "surviving bin so a thin median stays visually distinguishable client-side "
-                "instead of this cutoff hiding it (D4; CLAUDE.md section 6, 'name the "
-                "limitation before someone else does')"
-            ),
-            "coordinate_decimal_places": COORD_DECIMALS,
-            "coordinate_precision_rationale": (
-                "~1.1 m at this latitude, below the accuracy of the GPS units behind the "
-                "underlying feed"
-            ),
-            "geometry_simplification": "douglas_peucker",
-            "simplify_tolerance_m": SIMPLIFY_TOLERANCE_M,
-            "simplify_tolerance_rationale": (
-                "a segment ships the shapes.txt polyline inside its 200 m bin, simplified "
-                "in metres on the same local plane the projection uses, not in degrees, "
-                "where one tolerance would mean two distances depending on heading. "
-                "Re-measured 2026-09-08 over the 27,138 segments the current schedule "
-                "period then held: a bin holds 10.55 points with every vertex kept, and "
-                "dropping all of them for the straight chord of format_version 1 (2.00 "
-                "points) moved the drawn line off the true path by a median of 3.3 m, "
-                "35.7 m at p90, 68.1 m at p99 and 90.6 m at worst, by more than 5 m on "
-                "43.9% of bins. "
-                "Douglas-Peucker's retention test is the distance from a dropped vertex to "
-                "the line replacing it, so this tolerance is a bound on the residual error "
-                "rather than an average of it (worst case measured on that archive: "
-                "4.999 m). 5 m is the coarsest tolerance still under a lane width plus the "
-                "GPS error already in the source, so the simplification stays below the "
-                "noise it sits on. Paid for in points and therefore file size: 2.72 points "
-                "per bin instead of 2.00, and 345,488 B of gzipped geometry against the "
-                "251,598 B the same segments cost as chords in this same layout — the "
-                "chord release served them from four endpoint arrays with no point_offset, "
-                "a layout in which they would be 269,539 B, so the two releases are not a "
-                "like-for-like pair. Keeping every vertex is not an option the 1 MB "
-                "first-load budget leaves open: at 10.55 points per bin geometry.json "
-                "alone gzips to 1,203,512 B"
-            ),
-            "bins_total_before_threshold": bins_before,
-            "bins_retained": bins_after,
-            "bins_dropped": bins_dropped,
-            "bins_dropped_pct": round(100 * bins_dropped / bins_before, 2) if bins_before else None,
-            "segments_total_before_threshold": pairs_before,
-            "segments_retained": pairs_after,
-            "segments_dropped_pct": round(100 * segments_dropped / pairs_before, 2) if pairs_before else None,
-            "segments_missing_from_static_feed": missing_shapes,
-        },
+        "web_export": web_export,
         "segment_count": pairs_after,
         "timeslot_count": len(timeslot_labels),
         "timeslots": sorted(timeslot_labels),
         "known_limitations": limitations,
     }
+
+
 
 
 # ─── Size reporting (measure the budget, don't assume it) ──────────────────
@@ -765,6 +886,14 @@ def write_export(
     geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_key, route_info,
                                                          shape_ids_by_key)
     timeslot_files = build_timeslot_files(retained, index_of)
+
+    # Typical-weekday bundles only. The thresholds the frontend compares
+    # against typical_kmh were calibrated on a period's medians; a single
+    # day's medians are a different object, and carrying the array into a day
+    # bundle would invite exactly the reuse of a number measured elsewhere
+    # that CLAUDE.md section 9 keeps a tally of.
+    if mode == "typical_weekday":
+        geometry["typical_kmh"] = build_typical_kmh(timeslot_files, len(geometry["shape_idx"]))
 
     # This script owns everything under out_dir once it exists, so rebuild
     # it from scratch rather than overwrite in place — a rerun with a

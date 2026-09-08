@@ -45,6 +45,18 @@ export const MIN_SAMPLES = 2;
 export const MIN_SAMPLES_FOR_FULL_OPACITY = 15;
 const MIN_OPACITY = 0.35;
 
+// Highlight channel (typical-speed casing): a third channel, not a
+// reassignment of speed or opacity, so it stacks on segments already colored
+// by both. Checked against every point of SPEED_RAMP's continuous
+// interpolation (1001-sample sweep of speedToColor's own lerp, not just the
+// 13 stops): worst-case OKLab ΔE 30.5 for normal vision against a floor of
+// 15.0, 24.9 protanopia and 24.2 deuteranopia against a target of 8.0, 34.7
+// tritanopia. Don't trust that, re-run it: scripts/validate_map_palette.py
+// reads both colors out of this file and exits non-zero if one stops
+// clearing its floor.
+export const HIGHLIGHT_CASING_COLOR = "#ff5a1f";
+export const HIGHLIGHT_CASING_WEIGHT = 7;
+
 /** Maps a sample count to line opacity: thin medians fade, never vanish. */
 export function samplesToOpacity(nSamples: number): number {
   const t = Math.max(

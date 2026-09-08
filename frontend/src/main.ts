@@ -12,6 +12,7 @@ import { buildRenderableSegments } from "./segments.ts";
 import {
   countEnabledSegments,
   filterByRouteType,
+  highlightedSegments,
   incompleteNotice,
   pickTimeslotIndex,
   routeTypeLabel,
@@ -20,6 +21,8 @@ import {
   timeslotFile,
 } from "./bundle.ts";
 import {
+  HIGHLIGHT_CASING_COLOR,
+  HIGHLIGHT_CASING_WEIGHT,
   MIN_SAMPLES,
   MIN_SAMPLES_FOR_FULL_OPACITY,
   SPEED_DOMAIN_MAX_KMH,
@@ -144,6 +147,14 @@ function speedLegendHtml(): string {
     </div>`;
 }
 
+/** Only shown when the bundle carries typical_kmh — nothing to explain otherwise. */
+function highlightLegendHtml(): string {
+  return `
+    <div class="legend-block">
+      <p class="hint">Highlight (orange casing): segment notably slower than its own typical speed for this timeslot.</p>
+    </div>`;
+}
+
 function samplesLegendHtml(): string {
   const counts = [MIN_SAMPLES, 5, 10, MIN_SAMPLES_FOR_FULL_OPACITY];
   const swatches = counts
@@ -261,10 +272,13 @@ function installLimitations(manifest: BundleManifest): void {
  * Page identity comes from the data, like the attribution line: the title in
  * index.html is only what a reader sees before the first bundle lands.
  */
-function installAttribution(manifest: BundleManifest): void {
+function installAttribution(manifest: BundleManifest, hasTypical: boolean): void {
   const attribution = manifest.attribution ?? null;
   legendEl.innerHTML =
-    sourcesHtml(attribution) + speedLegendHtml() + samplesLegendHtml();
+    sourcesHtml(attribution) +
+    speedLegendHtml() +
+    (hasTypical ? highlightLegendHtml() : "") +
+    samplesLegendHtml();
   if (attribution) {
     document.title = `${attribution.city} public transport — typical weekday speeds`;
   }
@@ -311,9 +325,26 @@ function draw(
     types,
     enabled,
   );
+  const flagged = highlightedSegments(
+    geometry.typical_kmh,
+    slot.segment_idx,
+    slot.speed_kmh,
+  );
 
   segmentLayer.clearLayers();
   for (const seg of drawn) {
+    // Casing added first so it sits under the speed line, peeking out only
+    // at the edges (it's wider) — a third channel, not a replacement for
+    // the speed color the line already carries.
+    if (flagged.has(seg.segmentIdx)) {
+      segmentLayer.addLayer(
+        L.polyline(seg.points, {
+          color: HIGHLIGHT_CASING_COLOR,
+          opacity: 0.9,
+          weight: HIGHLIGHT_CASING_WEIGHT,
+        }),
+      );
+    }
     segmentLayer.addLayer(
       L.polyline(seg.points, {
         color: speedToColor(seg.speedKmh),
@@ -385,7 +416,7 @@ async function refresh(): Promise<void> {
       timeLabel.textContent = timeslot;
       installTypeFilters(routeTypesPresent(segmentRouteTypes(geometry)));
       installLimitations(manifest);
-      installAttribution(manifest);
+      installAttribution(manifest, geometry.typical_kmh !== undefined);
       installedBundle = bundlePath;
     }
     // Past here the knob's domain is this bundle's, so the hand may have it

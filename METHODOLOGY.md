@@ -328,6 +328,27 @@ site cannot list a directory.
   (`n_samples`), in `typical_weekday.json` and in the web export alike. A
   median of two observations and a median of two hundred are otherwise
   indistinguishable once rendered as one coloured line.
+- Each schedule-period bundle also publishes `typical_kmh`, one baseline per
+  segment: the median of that segment's own per-slot medians, in the same
+  integer km/h the timeslot files carry, so a reader recomputes it from the
+  published files instead of taking it on trust. It exists because the map
+  colours speed on an absolute scale, which answers "is this street slow" and
+  not "is this street slower than it usually is": of the 1,209 segments under
+  10 km/h at 08:00 in the current period, 55.4% are still under it at 19:00
+  and 48.1% at 22:00, so one colour was carrying both questions. The map marks
+  a segment on top of its absolute colour, never instead of it, when the slot
+  shown is at or below 0.70 of that segment's `typical_kmh` and at least
+  4 km/h under it — 7.1% of the segments drawn at 08:00, 10.6% at the 17:15
+  peak, none at night. Of the three numbers the data picks one: separation
+  peaks at 4 km/h in eight of the nine configurations measured. 0.70 is
+  insurance, bounded from above by day-to-day spread — a single day sits below
+  0.80 of its own across-day median in 20.2% of (segment, slot) cells — and
+  bounded from below by nothing in the data, the same way the 0.5% churn
+  threshold is. The 15-slot gate is where the baseline stops being made of
+  night: at 1 to 4 filled slots, 19.8% of them are night slots; at 15 or more,
+  none are. A segment under the gate carries `typical_kmh: null` and is never
+  marked. Day bundles carry no baseline at all: a day has no period to be
+  typical of, and these thresholds were measured on period medians.
 - I publish the raw daily observations next to the median, so the real
   day-to-day variability stays visible.
 
@@ -511,6 +532,15 @@ I would rather name these myself than leave you to find them:
   right one for that day — it is the nearest evidence of a build this
   archive never captured, and a renumbering it does not carry stays
   unresolved.
+- A slower-than-usual mark describes the network at peak, not one segment.
+  Splitting the current period in half and computing each half's baseline on
+  its own, a single mark reproduces in 36.9% of cases. Read the marks in
+  aggregate — which corridors light up, in which slots — and not as evidence
+  about the segment under the cursor. They are also denser where the archive
+  is denser: 13,509 of the current period's 27,138 segments clear the 15-slot
+  gate, the rest carry no baseline and can never be marked, so an unmarked
+  segment may mean "not slower than usual" or "not enough observations to
+  say".
 
 ## Versioning
 
