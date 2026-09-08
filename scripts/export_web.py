@@ -117,6 +117,8 @@ from pathlib import Path
 # tested). Explicit path insert so this also works under pytest, which
 # doesn't always add a script's own directory to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from config import CityProfileError, city_slugs, load_city_for_path  # noqa: E402
 from segment_speeds import (  # noqa: E402
     BACKWARD_TOLERANCE_M,
     EARTH_RADIUS_M,
@@ -587,6 +589,9 @@ def build_manifest(
     shapes_observed: int,
     shapes_written: int,
     total_static_shapes: int,
+    multi_route_shapes: int,
+    attribution: dict | None = None,
+    city_limitations: tuple = (),
     schedule_period: dict | None = None,
 ) -> dict:
     bins_dropped = bins_before - bins_after
@@ -619,13 +624,17 @@ def build_manifest(
         "underlying float m/s and every individual sample it was built from live in "
         "segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).",
         shapes_line,
-        "The GTFS-RT feed carries no Sofia metro vehicles; this export describes surface "
-        "transport only.",
-        "Route metadata is per shape, not per segment. Twelve shapes in this feed serve "
-        "more than one route, so shape_route_ids is a list; no shape mixes route types, "
-        "so shape_route_type is a single GTFS value (0 tram, 1 metro, 3 bus, "
-        "11 trolleybus) and is null if that ever stops holding.",
+        f"Route metadata is per shape, not per segment. {multi_route_shapes} "
+        f"shape{'' if multi_route_shapes == 1 else 's'} in this export "
+        f"{'serves' if multi_route_shapes == 1 else 'serve'} more than one route, so "
+        "shape_route_ids is a list; no shape here mixes route types, so shape_route_type "
+        "is a single GTFS value (0 tram, 1 metro, 3 bus, 11 trolleybus) and is null if "
+        "that ever stops holding.",
     ]
+    # Whatever this particular city's feed does not cover — Sofia's metro, for
+    # one — comes from its profile rather than from a list in this file, which
+    # every city's export passes through.
+    limitations.extend(city_limitations)
     if schedule_period:
         limitations.append(
             "This median covers only the days that ran one published timetable "
@@ -645,6 +654,11 @@ def build_manifest(
         # Which timetable this bundle's days ran, from typical_weekday.json's
         # schedule_periods; null for a single-day export, which needs no split.
         "schedule_period": schedule_period,
+        # Who the data belongs to and under what licence, copied from the city
+        # profile so the page can credit the operator whose feed it is showing.
+        # null when the export could not resolve a city: no attribution is a
+        # visible gap, while a default one would publish the wrong licence.
+        "attribution": attribution,
         "source": source,
         "days_processed": days_processed,
         "days_in_median": days_in_median,
@@ -734,6 +748,8 @@ def write_export(
     days_processed: list,
     days_in_median: list,
     incomplete_days: dict,
+    attribution: dict | None = None,
+    city_limitations: tuple = (),
     schedule_period: dict | None = None,
 ) -> dict:
     """Threshold -> geometry -> timeslot files -> manifest, into `out_dir`.
@@ -786,6 +802,9 @@ def write_export(
         shapes_observed=len({sid for sid, _ in pairs_before}),
         shapes_written=len(geometry["shape_keys"]),
         total_static_shapes=len(shapes_by_key),
+        multi_route_shapes=sum(1 for ids in geometry["shape_route_ids"] if len(ids) > 1),
+        attribution=attribution,
+        city_limitations=city_limitations,
         schedule_period=schedule_period,
     )
     manifest_path = out_dir / "manifest.json"
@@ -920,16 +939,40 @@ def main():
                              "(Component D feature 2, the day switcher)")
     parser.add_argument("--min-samples", type=int, default=MIN_SAMPLES_DEFAULT,
                         help=f"Drop (segment, timeslot) bins with fewer observations than this (default: {MIN_SAMPLES_DEFAULT})")
+    parser.add_argument("--city", type=str, default=None,
+                        help="City profile supplying attribution and the city's own known "
+                             f"limitations (cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
+                             "Default: read from data_dir, laid out as .../data/<city>/")
     args = parser.parse_args()
 
     processed_dir = args.processed_dir or (args.data_dir / "processed")
     output_root = args.output_dir or (args.data_dir / "web")
 
+    # An export whose city cannot be resolved still runs and says so: the
+    # manifest carries attribution: null, and publish_web.py refuses to put a
+    # bundle like that on the web. Failing here instead would break nothing
+    # but the export itself, while guessing a city would silently publish one
+    # operator's licence over another's data.
+    try:
+        city = load_city_for_path(args.data_dir, slug=args.city)
+    except CityProfileError as e:
+        print(f"WARNING: no city profile resolved ({e}); the export will carry no "
+              f"attribution and cannot be published as is", file=sys.stderr)
+        city = None
+    city_common = dict(
+        # The city's own name travels with the credit line, so a page can
+        # title itself and a published README can name the city without
+        # either of them carrying a city constant of its own.
+        attribution=({**city["attribution"], "city": city["name"], "city_slug": city["slug"]}
+                     if city else None),
+        city_limitations=tuple(city.get("known_limitations", ())) if city else (),
+    )
+
     shapes_by_key, route_info, shape_ids_by_key, static_paths = load_static_sources(args.static_source)
     static_feed_names = [p.name for p in static_paths]
 
     common = dict(min_samples=args.min_samples, shapes_by_key=shapes_by_key,
-                  route_info=route_info, shape_ids_by_key=shape_ids_by_key)
+                  route_info=route_info, shape_ids_by_key=shape_ids_by_key, **city_common)
 
     if args.day:
         # The day switcher exports one day's own median. A single day ran a

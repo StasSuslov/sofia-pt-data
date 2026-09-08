@@ -119,7 +119,7 @@ def test_download_to_temp_leaves_no_file_behind_on_failure(tmp_path):
     bad_url = (tmp_path / "does-not-exist.zip").as_uri()
 
     try:
-        download_to_temp(bad_url, dest_dir, timeout=5)
+        download_to_temp(bad_url, dest_dir, "sofia-transport-research/1.0", timeout=5)
         assert False, "expected a download error"
     except urllib.error.URLError:
         pass

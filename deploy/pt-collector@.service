@@ -1,0 +1,30 @@
+# %i is the city slug (matches a cities/<slug>.json profile and a
+# data/<slug>/ directory). Enable per city, e.g.:
+#   systemctl enable --now pt-collector@sofia.service
+# Not deployed yet: the VPS still runs the old single-city
+# sofia-collector.service unit unchanged; converting to this template and
+# renaming happens together on the server, not piecemeal.
+
+[Unit]
+Description=PT GTFS-RT collector for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sofia-pt
+Environment=HEALTHCHECK_URL=
+# Without this, stdout is block-buffered since journald's pipe isn't a tty —
+# print() output lags behind reality. That's exactly what made the very
+# first Mac-sleep gap (2026-08-27) confusing: the log looked empty for
+# ~11 minutes while the process was actually fine, because the buffer
+# hadn't flushed. Unbuffered stdout means the log reflects what's happening
+# right now, which matters when a gap is the thing you're trying to diagnose.
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sofia-pt/venv/bin/python3 /opt/sofia-pt/collect.py --output-dir /opt/sofia-pt/data/%i --interval 45 --hours 0
+Restart=on-failure
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

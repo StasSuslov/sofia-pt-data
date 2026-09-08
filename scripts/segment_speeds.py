@@ -128,14 +128,23 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 from zoneinfo import ZoneInfo
 
-# config.py at the repo root is the single source of truth for timezone,
-# same pattern as scripts/generate_manifest.py — importing collect.py itself
+# config.py at the repo root loads the city profile, which is the single
+# source of truth for timezone and for what unit the feed's speed field
+# really carries, same pattern as scripts/generate_manifest.py — importing collect.py itself
 # would pull in requests/protobuf this script never needs. find_day_files/
 # resolve_day_file/open_maybe_gzip are the same day-file helpers
 # generate_manifest.py uses, so a <date>.jsonl.gz produced by
 # deploy/sofia-compress.service is read transparently here too.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import DEFAULT_TIMEZONE, date_from_path, find_day_files, open_maybe_gzip, resolve_day_file  # noqa: E402
+from config import (  # noqa: E402
+    CityProfileError,
+    city_slugs,
+    date_from_path,
+    find_day_files,
+    load_city_for_path,
+    open_maybe_gzip,
+    resolve_day_file,
+)
 
 # ─── Constants: segmentation & aggregation (task spec) ─────────────────────
 
@@ -150,9 +159,10 @@ EARTH_RADIUS_M = 6371000.0
 # A gap this long between two snapshots of the same (vehicle, trip) means
 # something happened in between that a straight-line speed can't represent
 # (a layover, a missed poll run, a detour) — treat it as a break, not a slow
-# stretch. Chosen as a round 10 minutes: several times collect.py's default
-# 45s poll interval (config.DEFAULT_INTERVAL_SEC), well past normal jitter,
+# stretch. Chosen as a round 10 minutes: several times the 45s poll interval
+# Sofia is collected at, well past normal jitter,
 # still short enough that a real single hop across it would be plausible.
+# (collect.py's cadence is per city now: cities/<slug>.json, poll_interval_sec.)
 MAX_TIME_GAP_SEC = 600
 
 # Task-specified cutoff. Doubles as a wide margin over how fast a bus/tram/
@@ -816,14 +826,27 @@ def process_group(
     diff_kmh_all: list,
     stats: DayStats,
     date_str: str,
+    *,
+    feed_speed_unit: str,
 ) -> None:
     """`recs`: one (vehicle_id, trip_id)'s snapshots for the day, sorted by
-    snapshot_ts ascending, as (ts, lat, lon, feed_speed_ms) tuples."""
+    snapshot_ts ascending, as (ts, lat, lon, feed_speed) tuples.
+
+    `feed_speed_unit` ("kmh" or "ms") says what the feed's own speed field
+    carries and comes from the city profile; it has no default because the
+    two readings differ by a factor of 3.6 and both look plausible. The raw
+    archive keeps the field under the name the feed gave it (`speed_ms`);
+    everything written from here on is km/h."""
     prev_ts = None
     last_dist = None
     full_range = (0, len(shape.xs) - 2)
 
     for ts, lat, lon, feed_speed in recs:
+        # The feed's number in km/h whatever unit it arrived in, so the
+        # comparison below and the emitted field mean one thing per city.
+        feed_speed_kmh = None if feed_speed is None else (
+            feed_speed if feed_speed_unit == "kmh" else round(feed_speed * 3.6, 3)
+        )
         if prev_ts is None:
             # First point for this trip instance: no prior match to window
             # around, so this is the one full search per group (task step 3
@@ -872,24 +895,26 @@ def process_group(
                             "speed_ms": round(speed, 3),
                             "dist_m": round(delta, 1),
                             "dt_sec": dt,
-                            "feed_speed_kmh": feed_speed,
+                            "feed_speed_kmh": feed_speed_kmh,
                             "from_ts": prev_ts,
                             "to_ts": ts,
                         }, ensure_ascii=False) + "\n")
                         stats.samples_emitted += 1
                         if agg is not None:
                             agg[(shape_key, segment_index, slot)].append(speed)
-                        if feed_speed is not None:
-                            # Both sides in km/h. The feed's field is `speed` in
-                            # GTFS-RT and lands in the raw archive as `speed_ms`,
-                            # but the values are km/h, not m/s: they are whole
-                            # numbers with a median of 17 and a maximum of 87,
-                            # which as m/s would be a 61 km/h median and a 313
-                            # km/h top speed for a city bus. Subtracting a km/h
-                            # reading from an m/s one and scaling the result was
-                            # this comparison's original bug — it reported a 48
-                            # km/h median disagreement where the real one is 9.
-                            diff_kmh_all.append(abs(speed * 3.6 - feed_speed))
+                        if feed_speed_kmh is not None:
+                            # Both sides in km/h. Sofia's feed field is `speed`
+                            # in GTFS-RT and lands in the raw archive as
+                            # `speed_ms`, but its values are km/h: whole numbers
+                            # with a median of 17 and a maximum of 87, which as
+                            # m/s would be a 61 km/h median and a 313 km/h top
+                            # speed for a city bus. Subtracting a km/h reading
+                            # from an m/s one and scaling the result was this
+                            # comparison's original bug — it reported a 48 km/h
+                            # median disagreement where the real one is 9. Which
+                            # of the two a city's feed does is recorded in its
+                            # profile, not assumed here.
+                            diff_kmh_all.append(abs(speed * 3.6 - feed_speed_kmh))
 
         last_dist = dist
         prev_ts = ts
@@ -904,6 +929,8 @@ def process_day(
     agg: Optional[dict],
     diff_kmh_all: list,
     next_trip_map: Optional[dict] = None,
+    *,
+    feed_speed_unit: str,
 ) -> DayStats:
     stats = DayStats()
     groups = defaultdict(list)
@@ -949,7 +976,9 @@ def process_day(
                 stats.reject_counts["shape_not_found"] += len(recs)
                 continue
             recs.sort(key=lambda r: r[0])
-            process_group(recs, shape, route_id, shape_id, shape_key, vehicle_id, trip_id, tz, out_f, agg, diff_kmh_all, stats, date_str)
+            process_group(recs, shape, route_id, shape_id, shape_key, vehicle_id, trip_id, tz,
+                          out_f, agg, diff_kmh_all, stats, date_str,
+                          feed_speed_unit=feed_speed_unit)
 
     return stats
 
@@ -1062,13 +1091,23 @@ def main():
                                                    "<YYYY-MM-DD>.jsonl file found in data_dir)")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Where to write outputs (default: <data_dir>/processed)")
-    parser.add_argument("--timezone", type=str, default=DEFAULT_TIMEZONE,
-                        help=f"Timezone for timeslot bins and weekday classification (default: {DEFAULT_TIMEZONE})")
+    parser.add_argument("--city", type=str, default=None,
+                        help="City profile supplying the timezone and the feed's speed unit "
+                             f"(cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
+                             "Default: read from data_dir, laid out as .../data/<city>/")
+    parser.add_argument("--timezone", type=str, default=None,
+                        help="Timezone for timeslot bins and weekday classification "
+                             "(default: the city profile's)")
     args = parser.parse_args()
+
+    try:
+        city = load_city_for_path(args.data_dir, slug=args.city)
+    except CityProfileError as e:
+        parser.error(str(e))
 
     output_dir = args.output_dir or (args.data_dir / "processed")
     output_dir.mkdir(parents=True, exist_ok=True)
-    tz = ZoneInfo(args.timezone)
+    tz = ZoneInfo(args.timezone or city["timezone"])
 
     # None (single zip, same feed for every day -- unchanged prior behaviour)
     # or a date-sorted [(snapshot_date, path), ...] to pick from per day.
@@ -1224,7 +1263,7 @@ def main():
         t0 = time.time()
         stats = process_day(d["day_path"], out_path, trip_map, shapes_by_key, tz,
                             agg_by_period[period_key] if period_key else None, diff_kmh_all,
-                            next_trip_map)
+                            next_trip_map, feed_speed_unit=city["speed_field_unit"])
         elapsed = time.time() - t0
 
         processed_days.append(date_str)
@@ -1272,8 +1311,12 @@ def main():
 
     validation_summary = {
         # Named so nobody downstream repeats the m/s-vs-km/h mistake this
-        # comparison was originally computed with — see METHODOLOGY.md.
-        "feed_speed_unit": "km/h despite the field being named speed_ms in the raw archive",
+        # comparison was originally computed with — see METHODOLOGY.md. Both
+        # the unit and why it is believed come from the city profile, because
+        # "this feed violates the spec" is a claim about one city's feed.
+        "comparison_unit": "km/h",
+        "feed_speed_field_unit": city["speed_field_unit"],
+        "feed_speed_field_provenance": city.get("speed_field_provenance"),
         "n_compared": len(diff_kmh_all),
         "median_abs_diff_kmh": round(statistics.median(diff_kmh_all), 3) if diff_kmh_all else None,
         "pct_over_threshold": (

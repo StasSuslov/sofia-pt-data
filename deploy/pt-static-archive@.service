@@ -1,0 +1,38 @@
+# %i is the city slug (matches a cities/<slug>.json profile and a
+# data/<slug>/ directory). Enable per city via its timer, e.g.:
+#   systemctl enable --now pt-static-archive@sofia.timer
+# Not deployed yet: the VPS still runs the old single-city
+# sofia-static-archive.service/.timer pair unchanged; converting to this
+# template and renaming happens together on the server, not piecemeal.
+
+[Unit]
+Description=PT GTFS Static feed snapshot capture for %i
+
+[Service]
+Type=oneshot
+# System python3, not /opt/sofia-pt/venv/bin/python3 like the collector
+# unit uses: scripts/archive_static_feed.py only touches the standard
+# library (urllib for the download, zipfile/hashlib for validation and
+# content hashing, see that script's module docstring), so pointing it at
+# the collector's venv would just be one more thing to keep provisioned in
+# step with the venv for no actual benefit. Ubuntu 24.04 ships python3
+# 3.12, well past the 3.10 floor the PEP 604 `X | None` annotations in
+# this script (and the rest of scripts/) already assume.
+#
+# Output directory is /opt/sofia-pt/data/%i/static/, inside the tree
+# scripts/fetch_data.sh already pulls with a plain, unfiltered rsync, so a
+# new snapshot and its manifest reach the laptop on the next scheduled
+# fetch with no new transport to build. The compression unit's find only
+# matches *.jsonl and *.polls.jsonl, so it never touches these zips.
+#
+# No --url flag: the script's own default already points at the city
+# profile's static feed URL.
+#
+# A run that finds the feed unchanged exits 0 and writes nothing, so this
+# is safe to run as often as the timer likes, and the timer runs it
+# hourly. A second change inside one local day is saved as
+# gtfs_<date>T<HHMM>.zip beside that day's plain snapshot rather than
+# overwriting it, so a failed run here means a failed download or a
+# rejected zip, nothing else.
+ExecStart=/usr/bin/python3 /opt/sofia-pt/scripts/archive_static_feed.py /opt/sofia-pt/data/%i/static
+User=root

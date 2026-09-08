@@ -22,6 +22,12 @@ from generate_manifest import (
 
 SOFIA = ZoneInfo("Europe/Sofia")
 
+# The cadence the fixtures below write their polls at. build_manifest takes
+# it as an argument with no default — it belongs to the run being audited,
+# and a manifest is only as honest about coverage as the interval it measures
+# against — so every test states the cadence it actually generated.
+NOMINAL_INTERVAL_SEC = 45
+
 
 def write_jsonl(path: Path, records: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as f:
@@ -171,7 +177,7 @@ def test_build_manifest_with_heartbeat_distinguishes_empty_from_error(tmp_path: 
     # (otherwise mostly-empty) day doesn't register as a downtime gap — this
     # test is about telling empty/error polls apart, not full-day coverage.
     now = datetime.fromtimestamp(start + 100, tz=timezone.utc)
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now, nominal_interval_sec=NOMINAL_INTERVAL_SEC)
 
     assert manifest["heartbeat_available"] is True
     assert manifest["day_in_progress"] is True
@@ -204,7 +210,7 @@ def test_build_manifest_flags_heartbeat_deployed_mid_day(tmp_path: Path):
     ])
 
     now = datetime.fromtimestamp(start + 200_000, tz=timezone.utc)  # well after this day ended
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now, nominal_interval_sec=NOMINAL_INTERVAL_SEC)
 
     assert manifest["heartbeat_available"] is True
     assert manifest["heartbeat_partial"] is True
@@ -233,7 +239,7 @@ def test_build_manifest_without_heartbeat_falls_back_to_data_file(tmp_path: Path
         {"snapshot_ts": 1045, "vehicle_id": "A1"},
     ])
 
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, nominal_interval_sec=NOMINAL_INTERVAL_SEC, tz=SOFIA)
 
     assert manifest["heartbeat_available"] is False
     assert manifest["polls_logged"] is None
@@ -260,7 +266,7 @@ def test_build_manifest_late_start_shows_true_day_coverage_not_span_based(tmp_pa
     ])
 
     now = datetime.fromtimestamp(day_end + 100_000, tz=timezone.utc)  # well after this day ended
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now, nominal_interval_sec=NOMINAL_INTERVAL_SEC)
 
     assert manifest["heartbeat_available"] is False
     assert manifest["day_in_progress"] is False
@@ -283,7 +289,7 @@ def test_build_manifest_reports_malformed_lines_instead_of_crashing(tmp_path: Pa
     ])
 
     # must not raise
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, nominal_interval_sec=NOMINAL_INTERVAL_SEC, tz=SOFIA)
 
     assert manifest["data_malformed_lines"] == 1
     assert manifest["polls_malformed_lines"] == 0
@@ -302,7 +308,7 @@ def test_build_manifest_aggregates_bbox_pipeline_counts(tmp_path: Path):
          "entities_total": 5, "vehicles_with_position": 4, "dropped_out_of_bbox": 3},
     ])
 
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, nominal_interval_sec=NOMINAL_INTERVAL_SEC, tz=SOFIA)
 
     assert manifest["entities_total"] == 5
     assert manifest["vehicles_with_position"] == 4
@@ -355,8 +361,8 @@ def test_gzipped_day_file_matches_its_uncompressed_twin(tmp_path: Path):
     gzip_copy(polls_path, gz_dir / f"{date_str}.polls.jsonl.gz")
 
     now = datetime.fromtimestamp(start + 200_000, tz=timezone.utc)
-    plain_manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
-    gz_manifest = build_manifest(gz_dir / f"{date_str}.jsonl.gz", gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+    plain_manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now, nominal_interval_sec=NOMINAL_INTERVAL_SEC)
+    gz_manifest = build_manifest(gz_dir / f"{date_str}.jsonl.gz", gap_threshold_multiplier=3.0, tz=SOFIA, now=now, nominal_interval_sec=NOMINAL_INTERVAL_SEC)
 
     assert plain_manifest["compressed"] is False
     assert gz_manifest["compressed"] is True
@@ -382,7 +388,7 @@ def test_gzipped_heartbeat_is_found_and_parsed(tmp_path: Path):
         f.write(json.dumps({"snapshot_ts": start, "fetch_ok": True, "vehicle_count": 1}) + "\n")
 
     now = datetime.fromtimestamp(start + 100, tz=timezone.utc)
-    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now)
+    manifest = build_manifest(data_path, gap_threshold_multiplier=3.0, tz=SOFIA, now=now, nominal_interval_sec=NOMINAL_INTERVAL_SEC)
 
     assert manifest["heartbeat_available"] is True
     assert manifest["polls_logged"] == 1

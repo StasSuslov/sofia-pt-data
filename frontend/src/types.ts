@@ -40,8 +40,24 @@ export interface Manifest {
  * or the date, and `timeslots` is the authoritative slot domain for the
  * slider — the count is not a constant of the format.
  */
+/**
+ * Whoever published the feed this bundle was built from, quoted from the
+ * export manifest. `null` when the exporter could not resolve a city profile:
+ * a gap the page shows, because a default would credit the wrong operator.
+ */
+export interface Attribution {
+  city: string;
+  city_slug: string;
+  operator: string;
+  source_name: string;
+  source_url: string;
+  feed_description: string;
+  licence: string;
+}
+
 export interface BundleManifest {
   mode: string;
+  attribution: Attribution | null;
   segment_count: number;
   timeslot_count: number;
   timeslots: string[];

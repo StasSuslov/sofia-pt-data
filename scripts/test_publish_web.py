@@ -24,8 +24,21 @@ from publish_web import build_staging_tree, select_day_bundles
 
 PERIOD_KEY = "f67e7128747733b2"
 
+# What export_web.py copies out of the city profile into every bundle
+# manifest. publish_web.py refuses a bundle without it, so the fixtures carry
+# it the way a real export does.
+ATTRIBUTION = {
+    "city": "Sofia",
+    "operator": "CGM Sofia",
+    "source_name": "urbandata.sofia.bg",
+    "source_url": "https://urbandata.sofia.bg",
+    "feed_description": "CGM Sofia GTFS/GTFS-RT",
+    "licence": "CC BY 4.0",
+}
 
-def write_day_bundle(web_dir: Path, date_str: str, *, manifest: bool = True) -> Path:
+
+def write_day_bundle(web_dir: Path, date_str: str, *, manifest: bool = True,
+                     attribution: dict | None = None) -> Path:
     """A day bundle thin enough to copy fast but shaped like the real thing:
     manifest, geometry and one timeslot. `manifest=False` produces the
     half-written bundle an interrupted export leaves behind."""
@@ -33,8 +46,10 @@ def write_day_bundle(web_dir: Path, date_str: str, *, manifest: bool = True) -> 
     (d / "timeslots").mkdir(parents=True)
     (d / "timeslots" / "0000.json").write_text('{"segment_idx": [], "speed_kmh": []}')
     (d / "geometry.json").write_text('{"shape_keys": [], "lat": [], "lon": []}')
+    attribution = ATTRIBUTION if attribution is None else attribution
     if manifest:
-        (d / "manifest.json").write_text(json.dumps({"format_version": 2, "mode": date_str}))
+        (d / "manifest.json").write_text(json.dumps(
+            {"format_version": 2, "mode": date_str, "attribution": attribution}))
     return d
 
 
@@ -46,7 +61,8 @@ def make_export(tmp_path: Path, dates: list[str], *, no_manifest: list[str] = ()
     period = web_dir / "typical_weekday" / PERIOD_KEY
     (period / "timeslots").mkdir(parents=True)
     (period / "timeslots" / "0800.json").write_text('{"segment_idx": [0], "speed_kmh": [17]}')
-    (period / "manifest.json").write_text(json.dumps({"format_version": 2, "mode": "typical_weekday"}))
+    (period / "manifest.json").write_text(json.dumps(
+        {"format_version": 2, "mode": "typical_weekday", "attribution": ATTRIBUTION}))
     (web_dir / "typical_weekday" / "manifest.json").write_text(json.dumps({
         "format_version": 2,
         "mode": "typical_weekday_index",
@@ -147,7 +163,36 @@ def test_stale_data_dir_from_the_build_is_not_copied(tmp_path):
     assert (staging / "assets" / "main.js").exists()
     assert (staging / "index.html").exists()
     assert (staging / ".nojekyll").exists()
-    assert "zenodo" in (staging / "README.md").read_text()
+    readme = (staging / "README.md").read_text()
+    assert "zenodo" in readme
+    # The README is written from the export's own attribution, not from a
+    # constant that would keep saying Sofia over anyone else's data.
+    assert "# Sofia public transport" in readme
+    assert "urbandata.sofia.bg" in readme
+    assert "CC BY 4.0" in readme
+
+
+def test_a_bundle_without_attribution_is_not_published(tmp_path):
+    """export_web.py writes attribution: null when it cannot resolve a city.
+    That export must stop here: a published map states whose data it shows
+    and under what licence, and the alternative to no attribution is the
+    wrong one."""
+    web_dir = make_export(tmp_path, DATES)
+    anon = web_dir / "2026-09-03" / "manifest.json"
+    anon.write_text(json.dumps({"format_version": 2, "mode": "2026-09-03", "attribution": None}))
+    with pytest.raises(ValueError, match="no attribution"):
+        build_staging_tree(web_dir, make_dist(tmp_path), tmp_path / "staging", days=3)
+
+
+def test_two_cities_in_one_export_are_refused(tmp_path):
+    """One site publishes one city's data. Two attributions in one tree means
+    one of them would be printed over the other's segments."""
+    web_dir = make_export(tmp_path, DATES)
+    other = dict(ATTRIBUTION, city="Plovdiv", source_name="example.test", licence="CC0 1.0")
+    (web_dir / "2026-09-03" / "manifest.json").write_text(json.dumps(
+        {"format_version": 2, "mode": "2026-09-03", "attribution": other}))
+    with pytest.raises(ValueError, match="different attributions"):
+        build_staging_tree(web_dir, make_dist(tmp_path), tmp_path / "staging", days=3)
 
 
 def test_non_empty_staging_dir_is_refused(tmp_path):

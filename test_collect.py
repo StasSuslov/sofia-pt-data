@@ -10,6 +10,7 @@ import requests
 from google.transit import gtfs_realtime_pb2
 
 import collect
+from config import load_city
 from collect import (
     PollResult,
     dated_output_path,
@@ -21,27 +22,34 @@ from collect import (
 
 SOFIA_TZ = ZoneInfo("Europe/Sofia")
 
+# The bbox cases below read their bounds from the profile the collector
+# actually runs on, so they check the deployed configuration and not a copy
+# of it: a bbox edited back to the too-narrow 2026-08-28 values would fail
+# the Zhelyava case here rather than silently discard the village again.
+SOFIA = load_city("sofia")
+BBOX = SOFIA["bbox"]
+
 
 def test_coordinate_inside_bbox():
-    assert is_in_network_bbox(42.6977, 23.3219)  # central Sofia
+    assert is_in_network_bbox(42.6977, 23.3219, BBOX)  # central Sofia
 
 
 def test_coordinate_in_peripheral_settlement():
     # Zhelyava (lon 23.605) — real ЦГМ-served village, sat outside the old,
     # too-narrow bbox (lon_max 23.55) and was silently discarded as if it
     # were a teleportation artifact. Must be valid under the corrected bbox.
-    assert is_in_network_bbox(42.745, 23.605)
+    assert is_in_network_bbox(42.745, 23.605, BBOX)
 
 
 def test_invalid_coordinate_outside_bbox():
-    assert not is_in_network_bbox(43.2141, 27.9147)  # Varna — known teleportation case
+    assert not is_in_network_bbox(43.2141, 27.9147, BBOX)  # Varna — known teleportation case
 
 
 def test_invalid_coordinate_just_outside_each_edge():
-    assert not is_in_network_bbox(42.44, 23.30)   # below lat_min
-    assert not is_in_network_bbox(42.91, 23.30)   # above lat_max
-    assert not is_in_network_bbox(42.65, 23.02)   # below lon_min
-    assert not is_in_network_bbox(42.65, 23.67)   # above lon_max
+    assert not is_in_network_bbox(42.44, 23.30, BBOX)   # below lat_min
+    assert not is_in_network_bbox(42.91, 23.30, BBOX)   # above lat_max
+    assert not is_in_network_bbox(42.65, 23.02, BBOX)   # below lon_min
+    assert not is_in_network_bbox(42.65, 23.67, BBOX)   # above lon_max
 
 
 def test_dated_output_path_same_day():
@@ -110,7 +118,7 @@ def test_fetch_vehicle_positions_partitions_by_bbox_stage():
         (True, 43.2141, 27.9147),  # has position, but out of bbox (Varna)
         (False, 0, 0),           # vehicle entity with no position at all
     ])
-    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=content))
+    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=content), BBOX)
 
     assert poll.fetch_ok is True
     assert poll.entities_total == 3
@@ -122,13 +130,13 @@ def test_fetch_vehicle_positions_partitions_by_bbox_stage():
 
 def test_fetch_vehicle_positions_records_share_one_poll_timestamp():
     content = _build_feed([(True, 42.70, 23.32), (True, 42.71, 23.33)])
-    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=content))
+    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=content), BBOX)
     assert {r["snapshot_ts"] for r in poll.records} == {poll.poll_ts}
 
 
 def test_fetch_vehicle_positions_reports_fetch_failure():
     poll = fetch_vehicle_positions(
-        "http://example.test", _FakeSession(exc=requests.RequestException("boom"))
+        "http://example.test", _FakeSession(exc=requests.RequestException("boom")), BBOX
     )
     assert poll.fetch_ok is False
     assert poll.records == []
@@ -136,7 +144,7 @@ def test_fetch_vehicle_positions_reports_fetch_failure():
 
 
 def test_fetch_vehicle_positions_reports_parse_failure():
-    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=b"\xff\xff\xff\xff"))
+    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=b"\xff\xff\xff\xff"), BBOX)
     assert poll.fetch_ok is False
     assert poll.records == []
 
@@ -177,7 +185,7 @@ def test_run_collection_returns_at_once_on_sigterm(tmp_path, monkeypatch):
     systemctl stop. Measured by the clock, because the flag was set the whole
     time this was broken.
     """
-    def _fetch_then_sigterm(url, session):
+    def _fetch_then_sigterm(url, session, bbox):
         os.kill(os.getpid(), signal.SIGTERM)
         return PollResult([], True, 0, 0, 0, 0)
 
@@ -185,7 +193,11 @@ def test_run_collection_returns_at_once_on_sigterm(tmp_path, monkeypatch):
     previous = signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
     started = time.monotonic()
     try:
-        collect.run_collection(30, 0, "http://example.test", output_dir=tmp_path)
+        collect.run_collection(
+            30, 0, "http://example.test",
+            bbox=BBOX, user_agent=SOFIA["user_agent"], tz_name=SOFIA["timezone"],
+            output_dir=tmp_path,
+        )
     finally:
         signal.signal(signal.SIGINT, previous[0])
         signal.signal(signal.SIGTERM, previous[1])

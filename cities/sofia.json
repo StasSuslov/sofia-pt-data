@@ -1,0 +1,40 @@
+{
+  "slug": "sofia",
+  "name": "Sofia",
+  "timezone": "Europe/Sofia",
+  "poll_interval_sec": 45,
+
+  "bbox": {
+    "lat_min": 42.45,
+    "lat_max": 42.90,
+    "lon_min": 23.03,
+    "lon_max": 23.66
+  },
+  "bbox_provenance": "Derived 2026-08-28 from the network's own extent in gtfs_2026-08-27.zip (stops.txt + shapes.txt give lat 42.4788-42.8546, lon 23.0778-23.6075) plus a margin for GPS drift at the edges, not hand-picked; scripts/derive_bbox.py re-runs that derivation. The original hand-drawn box (lat 42.57-42.80, lon 23.15-23.55) was narrower than the real network on all four sides and silently discarded ~11% of routes serving peripheral settlements as teleportation artifacts. See METHODOLOGY.md.",
+
+  "feeds": {
+    "vehicle_positions": "https://gtfs.sofiatraffic.bg/api/v1/vehicle-positions",
+    "static": "https://gtfs.sofiatraffic.bg/api/v1/static",
+    "trip_updates": "https://gtfs.sofiatraffic.bg/api/v1/trip-updates",
+    "alerts": "https://gtfs.sofiatraffic.bg/api/v1/alerts"
+  },
+  "feeds_verified": "2026-08-27",
+  "feeds_provenance": "Endpoints listed by urbandata.sofia.bg (Ниво 1 open data) and each confirmed live with collect.py --discover on 2026-08-27, all 200. Stored as whole URLs rather than a base plus a path template because CLAUDE.md section 7 forbids constructing a specific URL by pattern from a domain: these four are facts that were checked, not a shape that generalises.",
+
+  "auth": null,
+
+  "speed_field_unit": "kmh",
+  "speed_field_provenance": "GTFS-RT specifies m/s and this feed's field arrives named speed_ms, but the values are km/h: whole numbers, median 17, p99 56, max 87, which as m/s would be a 61 km/h median and 313 km/h for a city bus (found 2026-08-31, named in METHODOLOGY.md). A spec-compliant feed must set this to \"ms\" — the conversion is not a project-wide constant.",
+
+  "attribution": {
+    "operator": "CGM Sofia",
+    "source_name": "urbandata.sofia.bg",
+    "source_url": "https://urbandata.sofia.bg",
+    "feed_description": "CGM Sofia GTFS/GTFS-RT",
+    "licence": "CC BY 4.0"
+  },
+
+  "known_limitations": [
+    "The GTFS-RT feed carries no Sofia metro vehicles; this export describes surface transport only."
+  ]
+}

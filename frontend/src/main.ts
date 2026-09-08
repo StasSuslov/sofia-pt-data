@@ -27,6 +27,7 @@ import {
   speedToColor,
 } from "./color.ts";
 import type {
+  Attribution,
   BundleManifest,
   ExcludedDay,
   Geometry,
@@ -159,12 +160,27 @@ function samplesLegendHtml(): string {
     </div>`;
 }
 
-function sourcesHtml(): string {
+function esc(text: string): string {
+  const node = document.createElement("span");
+  node.textContent = text;
+  return node.innerHTML;
+}
+
+/**
+ * The transit line is the bundle's own attribution, not a constant: the same
+ * page serves any city whose export states its source. A bundle that states
+ * none says so out loud — publish_web.py refuses to publish one, so this line
+ * showing up means the tree on the server was not built by it.
+ */
+function sourcesHtml(attribution: Attribution | null): string {
+  const transit = attribution
+    ? `<p>Transit data: <a href="${esc(attribution.source_url)}" target="_blank" rel="noopener">${esc(attribution.source_name)}</a> (${esc(attribution.feed_description)}), ${esc(attribution.licence)}.</p>`
+    : `<p class="error">This bundle names no source or licence for its transit data.</p>`;
   return `
     <div class="legend-block">
       <h3>Sources</h3>
       <p>Map tiles &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>
-      <p>Transit data: <a href="https://urbandata.sofia.bg" target="_blank" rel="noopener">urbandata.sofia.bg</a> (CGM Sofia GTFS/GTFS-RT), CC BY 4.0.</p>
+      ${transit}
       <p>Dataset DOI: <a href="https://doi.org/${DATASET_DOI}" target="_blank" rel="noopener">${DATASET_DOI}</a></p>
       <p>Code DOI: <a href="https://doi.org/${CODE_DOI}" target="_blank" rel="noopener">${CODE_DOI}</a></p>
       <p><a href="${REPO_URL}/blob/main/METHODOLOGY.md" target="_blank" rel="noopener">Methodology</a></p>
@@ -238,6 +254,19 @@ function installLimitations(manifest: BundleManifest): void {
     const item = document.createElement("li");
     item.textContent = text;
     list.append(item);
+  }
+}
+
+/**
+ * Page identity comes from the data, like the attribution line: the title in
+ * index.html is only what a reader sees before the first bundle lands.
+ */
+function installAttribution(manifest: BundleManifest): void {
+  const attribution = manifest.attribution ?? null;
+  legendEl.innerHTML =
+    sourcesHtml(attribution) + speedLegendHtml() + samplesLegendHtml();
+  if (attribution) {
+    document.title = `${attribution.city} public transport — typical weekday speeds`;
   }
 }
 
@@ -356,6 +385,7 @@ async function refresh(): Promise<void> {
       timeLabel.textContent = timeslot;
       installTypeFilters(routeTypesPresent(segmentRouteTypes(geometry)));
       installLimitations(manifest);
+      installAttribution(manifest);
       installedBundle = bundlePath;
     }
     // Past here the knob's domain is this bundle's, so the hand may have it
@@ -410,7 +440,7 @@ async function main(): Promise<void> {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
 
-  legendEl.innerHTML = sourcesHtml() + speedLegendHtml() + samplesLegendHtml();
+  legendEl.innerHTML = speedLegendHtml() + samplesLegendHtml();
 
   const index = await fetchIndex();
   const periodIndex = await fetchPeriodIndex(index.typical_weekday.path);

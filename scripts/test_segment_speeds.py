@@ -37,6 +37,12 @@ from segment_speeds import (
 
 SOFIA = ZoneInfo("Europe/Sofia")
 
+# The unit the fixtures below write into the archive's `speed_ms` field, and
+# the value cities/sofia.json carries: km/h, spec violation and all.
+# process_day takes it as a required argument, so a test that generates m/s
+# has to say so — see test_feed_speed_in_ms_is_converted_to_kmh.
+FEED_SPEED_UNIT = "kmh"
+
 # A straight north-south line along a meridian, so consecutive-point
 # haversine distances are hand-computable ground truth: a meridian arc of
 # `d` degrees on a sphere of radius EARTH_RADIUS_M is exactly
@@ -148,7 +154,7 @@ def _run_day(tmp_path: Path, records: list):
     out_path = tmp_path / "out.jsonl"
     agg = defaultdict(list)
     diffs = []
-    stats = process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA, agg, diffs)
+    stats = process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA, agg, diffs, feed_speed_unit=FEED_SPEED_UNIT)
     samples = [json.loads(line) for line in out_path.read_text().splitlines()]
     return stats, samples
 
@@ -233,6 +239,25 @@ def test_feed_speed_carried_through_for_validation(tmp_path: Path):
     assert samples[0]["feed_speed_kmh"] == 2.5  # the arrival snapshot's own feed speed, not the departure one
 
 
+def test_feed_speed_in_ms_is_converted_to_kmh(tmp_path: Path):
+    """
+    A spec-compliant feed sends m/s, and its profile says so. The emitted
+    field is km/h for every city, so the same raw 2.5 that stays 2.5 for
+    Sofia becomes 9.0 here — the 3.6x that makes a compliant feed read as a
+    crawling one if the unit is assumed instead of configured.
+    """
+    trip_map, shapes_by_id = _trip_map_and_shapes()
+    lat0, lon0 = STRAIGHT_LINE[2]
+    lat1, lon1 = STRAIGHT_LINE[3]
+    day_path = tmp_path / "2026-08-28.jsonl"
+    _write_day(day_path, [_rec(1000, lat0, lon0), _rec(1045, lat1, lon1, speed_ms=2.5)])
+    out_path = tmp_path / "out.jsonl"
+    process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA, defaultdict(list), [],
+                feed_speed_unit="ms")
+    sample = json.loads(out_path.read_text().splitlines()[0])
+    assert sample["feed_speed_kmh"] == 9.0
+
+
 def test_validation_compares_both_sides_in_kmh(tmp_path: Path):
     """
     The feed reports km/h in a field the raw archive calls speed_ms. Comparing
@@ -250,13 +275,13 @@ def test_validation_compares_both_sides_in_kmh(tmp_path: Path):
     # speed expressed in km/h, i.e. perfect agreement
     _write_day(day_path, [_rec(1000, lat0, lon0), _rec(1045, lat1, lon1, speed_ms=0.0)])
     diffs: list = []
-    process_day(day_path, tmp_path / "probe.jsonl", trip_map, shapes_by_id, SOFIA, defaultdict(list), diffs)
+    process_day(day_path, tmp_path / "probe.jsonl", trip_map, shapes_by_id, SOFIA, defaultdict(list), diffs, feed_speed_unit=FEED_SPEED_UNIT)
     derived_kmh = json.loads((tmp_path / "probe.jsonl").read_text().splitlines()[0])["speed_ms"] * 3.6
 
     day_path2 = tmp_path / "2026-08-29.jsonl"
     _write_day(day_path2, [_rec(1000, lat0, lon0), _rec(1045, lat1, lon1, speed_ms=round(derived_kmh, 3))])
     diffs = []
-    process_day(day_path2, tmp_path / "out2.jsonl", trip_map, shapes_by_id, SOFIA, defaultdict(list), diffs)
+    process_day(day_path2, tmp_path / "out2.jsonl", trip_map, shapes_by_id, SOFIA, defaultdict(list), diffs, feed_speed_unit=FEED_SPEED_UNIT)
 
     assert len(diffs) == 1
     assert diffs[0] < 0.01, f"agreeing readings must diff by ~0 km/h, got {diffs[0]}"
@@ -328,7 +353,7 @@ def test_load_static_different_geometry_same_shape_id_produces_different_keys(tm
 
 def test_process_day_never_pools_samples_across_geometry_versions(tmp_path: Path):
     """
-    End-to-end version of the regression above: run process_day() against
+    End-to-end version of the regression above: run process_day(, feed_speed_unit=FEED_SPEED_UNIT) against
     each of the two feeds independently and confirm the emitted samples
     carry the same bare shape_id and the same segment_index (so a
     bare-shape_id aggregation key would have pooled them) but different
@@ -346,7 +371,7 @@ def test_process_day_never_pools_samples_across_geometry_versions(tmp_path: Path
     day_a = tmp_path / "2026-08-27.jsonl"
     _write_day(day_a, [_rec(1000, lat0, lon0), _rec(1045, lat1, lon1)])
     out_a = tmp_path / "out_a.jsonl"
-    process_day(day_a, out_a, trip_map_a, shapes_a, SOFIA, defaultdict(list), [])
+    process_day(day_a, out_a, trip_map_a, shapes_a, SOFIA, defaultdict(list), [], feed_speed_unit=FEED_SPEED_UNIT)
     sample_a = json.loads(out_a.read_text().splitlines()[0])
 
     lat0b, lon0b = shifted[2]
@@ -354,7 +379,7 @@ def test_process_day_never_pools_samples_across_geometry_versions(tmp_path: Path
     day_b = tmp_path / "2026-08-28.jsonl"
     _write_day(day_b, [_rec(1000, lat0b, lon0b), _rec(1045, lat1b, lon1b)])
     out_b = tmp_path / "out_b.jsonl"
-    process_day(day_b, out_b, trip_map_b, shapes_b, SOFIA, defaultdict(list), [])
+    process_day(day_b, out_b, trip_map_b, shapes_b, SOFIA, defaultdict(list), [], feed_speed_unit=FEED_SPEED_UNIT)
     sample_b = json.loads(out_b.read_text().splitlines()[0])
 
     assert sample_a["shape_id"] == sample_b["shape_id"] == SHAPE_ID
@@ -495,7 +520,7 @@ def test_a_trip_the_days_own_feed_does_not_know_resolves_against_the_next_feed(t
     out_path = tmp_path / "out.jsonl"
 
     stats = process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA,
-                        defaultdict(list), [], next_trip_map)
+                        defaultdict(list), [], next_trip_map, feed_speed_unit=FEED_SPEED_UNIT)
 
     assert stats.reject_counts["trip_not_in_static"] == 0
     assert stats.records_from_next_feed == 2
@@ -517,7 +542,7 @@ def test_the_days_own_feed_wins_when_both_know_the_trip(tmp_path: Path):
     out_path = tmp_path / "out.jsonl"
 
     stats = process_day(day_path, out_path, trip_map, shapes_by_id, SOFIA,
-                        defaultdict(list), [], next_trip_map)
+                        defaultdict(list), [], next_trip_map, feed_speed_unit=FEED_SPEED_UNIT)
 
     assert stats.records_from_next_feed == 0
     assert json.loads(out_path.read_text().splitlines()[0])["route_id"] == ROUTE_ID

@@ -65,9 +65,7 @@ from zoneinfo import ZoneInfo
 # kind of reuse, and never from another scripts/*.py file that could grow a
 # dependency later without anyone thinking of this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import BASE_URL, DEFAULT_TIMEZONE, USER_AGENT  # noqa: E402
-
-DEFAULT_URL = BASE_URL + "/api/v1/static"
+from config import CityProfileError, city_slugs, load_city_for_path  # noqa: E402
 
 # The files segment_speeds.py's load_static()/load_feed_info() and
 # export_web.py's load_route_info() actually read. Absence of any one of
@@ -134,7 +132,7 @@ def sha256_of_file(path: Path) -> str:
 
 # ─── Download and validation ────────────────────────────────────────────────
 
-def download_to_temp(url: str, dest_dir: Path, timeout: int = 60) -> Path:
+def download_to_temp(url: str, dest_dir: Path, user_agent: str, timeout: int = 60) -> Path:
     """
     Download `url` into a hidden temp file inside dest_dir and return its
     path. The temp name starts with "." and doesn't match SNAPSHOT_NAME_RE,
@@ -153,7 +151,7 @@ def download_to_temp(url: str, dest_dir: Path, timeout: int = 60) -> Path:
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as out:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            req = urllib.request.Request(url, headers={"User-Agent": user_agent})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 shutil.copyfileobj(resp, out)
     except BaseException:
@@ -329,20 +327,30 @@ def main():
     parser.add_argument("output_dir", type=Path,
                          help="Directory to store gtfs_<YYYY-MM-DD>.zip snapshots and their "
                               "manifests (e.g. data/sofia/static)")
-    parser.add_argument("--url", type=str, default=DEFAULT_URL,
-                         help=f"GTFS Static feed URL (default: {DEFAULT_URL})")
-    parser.add_argument("--timezone", type=str, default=DEFAULT_TIMEZONE,
-                         help=f"Timezone for the snapshot's calendar date (default: {DEFAULT_TIMEZONE}), "
-                              "must match collect.py's --timezone so a snapshot files under the same "
-                              "local day the RT collector rotates on")
+    parser.add_argument("--city", type=str, default=None,
+                         help="City profile supplying the feed URL and timezone "
+                              f"(cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
+                              "Default: read from output_dir, laid out as .../data/<city>/static")
+    parser.add_argument("--url", type=str, default=None,
+                         help="GTFS Static feed URL (default: the city profile's)")
+    parser.add_argument("--timezone", type=str, default=None,
+                         help="Timezone for the snapshot's calendar date (default: the city "
+                              "profile's, the same value collect.py rotates the RT archive on, so "
+                              "a snapshot files under the same local day)")
     parser.add_argument("--timeout", type=int, default=60, help="Download timeout in seconds (default: 60)")
     args = parser.parse_args()
 
-    tz = ZoneInfo(args.timezone)
-
-    print(f"Downloading {args.url} ...")
     try:
-        tmp_path = download_to_temp(args.url, args.output_dir, timeout=args.timeout)
+        city = load_city_for_path(args.output_dir, slug=args.city)
+    except CityProfileError as e:
+        parser.error(str(e))
+
+    url = args.url or city["feeds"]["static"]
+    tz = ZoneInfo(args.timezone or city["timezone"])
+
+    print(f"Downloading {url} ...")
+    try:
+        tmp_path = download_to_temp(url, args.output_dir, city["user_agent"], timeout=args.timeout)
     except (urllib.error.URLError, OSError) as e:
         print(f"Download failed: {e}", file=sys.stderr)
         sys.exit(1)
@@ -354,7 +362,7 @@ def main():
         print(f"Rejected download: {e}", file=sys.stderr)
         sys.exit(1)
 
-    sys.exit(archive_feed(args.output_dir, tmp_path, args.url, tz))
+    sys.exit(archive_feed(args.output_dir, tmp_path, url, tz))
 
 
 if __name__ == "__main__":

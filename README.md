@@ -14,6 +14,13 @@ limitations I know about.
 
 ## What's here
 
+- `cities/<slug>.json` holds every value that belongs to a city rather than
+  to the pipeline: the feed URLs, the bounding box and where it came from,
+  the timezone, the poll interval, the unit the feed's speed field is
+  actually in, the attribution to publish and the limitations to state.
+  `config.py` loads and validates one; a script resolves the city from its
+  data path (`data/sofia` -> `sofia`), so nothing here carries a city name
+  in a default. Adding a city is a file, not a patch.
 - `collect.py` polls the GTFS-RT vehicle-positions feed at a fixed interval
   and appends each validated snapshot to a JSONL archive, dropping whatever
   falls outside Sofia's network bounding box.

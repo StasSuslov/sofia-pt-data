@@ -50,6 +50,7 @@ Usage:
 
 import argparse
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -77,8 +78,15 @@ DEFAULT_BASE_PATH = "/sofia-pt-web/"
 # a silent 404 rather than a build error.
 NOJEKYLL = ".nojekyll"
 
-README_TEXT = """\
-# Sofia public transport — map
+def readme_text(attribution: dict) -> str:
+    """The published repository's README, named after the city whose data it
+    actually holds and crediting that city's feed under that feed's licence.
+
+    Written from the export's own manifests rather than from a constant here:
+    a constant would keep saying Sofia, and CC BY 4.0, over whatever tree was
+    handed to it."""
+    return f"""\
+# {attribution.get('city', 'Public')} public transport — map
 
 Generated output. This site is built and force-pushed by
 `scripts/publish_web.py` in the project repository; it holds a single commit
@@ -92,8 +100,43 @@ complete archive is published as a dataset record with a DOI.
 - Code DOI (concept): 10.5281/zenodo.22256653
 - Dataset DOI (concept): 10.5281/zenodo.22285128
 
-Licences: code MIT, data CC BY 4.0.
+Transit data: {attribution['source_name']} ({attribution.get('feed_description', 'GTFS/GTFS-RT')}),
+operated by {attribution.get('operator', 'the local operator')}, {attribution['licence']}.
+{attribution.get('source_url', '')}
+
+Licences: code MIT, data {attribution['licence']}.
 """
+
+
+def collect_attribution(staging_data: Path) -> dict:
+    """The one attribution every bundle in the tree agrees on.
+
+    Refuses a tree whose bundles disagree, and a bundle that names no source
+    at all. Both refusals guard the same mistake: a site that credits one
+    city's operator, or publishes one city's licence, over another city's
+    data. export_web.py writes attribution: null when it could not resolve a
+    city, so that export reaches exactly this check instead of the web."""
+    found = {}
+    bundles = sorted(staging_data.glob("*/manifest.json")) + \
+        sorted(staging_data.glob("typical_weekday/*/manifest.json"))
+    for path in bundles:
+        if path.parent.name == "typical_weekday":
+            continue  # the period index, not a bundle
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        attribution = manifest.get("attribution")
+        if not attribution:
+            raise ValueError(
+                f"{path.relative_to(staging_data)} carries no attribution — refusing to "
+                f"publish data whose source and licence it cannot state. Re-run "
+                f"export_web.py with --city, or with a data directory named after the city.")
+        found[json.dumps(attribution, sort_keys=True)] = attribution
+    if not found:
+        raise ValueError(f"no bundle manifests found under {staging_data}")
+    if len(found) > 1:
+        raise ValueError(
+            f"the bundles in this export carry {len(found)} different attributions — one "
+            f"site publishes one city's data; export each city to its own tree")
+    return next(iter(found.values()))
 
 
 def tree_size_bytes(root: Path) -> int:
@@ -178,11 +221,14 @@ def build_staging_tree(web_dir: Path, dist_dir: Path, staging_dir: Path, days: i
     # that exists, not the one that was intended.
     index = write_root_index(staging_data)
 
+    attribution = collect_attribution(staging_data)
+
     (staging_dir / NOJEKYLL).write_text("", encoding="utf-8")
-    (staging_dir / "README.md").write_text(README_TEXT, encoding="utf-8")
+    (staging_dir / "README.md").write_text(readme_text(attribution), encoding="utf-8")
 
     return {
         "index": index,
+        "attribution": attribution,
         "days_published": [d.name for d in published],
         "days_skipped": [d.name for d in skipped],
         "period_dirs": period_dirs,

@@ -178,6 +178,7 @@ def test_manifest_has_required_fields_and_correct_derived_counts():
         shapes_observed=3,
         shapes_written=3,
         total_static_shapes=10,
+        multi_route_shapes=1,
     )
     for key in (
         "format_version", "generated_at", "mode", "source", "days_processed",
@@ -375,6 +376,44 @@ def test_export_writes_one_bundle_per_period_plus_an_index(tmp_path: Path, monke
     assert not (root / "summer00000000" / "timeslots" / "0815.json").exists()
 
 
+def test_export_carries_the_citys_attribution_and_limitations(tmp_path: Path, monkeypatch):
+    """
+    The licence and the operator's name travel profile -> manifest -> page, so
+    the site credits the feed it is actually showing. An export that cannot
+    name its city carries attribution: null instead of someone else's licence.
+    """
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    _write_static_zip(static_dir).rename(static_dir / "gtfs_2026-09-03.zip")
+
+    data_dir = tmp_path / "data"
+    _, shapes_by_key, _ = load_static(static_dir / "gtfs_2026-09-03.zip")
+    _write_typical_weekday(data_dir / "processed" / "typical_weekday.json",
+                           next(iter(shapes_by_key)))
+
+    monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(data_dir),
+                                      "--city", "sofia"])
+    main()
+    bundle = data_dir / "web" / "typical_weekday" / "autumn00000000"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["attribution"]["licence"] == "CC BY 4.0"
+    assert manifest["attribution"]["source_url"] == "https://urbandata.sofia.bg"
+    assert any("no Sofia metro vehicles" in line for line in manifest["known_limitations"])
+
+    # Same export, city unresolved: no attribution rather than a wrong one.
+    anon_dir = tmp_path / "anon"
+    _write_typical_weekday(anon_dir / "processed" / "typical_weekday.json",
+                           next(iter(shapes_by_key)))
+    monkeypatch.setattr(sys, "argv", ["export_web.py", str(static_dir), str(anon_dir)])
+    main()
+    anon = json.loads(
+        (anon_dir / "web" / "typical_weekday" / "autumn00000000" / "manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    assert anon["attribution"] is None
+    assert not any("no Sofia metro vehicles" in line for line in anon["known_limitations"])
+
+
 def test_export_drops_a_period_directory_that_left_the_archive(tmp_path: Path, monkeypatch):
     """The tree is rebuilt each run, so a stale period bundle cannot survive
     as a directory the index no longer mentions."""
@@ -403,13 +442,13 @@ def test_manifest_names_the_schedule_period_as_a_limitation():
         mode="typical_weekday", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
         source={}, days_processed=[], days_in_median=[], incomplete_days={},
-        shapes_observed=3, shapes_written=3, total_static_shapes=10, schedule_period=period,
+        shapes_observed=3, shapes_written=3, total_static_shapes=10, multi_route_shapes=1, schedule_period=period,
     )
     without = build_manifest(
         mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
         source={}, days_processed=[], days_in_median=[], incomplete_days={},
-        shapes_observed=3, shapes_written=3, total_static_shapes=10,
+        shapes_observed=3, shapes_written=3, total_static_shapes=10, multi_route_shapes=1,
     )
     assert with_period["schedule_period"] == period
     assert len(with_period["known_limitations"]) == len(without["known_limitations"]) + 1
@@ -426,7 +465,7 @@ def test_manifest_limitation_counts_shapes_written_not_observed():
         mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
         source={}, days_processed=[], days_in_median=[], incomplete_days={},
-        shapes_observed=5, shapes_written=3, total_static_shapes=10,
+        shapes_observed=5, shapes_written=3, total_static_shapes=10, multi_route_shapes=1,
     )
     line = next(l for l in manifest["known_limitations"] if "appear here" in l)
     assert "3 of the static feed's 10 shapes" in line
@@ -436,6 +475,6 @@ def test_manifest_limitation_counts_shapes_written_not_observed():
         mode="2026-09-08", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
         source={}, days_processed=[], days_in_median=[], incomplete_days={},
-        shapes_observed=4, shapes_written=3, total_static_shapes=10,
+        shapes_observed=4, shapes_written=3, total_static_shapes=10, multi_route_shapes=1,
     )
     assert any("1 further shape was observed" in l for l in one["known_limitations"])

@@ -39,47 +39,30 @@ from zoneinfo import ZoneInfo
 import requests
 from google.transit import gtfs_realtime_pb2
 
-from config import (
-    BASE_URL,
+from config import (  # noqa: E402
     DEFAULT_HOURS,
-    DEFAULT_INTERVAL_SEC,
-    DEFAULT_TIMEZONE,
-    NETWORK_BBOX,
-    USER_AGENT,
+    CityProfileError,
+    city_slugs,
+    load_city,
+    load_city_for_path,
 )
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-# BASE_URL itself now lives in config.py (see that module's docstring) so
-# scripts/archive_static_feed.py can reuse it without importing this file's
-# network dependencies. NETWORK_BBOX lives there too, with the comment
-# recording how its bounds were measured: the bounds are configuration for
-# whichever city the pipeline is pointed at, not collector logic. The filter
-# itself stays here, in the collection path, where it drops a bad coordinate
-# before it can reach the archive.
-
-# Candidate paths to try during discovery.
-# Confirmed via urbandata.sofia.bg (Ниво 1 open data, CC BY 4.0) 2026-08-20:
-#   Static:         /api/v1/static
-#   Vehicle pos.:   /api/v1/vehicle-positions  ← confirmed live, returns protobuf
-#   Trip updates:   /api/v1/trip-updates
-#   Alerts:         /api/v1/alerts
-CANDIDATE_PATHS = [
-    "/api/v1/vehicle-positions",
-    "/api/v1/trip-updates",
-    "/api/v1/alerts",
-]
-
-# Poll cadence lives in config.py, imported at the top of this file, so
-# scripts/generate_manifest.py can audit coverage against the same numbers
-# without importing this module's network dependencies.
+# Everything this collector needs that differs between cities — feed URLs,
+# bounding box, timezone, poll cadence, the User-Agent an operator reads in
+# their logs — comes from cities/<slug>.json through config.load_city().
+# main() resolves the city from --city or, failing that, from the data
+# directory it was given, and passes the values down as arguments: no
+# function below decides for itself which city it is working on.
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def is_in_network_bbox(lat: float, lon: float) -> bool:
+def is_in_network_bbox(lat: float, lon: float, bbox: dict) -> bool:
+    """Is this position inside the city's network, or is it teleportation?"""
     return (
-        NETWORK_BBOX["lat_min"] <= lat <= NETWORK_BBOX["lat_max"]
-        and NETWORK_BBOX["lon_min"] <= lon <= NETWORK_BBOX["lon_max"]
+        bbox["lat_min"] <= lat <= bbox["lat_max"]
+        and bbox["lon_min"] <= lon <= bbox["lon_max"]
     )
 
 
@@ -112,7 +95,7 @@ class PollResult(NamedTuple):
     dropped_out_of_bbox: int       # ...but fell outside NETWORK_BBOX
 
 
-def fetch_vehicle_positions(url: str, session: requests.Session) -> PollResult:
+def fetch_vehicle_positions(url: str, session: requests.Session, bbox: dict) -> PollResult:
     """
     Fetch and parse one GTFS-RT VehiclePositions snapshot.
 
@@ -161,7 +144,7 @@ def fetch_vehicle_positions(url: str, session: requests.Session) -> PollResult:
         lat = v.position.latitude
         lon = v.position.longitude
 
-        if not is_in_network_bbox(lat, lon):
+        if not is_in_network_bbox(lat, lon, bbox):
             dropped_out_of_bbox += 1
             continue
 
@@ -183,16 +166,24 @@ def fetch_vehicle_positions(url: str, session: requests.Session) -> PollResult:
 
 # ─── Discovery ────────────────────────────────────────────────────────────────
 
-def discover_endpoint(session: requests.Session) -> None:
+def discover_endpoint(session: requests.Session, city: dict) -> None:
     """
-    Try candidate paths and report which ones respond with parseable GTFS-RT data.
-    Run this once to find the correct endpoint before starting collection.
+    Probe the city profile's own feed URLs and report which ones respond with
+    parseable GTFS-RT data. Run this when adding a city, or to re-verify a
+    feed that was working when the profile was written.
+
+    The URLs come from the profile whole, never assembled from a base plus a
+    path: a domain that resolves says nothing about a path that exists, and
+    section 7 of CLAUDE.md forbids guessing the second from the first. A feed
+    that a probe cannot find belongs in the profile only after someone finds
+    the real URL and writes it down.
     """
-    print(f"Probing {BASE_URL} for GTFS-RT vehicle position endpoints...\n")
+    print(f"Probing {city['name']}'s GTFS-RT feeds ({city['slug']})...\n")
 
     found = False
-    for path in CANDIDATE_PATHS:
-        url = BASE_URL + path
+    for name, url in city["feeds"].items():
+        if name == "static":
+            continue  # a zip, not protobuf: parsing it here would only ever fail
         r = None
         try:
             r = session.get(url, timeout=10)
@@ -203,27 +194,27 @@ def discover_endpoint(session: requests.Session) -> None:
             feed.ParseFromString(r.content)
 
             vehicle_count = sum(1 for e in feed.entity if e.HasField("vehicle"))
-            print(f"  ✅  {url}")
+            print(f"  ✅  {name}: {url}")
             print(f"      HTTP {status} | {len(feed.entity)} entities | {vehicle_count} vehicles")
             print(f"      → collect with: --url {url}")
             found = True
 
         except requests.RequestException as e:
-            print(f"  ❌  {url}  →  {e}")
+            print(f"  ❌  {name}: {url}  →  {e}")
         except Exception:
             status = r.status_code if r is not None else "???"
-            print(f"  ⚠️   {url}  →  HTTP {status}, not valid GTFS-RT protobuf")
+            print(f"  ⚠️   {name}: {url}  →  HTTP {status}, not valid GTFS-RT protobuf")
 
     if found:
-        print("\nPass --url <URL> to the collection command. No source edits needed.")
+        print(f"\nThese are the URLs already in cities/{city['slug']}.json; collection uses "
+              "them by default, and --url overrides one for a single run.")
     else:
-        print("\nNo working endpoint found. Check BASE_URL or inspect browser network traffic")
-        print("on https://sofiatraffic.bg to see what URL the site itself calls.")
+        print(f"\nNo feed in cities/{city['slug']}.json answered with GTFS-RT. Check the "
+              "agency's open-data portal for the current URLs, or watch what the operator's "
+              "own site requests, and update the profile with what you find.")
 
 
 # ─── Collection loop ──────────────────────────────────────────────────────────
-
-VEHICLE_POSITIONS_URL = BASE_URL + "/api/v1/vehicle-positions"
 
 
 def ping_healthcheck(url: str) -> None:
@@ -249,15 +240,23 @@ def run_collection(
     hours: float,
     url: str,
     *,
+    bbox: dict,
+    user_agent: str,
+    tz_name: str,
     output_path: Path | None = None,
     output_dir: Path | None = None,
-    tz_name: str = DEFAULT_TIMEZONE,
     healthcheck_url: str | None = None,
     healthcheck_every: int = 20,
 ) -> None:
     """
     Poll `url` every `interval` seconds until `hours` elapse (or forever if
     `hours` <= 0), writing newline-delimited JSON records.
+
+    `bbox`, `user_agent` and `tz_name` have no defaults on purpose. Each one
+    belongs to a particular city, and a default here would let the wrong
+    city's bounds silently filter another city's feed — the filter drops a
+    position before it reaches disk, so that mistake leaves no trace to find
+    later.
 
     Exactly one of `output_path` (single fixed file) or `output_dir` (daily
     rotation, file named <YYYY-MM-DD>.jsonl in `tz_name`) must be given.
@@ -285,7 +284,7 @@ def run_collection(
     signal.signal(signal.SIGTERM, _handler)
 
     session = requests.Session()
-    session.headers["User-Agent"] = USER_AGENT
+    session.headers["User-Agent"] = user_agent
 
     if rotating:
         tz = ZoneInfo(tz_name)
@@ -322,7 +321,7 @@ def run_collection(
                     hb_f = heartbeat_path_for(current_path).open("a", encoding="utf-8")
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] rotated → {current_path}")
 
-            poll = fetch_vehicle_positions(url, session)
+            poll = fetch_vehicle_positions(url, session, bbox)
             poll_count += 1
 
             if healthcheck_url and poll_count % healthcheck_every == 0:
@@ -382,21 +381,25 @@ def run_collection(
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Sofia GTFS-RT collector")
+    parser = argparse.ArgumentParser(description="GTFS-RT collector")
+    parser.add_argument("--city", type=str, default=None,
+                        help="City profile to collect (cities/<slug>.json; have: "
+                             f"{', '.join(city_slugs()) or 'none'}). Default: read from "
+                             "--output-dir, which is laid out as .../data/<city>/")
     parser.add_argument("--discover", action="store_true",
-                        help="Probe candidate endpoints and exit")
-    parser.add_argument("--url", type=str, default=VEHICLE_POSITIONS_URL,
-                        help=f"GTFS-RT vehicle positions URL (default: {VEHICLE_POSITIONS_URL})")
+                        help="Probe the city's feed URLs and exit")
+    parser.add_argument("--url", type=str, default=None,
+                        help="GTFS-RT vehicle positions URL (default: the city profile's)")
     parser.add_argument("--output", type=Path, default=None,
                         help="Single output file, no rotation (default: data/snapshot.jsonl "
                              "if --output-dir is not given)")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Directory for daily-rotated output files named <YYYY-MM-DD>.jsonl "
                              "(mutually exclusive with --output)")
-    parser.add_argument("--timezone", type=str, default=DEFAULT_TIMEZONE,
-                        help=f"Timezone for day-boundary rotation (default: {DEFAULT_TIMEZONE})")
-    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC,
-                        help=f"Poll interval in seconds (default: {DEFAULT_INTERVAL_SEC})")
+    parser.add_argument("--timezone", type=str, default=None,
+                        help="Timezone for day-boundary rotation (default: the city profile's)")
+    parser.add_argument("--interval", type=int, default=None,
+                        help="Poll interval in seconds (default: the city profile's)")
     parser.add_argument("--hours", type=float, default=DEFAULT_HOURS,
                         help=f"Collection duration in hours (default: {DEFAULT_HOURS}). "
                              "0 or negative means run indefinitely until stopped.")
@@ -408,28 +411,48 @@ def main():
                         help="Ping the healthcheck URL every N polls (default: 20)")
     args = parser.parse_args()
 
+    if args.output and args.output_dir:
+        parser.error("--output and --output-dir are mutually exclusive")
+
+    # Two passes over the city-dependent options, because they are their own
+    # chicken and egg: the defaults live in the profile, and which profile to
+    # read is itself one of the arguments. So they parse as None, the city is
+    # resolved, and only then does the profile fill the gaps — leaving an
+    # explicit flag to win over the profile, as a flag should.
+    try:
+        if args.city or args.output_dir:
+            city = load_city_for_path(args.output_dir or Path("."), slug=args.city)
+        else:
+            parser.error("pass --city, or --output-dir laid out as .../data/<city>/")
+    except CityProfileError as e:
+        parser.error(str(e))
+
+    url = args.url or city["feeds"]["vehicle_positions"]
+    tz_name = args.timezone or city["timezone"]
+    interval = args.interval if args.interval is not None else city["poll_interval_sec"]
+
     if args.discover:
         session = requests.Session()
-        session.headers["User-Agent"] = USER_AGENT
-        discover_endpoint(session)
+        session.headers["User-Agent"] = city["user_agent"]
+        discover_endpoint(session, city)
         session.close()
         return
 
     if args.healthcheck_every < 1:
         parser.error("--healthcheck-every must be at least 1")
 
-    if args.output and args.output_dir:
-        parser.error("--output and --output-dir are mutually exclusive")
     if not args.output and not args.output_dir:
         args.output = Path("data/snapshot.jsonl")
 
     run_collection(
-        args.interval,
+        interval,
         args.hours,
-        args.url,
+        url,
+        bbox=city["bbox"],
+        user_agent=city["user_agent"],
+        tz_name=tz_name,
         output_path=args.output,
         output_dir=args.output_dir,
-        tz_name=args.timezone,
         healthcheck_url=args.healthcheck_url,
         healthcheck_every=args.healthcheck_every,
     )

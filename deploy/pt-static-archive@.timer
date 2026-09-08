@@ -1,0 +1,37 @@
+# %i is the city slug (matches a cities/<slug>.json profile and a
+# data/<slug>/ directory). Enable per city, e.g.:
+#   systemctl enable --now pt-static-archive@sofia.timer
+# Not deployed yet: the VPS still runs the old single-city
+# sofia-static-archive.service/.timer pair unchanged; converting to this
+# template and renaming happens together on the server, not piecemeal.
+
+[Unit]
+Description=Run PT GTFS Static feed snapshot capture hourly for %i
+
+[Timer]
+# Hourly, at five past. Chosen against the agency's fixed 03:33 daily
+# build (identical to the second across the 2026-08-27, 08-31 and 09-01
+# snapshots) so a run would never file yesterday's build under today's
+# date: archive_feed() saves only when the content hash differs from the
+# newest snapshot on disk, so every run between midnight and the build
+# finds yesterday's content, writes nothing, and leaves the day's real
+# capture to the first run after 03:33.
+#
+# What one run a day could not do is see a republish between two runs. The
+# agency republished at around 11:00 local on 2026-09-02, renumbering the
+# trips of four routes; that day's capture was three hours old by then and
+# 10,166 RT records (1.4% of the day) matched no trip in it. Hourly bounds
+# that blind window at an hour, and a second change inside one local day now
+# lands as gtfs_<date>T<HHMM>.zip instead of being thrown away.
+OnCalendar=*-*-* *:05:00
+# Same reasoning as the compression timer: a $4/mo droplet is not
+# guaranteed to be up at the exact scheduled instant (reboots for host
+# maintenance, etc.), and archive_feed()'s whole design already tolerates
+# a missed or late run just fine, since a run that finds the feed
+# unchanged writes nothing. Persistent=true means downtime spanning a
+# scheduled run still gets one run at next boot instead of waiting for the
+# next full hour.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

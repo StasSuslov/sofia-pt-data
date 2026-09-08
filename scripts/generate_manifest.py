@@ -30,13 +30,16 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# config.py at the repo root is the single source of truth for the poll
-# cadence collect.py actually runs at. Importing collect.py itself would
-# pull in requests and the protobuf bindings, which this file never needs.
+# The city profile is the single source of truth for the cadence collect.py
+# actually runs at and the timezone it rotates days on; coverage computed
+# against any other number measures the wrong thing. Importing collect.py
+# itself would pull in requests and the protobuf bindings, which this file
+# never needs.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (  # noqa: E402
-    DEFAULT_INTERVAL_SEC,
-    DEFAULT_TIMEZONE,
+    CityProfileError,
+    city_slugs,
+    load_city_for_path,
     date_from_path,
     find_day_files,
     open_maybe_gzip,
@@ -286,8 +289,8 @@ def should_skip(manifest_path: Path, data_path: Path, polls_path: Path, force: b
 def build_manifest(
     data_path: Path,
     gap_threshold_multiplier: float,
-    nominal_interval_sec: int = DEFAULT_INTERVAL_SEC,
-    tz: ZoneInfo = ZoneInfo(DEFAULT_TIMEZONE),
+    nominal_interval_sec: int,
+    tz: ZoneInfo,
     now: datetime | None = None,
 ) -> dict:
     date_str = date_from_path(data_path)
@@ -417,14 +420,20 @@ def main():
              "not the observed one (default: 3x)",
     )
     parser.add_argument(
-        "--interval", type=int, default=DEFAULT_INTERVAL_SEC,
-        help=f"Nominal collector poll interval in seconds, must match collect.py's --interval "
-             f"for the run being audited (default: {DEFAULT_INTERVAL_SEC}, collect.py's own default)",
+        "--city", type=str, default=None,
+        help="City profile supplying the poll cadence and timezone (cities/<slug>.json; have: "
+             f"{', '.join(city_slugs()) or 'none'}). Default: read from data_dir, laid out as "
+             ".../data/<city>/",
     )
     parser.add_argument(
-        "--timezone", type=str, default=DEFAULT_TIMEZONE,
-        help=f"Timezone for calendar-day boundaries, must match collect.py's --timezone "
-             f"(default: {DEFAULT_TIMEZONE})",
+        "--interval", type=int, default=None,
+        help="Nominal collector poll interval in seconds, must match the cadence of the run "
+             "being audited (default: the city profile's, which is also collect.py's)",
+    )
+    parser.add_argument(
+        "--timezone", type=str, default=None,
+        help="Timezone for calendar-day boundaries, must match collect.py's (default: the city "
+             "profile's)",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -433,12 +442,18 @@ def main():
     )
     args = parser.parse_args()
 
+    try:
+        city = load_city_for_path(args.data_dir, slug=args.city)
+    except CityProfileError as e:
+        parser.error(str(e))
+    interval = args.interval if args.interval is not None else city["poll_interval_sec"]
+
     day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date
     if not day_files:
         print(f"No day files found in {args.data_dir}", file=sys.stderr)
         sys.exit(1)
 
-    tz = ZoneInfo(args.timezone)
+    tz = ZoneInfo(args.timezone or city["timezone"])
     for path in day_files:
         date_str = date_from_path(path)
         polls_path = resolve_day_file(args.data_dir, date_str, ".polls.jsonl")
@@ -448,7 +463,7 @@ def main():
             print(f"{path.name}: skipped (manifest already up to date)")
             continue
 
-        manifest = build_manifest(path, args.gap_threshold, args.interval, tz)
+        manifest = build_manifest(path, args.gap_threshold, interval, tz)
         manifest = carry_remote_verification(manifest, read_manifest(manifest_path))
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

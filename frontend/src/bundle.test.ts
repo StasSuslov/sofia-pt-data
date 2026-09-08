@@ -145,6 +145,15 @@ const slotsFrom11 = Array.from({ length: 52 }, (_, i) => {
 
 const dayManifest: BundleManifest = {
   mode: "2026-08-27",
+  attribution: {
+    city: "Sofia",
+    city_slug: "sofia",
+    operator: "CGM Sofia",
+    source_name: "urbandata.sofia.bg",
+    source_url: "https://urbandata.sofia.bg",
+    feed_description: "CGM Sofia GTFS/GTFS-RT",
+    licence: "CC BY 4.0",
+  },
   segment_count: 9155,
   timeslot_count: 52,
   timeslots: slotsFrom11,
