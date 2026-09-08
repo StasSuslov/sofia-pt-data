@@ -364,23 +364,26 @@ coverage is incomplete and why, instead of taking completeness on trust.
 
 I would rather name these myself than leave you to find them:
 
-- The "typical weekday" rests on six weekdays split across two schedule
+- The "typical weekday" rests on seven weekdays split across two schedule
   periods, one of them a partial day. The aggregation on record covers
   2026-08-27 and 2026-08-28 in the first period, 2026-08-31 through
-  2026-09-03 in the second; the first of all of them covers 52.45% of its
+  2026-09-04 in the second; the first of all of them covers 52.45% of its
   calendar day, because collection began at 11:07 local. That day is flagged
   as incomplete in the web export's own `manifest.json`, so a reader meets the
   caveat there too. Days still being collected stay out of the aggregate:
   their local copy reaches only as far as the last pull, so folding one in
   would give a median that changes under a reader who re-runs the pipeline an
   hour later. The two-day period spans 572,109 (segment, timeslot) bins over
-  24,365 segments, and 49.83% of those bins rest on a single observation; the
-  four-day period spans 799,934 bins over 28,559 segments, 23.81% of them on
-  a single observation and 55.61% on three or more. Splitting by period buys
-  medians that mean something at the cost of thinner ones, and the two-day
-  period is the visible price. This archive is a week old. Read the numbers
-  above as the output of a working pipeline. They do not yet describe how
-  Sofia's network behaves.
+  24,365 segments, 49.83% of those bins resting on a single observation and
+  21.13% on three or more; the five-day period spans 837,130 bins over 28,872
+  segments, 19.72% on a single observation and 62.37% on three or more. Those
+  segment counts are the aggregation's own. The web export drops every
+  single-observation bin at its two-sample threshold, and what survives it is
+  18,499 segments in the two-day period and 27,138 in the five-day one, which
+  is what the map draws. Splitting by period buys medians that mean something
+  at the cost of thinner ones, and the two-day period is the visible price.
+  This archive began on 2026-08-27. Read the numbers above as the output of a
+  working pipeline. They do not yet describe how Sofia's network behaves.
 - The 0.5% and 80% thresholds rest on one feed and one year of its published
   calendar, and they do not rest on it equally. The 80% one is pinned: against
   a median of 15,595 trips the heaviest reduced-service weekday reaches
@@ -417,9 +420,9 @@ I would rather name these myself than leave you to find them:
 - The bounding-box filter can lose data at its edges by construction, even
   with the box derived from the network's own extent. Each day's manifest
   publishes the observed drop-out-of-bbox rate, so the loss is a number you
-  can read. So far that number is zero: of the 5,098,818 vehicle positions
+  can read. So far that number is zero: of the 6,280,642 vehicle positions
   the feed reported between the corrected box coming into force
-  (2026-08-28 17:04 local) and 2026-09-05, not one fell outside it. The
+  (2026-08-28 17:04 local) and 2026-09-07, not one fell outside it. The
   filter is insurance against a documented failure mode of GTFS-RT feeds,
   and on this feed it has not yet had anything to catch.
 - That risk was realised at the start of the archive. The box in force
@@ -434,20 +437,21 @@ I would rather name these myself than leave you to find them:
   use since (lat 42.45 to 42.90, lon 23.03 to 23.66) contains every stop and
   shape point in that snapshot, whose own extent is lat 42.4788 to 42.8546,
   lon 23.0778 to 23.6075.
-  The bias does not stop at those two raw days: the median itself carries
-  it forward. Of the 26,046 segments in the current typical-weekday web
-  export, 1,803 (6.92%) have at least one endpoint outside the old box.
-  Those segments could only be sampled on the days collected under the
-  wider one: 2026-08-31, 2026-09-01, and the part of 2026-08-28 after
-  17:04 local. The remaining 24,243 segments could draw on all four
-  weekdays behind the median. Their bins carry fewer samples as a result,
-  a median n_samples of 2 against 3 for segments inside the old box (mean
-  2.46 against 4.11), across 15,167 of the export's 575,124 bins (2.64%).
-  The gap is real but short of the clean half a four-versus-two split
-  would suggest, consistent with the bbox transition falling mid-day on
-  2026-08-28 rather than on a day boundary. The per-bin `n_samples` field
-  has always let a reader see this. I had not measured the size of it
-  before now.
+  The bias does not stop at those two raw days, but where it reaches the
+  median it reaches only the period those days sit in. In the 27-28 August
+  export, 223 of 18,499 segments (1.21%) have at least one endpoint outside
+  the old box, and they could only be sampled after 17:04 on 28 August: 621
+  bins, 0.22% of that period's 287,024, at a mean n_samples of 2.20 against
+  2.91 for segments inside the old box. The five-day period (2026-08-31 to
+  2026-09-04) was collected under the corrected box from its first minute, so
+  the old one thins nothing in it. Its peripheral segments are thinner all
+  the same: 2,236 of 27,138 (8.24%) reach outside the old bounds and average
+  3.45 samples per bin against 5.17 inside. The same five weekdays stand
+  behind both figures, so that second gap measures how much traffic the
+  periphery carries, not what the filter removed. Reading it as bbox damage
+  would be answering a question about one object with a number taken off
+  another. The per-bin `n_samples` field has always let a reader see either
+  one.
 - Coverage is measured against calendar-day boundaries in local time,
   using the collector's configured poll interval as the denominator rather
   than the interval observed in the data. An earlier version measured from
