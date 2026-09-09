@@ -382,8 +382,13 @@ I would rather name these myself than leave you to find them:
   18,499 segments in the two-day period and 27,138 in the five-day one, which
   is what the map draws. Splitting by period buys medians that mean something
   at the cost of thinner ones, and the two-day period is the visible price.
-  This archive began on 2026-08-27. Read the numbers above as the output of a
-  working pipeline. They do not yet describe how Sofia's network behaves.
+  This archive began on 2026-08-27, and every weekday in it falls inside the
+  school summer holiday: Bulgaria's school year opens on 15 September 2026.
+  The feed says the same thing in its own calendar, scheduling 15,573 trips on
+  each weekday from Monday 14 September against 14,991 in the week of
+  2026-09-08, 582 more, as read from the 2026-09-08 snapshot. Read the numbers
+  above as the output of a working pipeline. They do not yet describe how
+  Sofia's network behaves.
 - The 0.5% and 80% thresholds rest on one feed and one year of its published
   calendar, and they do not rest on it equally. The 80% one is pinned: against
   a median of 15,595 trips the heaviest reduced-service weekday reaches

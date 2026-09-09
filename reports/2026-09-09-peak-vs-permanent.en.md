@@ -1,6 +1,7 @@
 # Sofia's evening peak costs 0.4 km/h. The morning peak costs nothing
 
-*Published 2026-09-09. Data: typical weekday, 2026-08-31 to 2026-09-04.*
+*Published 2026-09-09. Data: typical weekday, 2026-08-31 to 2026-09-04.
+Bulgaria's school year had not started.*
 
 **The question.** On a typical Sofia weekday, how much slower does the
 surface network run at rush hour than at midday?
@@ -18,7 +19,17 @@ would rather you read them before the finding than after.
   2026-09-04, the longest stretch in the archive that runs on a single
   schedule. Sofia changed its timetable on 2026-09-08, which starts a new
   period and a new count. This is a measurement of one week in early
-  September, not of a year, a season or a school term.
+  September, not of a year and not of a season.
+- **Not one school day in the archive.** Bulgaria's school year opens on
+  15 September 2026, a date the Pre-school and School Education Act fixes and
+  the education ministry confirmed on 25 August, turning down a proposal to
+  start on the 14th. Every weekday this archive holds, 2026-08-27 through
+  2026-09-08, falls in the summer holiday. The agency's own calendar reads the
+  same way: the static snapshot of 2026-09-08 schedules 14,991 trips on each
+  weekday of the week measured here and 15,573 on every weekday from Monday
+  14 September, 582 more, the day before the schools open. Term-time mornings
+  carry journeys these five days do not. If Sofia has a morning peak, this is
+  the week it would be at its smallest.
 - **The effect is smaller than the error of one measurement.** I derive
   speed from how far a vehicle moved between two position reports. The feed
   is polled every 45 seconds, so that is the usual gap, and it stretches
@@ -126,6 +137,11 @@ Sofia's surface network is not slowed down by rush hour so much as held at
 one speed all day. The claim covers the median across the network. It says
 nothing about a particular street: individual segments do slow at peak, and
 the interactive map marks them where the data supports it.
+
+The claim also covers a week without school. Sofia's schools open on
+15 September and the timetable grows by 582 weekday trips the day before, so
+the week of 14 September is a direct test of this report. I will run the same
+script on it and publish what it gives.
 
 I am not claiming to know why. Signal timing, stop dwell, lane sharing and
 turning conflicts all fit this shape, and none of them are in a GTFS feed.
