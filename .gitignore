@@ -13,6 +13,11 @@ CLAUDE.md
 JOURNAL.md
 FINDINGS.md
 
+# agent-facing workspace config: permission rules that mean nothing to anyone
+# cloning this repo, and a force-push allowlist is noise in a data archive's
+# public tree. Same category as the private notes above.
+.claude/
+
 # server address and other local-only config — never committed, see
 # scripts/fetch_data.sh
 .env.local
