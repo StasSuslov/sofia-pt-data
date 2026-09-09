@@ -84,6 +84,72 @@ for gz in "$LOCAL_DIR"*/*.jsonl.gz; do
     fi
 done
 
+# What's actually running on the VPS vs what's in this working tree. Read-only
+# on the server: one ssh, sha256sum, nothing written, nothing restarted.
+# Deployed code that has silently fallen behind the repo is invisible from
+# everywhere else — collect.py ran four days behind on the VPS in September and
+# no status showed it (FINDINGS.md #16). Compared by glob rather than a
+# filename list, so a file added to a deployed directory gets checked without
+# editing this script; the direction is one-way (everything running there must
+# exist here and match), because most of scripts/ is laptop-side and was never
+# meant to be deployed.
+#
+# Drift is a warning, never a failure: the pull succeeded, and stale deployed
+# code doesn't make the bytes that landed any less real. No exit code of its
+# own on purpose — POST_PULL_FAILED_EXIT_CODE still means "the pull was fine,
+# what it feeds went stale", and drift is neither. An unreachable VPS here is
+# routine noise, the same call verify_remote_checksums.py makes.
+#
+# systemd units are deliberately NOT compared. /etc/systemd/system/
+# sofia-collector.service holds the real healthchecks.io ping URL, which git
+# blanks on purpose (deploy/sofia-collector.service line 9 is a bare
+# `Environment=HEALTHCHECK_URL=`); that file differs by design and comparing it
+# would cry wolf on every single run. Measured 2026-09-09: the live unit is 927
+# bytes to git's 871, and those 56 bytes are exactly the length of a
+# `https://hc-ping.com/<uuid>` ping URL. The other six sofia-* units hash
+# identical to deploy/, so nothing is being hidden by leaving units out.
+# ponytail: three globs are the directories holding deployed code today (`ls
+# /opt/sofia-pt`); a brand-new deployed directory would need a fourth. data/
+# and venv/ stay out — neither is code from this repo.
+REMOTE_ROOT="$(dirname "${REMOTE_DIR%/}")"
+drift=""
+checked=0
+# Two separate stderr redirects, both required. The inner one is remote: a
+# glob that matches nothing expands literally and sha256sum complains, which
+# is not news. The outer one is the local ssh client's own stderr, and it's
+# there for the same reason the "Fetching" line above masks the host — ssh
+# prints the address it failed to reach ("root@203.0.113.5: Permission
+# denied"), and this script's stderr lands in logs/fetch.log.
+# verify_remote_checksums.py's RemoteUnreachable swallows ssh stderr for
+# exactly this reason; the branch below still says the check didn't run.
+remote_hashes=$(ssh -i "$VPS_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$VPS_HOST" \
+    "sha256sum ${REMOTE_ROOT}/*.py ${REMOTE_ROOT}/scripts/*.py ${REMOTE_ROOT}/cities/*.json 2>/dev/null" 2>/dev/null || true)
+while read -r remote_sha remote_path; do
+    [[ -n "$remote_sha" ]] || continue
+    rel="${remote_path#"$REMOTE_ROOT"/}"
+    checked=$((checked + 1))
+    if [[ "$remote_sha" != "$(shasum -a 256 "$REPO_ROOT/$rel" 2>/dev/null | cut -d' ' -f1)" ]]; then
+        drift="${drift}${drift:+, }$rel"
+    fi
+done <<< "$remote_hashes"
+
+if [[ -n "$drift" ]]; then
+    echo "DEPLOYMENT DRIFT: running on the VPS but different here (or missing here): $drift" >&2
+    # Same notification channel scheduled_fetch.sh raises for a failed rsync —
+    # inlined rather than shared, because that one lives in the scheduler and
+    # this check lives here, next to the ssh credentials it needs. Never
+    # allowed to affect the run: || true.
+    osascript -e 'on run argv
+        display notification (item 2 of argv) with title (item 1 of argv)
+    end run' "Sofia PT collector" "Deployed code drifted from the working tree: $drift" >/dev/null 2>&1 || true
+elif [[ "$checked" -gt 0 ]]; then
+    echo "Deployed code matches this working tree ($checked files)"
+else
+    # Same reasoning as the manifested=0 exit below: a check that can go quiet
+    # when it didn't run is a check you stop being able to trust.
+    echo "Could not read deployed checksums off the VPS — drift not checked this run" >&2
+fi
+
 # Data is safely on disk from here on — a manifest-generation failure past
 # this point is a different problem than a failed pull and must be reported
 # as one (see POST_PULL_FAILED_EXIT_CODE above and scripts/scheduled_fetch.sh,
