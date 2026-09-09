@@ -299,16 +299,29 @@ def test_load_typical_weekday_bins_keeps_each_period_separate(tmp_path: Path):
     assert len(raw["schedule_periods"]) == 2
 
 
-def test_current_period_is_the_one_with_the_newest_weekday():
+def test_current_period_is_the_best_observed_not_the_newest():
     periods = [
         {"period_key": "old", "days_in_median_mon_fri": ["2026-08-27", "2026-08-28"]},
+        # Newer, and the timetable actually in force, but one day of samples
+        # is not a median over weekdays (D4). It wins once it is observed as
+        # widely as the period it replaced, not before.
         {"period_key": "new", "days_in_median_mon_fri": ["2026-09-08"]},
         # A weekend-only period is never the current weekday median (D4),
         # even when its dates are the most recent in the archive.
         {"period_key": "weekend", "days_in_median_mon_fri": []},
     ]
-    assert current_period_key(periods) == "new"
+    assert current_period_key(periods) == "old"
     assert current_period_key([]) is None
+    assert current_period_key([{"period_key": "weekend",
+                                "days_in_median_mon_fri": []}]) is None
+
+
+def test_current_period_ties_break_towards_the_newer_timetable():
+    periods = [
+        {"period_key": "old", "days_in_median_mon_fri": ["2026-08-27", "2026-08-28"]},
+        {"period_key": "new", "days_in_median_mon_fri": ["2026-09-08", "2026-09-09"]},
+    ]
+    assert current_period_key(periods) == "new"
 
 
 def test_period_index_lists_every_period_and_names_the_current_one():
@@ -354,7 +367,8 @@ def test_export_writes_one_bundle_per_period_plus_an_index(tmp_path: Path, monke
 
     root = data_dir / "web" / "typical_weekday"
     index = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    assert index["current_period"] == "autumn00000000"  # newest weekday, 2026-09-08
+    # Both fixture periods hold one weekday, so the tie breaks to the later.
+    assert index["current_period"] == "autumn00000000"
     assert {p["period_key"] for p in index["periods"]} == {"summer00000000", "autumn00000000"}
     by_key = {p["period_key"]: p for p in index["periods"]}
     assert by_key["summer00000000"]["days_in_median"] == ["2026-09-03"]

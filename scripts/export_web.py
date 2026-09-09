@@ -973,17 +973,32 @@ def write_export(
 # ─── The index over the schedule periods ────────────────────────────────────
 
 def current_period_key(schedule_periods: list) -> str | None:
-    """The period holding the most recent weekday in the archive — the one a
-    client should open by default, since it is the timetable in force.
+    """The period whose median rests on the most weekdays — the one a client
+    should open by default.
+
+    Not the newest, which is what this returned until 2026-09-09. A period
+    starts on the day the timetable changes, so the newest one routinely
+    holds a single weekday, and a median over one day is not the aggregate
+    D4 asks for: it is that day. Measured when 2026-09-08 opened a period,
+    the newest held 1 weekday and 11,649 segments while the period before it
+    held 5 and 27,138, and the segments passing the slowdown gate fell from
+    13,509 to 3,165. A reader opening the map would have got the thinner
+    number under the same words.
+
+    Ties go to the later period, so a new timetable takes over as soon as it
+    is observed as widely as the old one rather than needing to beat it.
     Weekday days only: a weekend runs its own schedule and never enters the
-    median (D4), so the newest weekend day says nothing about which
-    weekday median is current."""
-    latest, key = None, None
+    median (D4), so the newest weekend day says nothing about which weekday
+    median is current."""
+    best = None
     for p in schedule_periods:
-        for d in p.get("days_in_median_mon_fri", []):
-            if latest is None or d > latest:
-                latest, key = d, p["period_key"]
-    return key
+        days = p.get("days_in_median_mon_fri", [])
+        if not days:
+            continue
+        rank = (len(days), max(days))
+        if best is None or rank > best[0]:
+            best = (rank, p["period_key"])
+    return best[1] if best else None
 
 
 def build_period_index(period_entries: list, current: str | None,
