@@ -103,11 +103,16 @@ def window_median(speeds: dict, window: tuple) -> float | None:
     return statistics.median(inside) if inside else None
 
 
-def pairs(by_segment: dict, a, b) -> tuple:
+def pairs(by_segment: dict, a, b, other: dict | None = None) -> tuple:
     """[(value at a, value at b)] over segments carrying both, plus the count
     dropped for reading exactly 0.
 
     a and b are either a slot ("08:00") or a window ("07:00", "18:45").
+
+    With other, a is read from by_segment and b from other: the same segment at
+    the same time of day under two schedule periods. Segment keys address
+    geometry by content, so a key that survives a timetable change is the same
+    piece of street; a shape the new period does not run simply drops out.
 
     Both tables in the report draw their population from here, so they cover
     the same segments and a reader comparing them compares like with like.
@@ -121,8 +126,11 @@ def pairs(by_segment: dict, a, b) -> tuple:
         return speeds.get(spec) if isinstance(spec, str) else window_median(speeds, spec)
 
     kept, zeroes = [], 0
-    for speeds in by_segment.values():
-        va, vb = value(speeds, a), value(speeds, b)
+    for key, speeds in by_segment.items():
+        speeds_b = speeds if other is None else other.get(key)
+        if speeds_b is None:
+            continue
+        va, vb = value(speeds, a), value(speeds_b, b)
         if va is None or vb is None:
             continue
         if va == 0 or vb == 0:
@@ -132,9 +140,9 @@ def pairs(by_segment: dict, a, b) -> tuple:
     return kept, zeroes
 
 
-def paired(by_segment: dict, a, b) -> dict:
+def paired(by_segment: dict, a, b, other: dict | None = None) -> dict:
     """Per-segment difference a minus b, over segments carrying both."""
-    kept, zeroes = pairs(by_segment, a, b)
+    kept, zeroes = pairs(by_segment, a, b, other)
     if not kept:
         return {"n": 0, "zeroes": zeroes}
     diffs = sorted(va - vb for va, vb in kept)
@@ -236,6 +244,9 @@ def main() -> int:
     ap.add_argument("aggregate", type=Path)
     ap.add_argument("out_svg", type=Path)
     ap.add_argument("--period", default=None)
+    ap.add_argument("--against", default=None, metavar="PERIOD_KEY",
+                    help="an earlier schedule period to difference against, "
+                         "segment by segment, at the same time of day")
     args = ap.parse_args()
 
     period, by_segment = load_period(args.aggregate, args.period)
@@ -284,6 +295,27 @@ def main() -> int:
         print(f"  under {cut:g} km/h at {MORNING_PEAK}: {r['slow_at_a']:,} of "
               f"{r['population']:,} segments, and {r['still_slow']:,} of them "
               f"({r['share']:.1%}) are still under {cut:g} km/h at {MIDDAY}")
+
+    if args.against:
+        older, old_by_segment = load_period(args.aggregate, args.against)
+        common = by_segment.keys() & old_by_segment.keys()
+        print(f"\nagainst period {older['period_key']} "
+              f"{older['first_date']}..{older['last_date']} "
+              f"({len(older['days_in_median_mon_fri'])} weekdays), "
+              f"{len(old_by_segment):,} segments, {len(common):,} in both")
+        print("same segment, same time of day, this period minus that one")
+        specs = [*(f"{h:02d}:00" for h in range(7, 20)),
+                 EVENING_PEAK, DAY_WINDOW, NIGHT_WINDOW]
+        for spec in specs:
+            r = paired(by_segment, spec, spec, other=old_by_segment)
+            label = spec if isinstance(spec, str) else f"{spec[0]}-{spec[1]}"
+            if not r["n"]:
+                print(f"  {label:>12}  no segment carries both")
+                continue
+            print(f"  {label:>12}  n={r['n']:6,}  zero={r['zeroes']:4,}  "
+                  f"median {r['median_diff']:+.2f} km/h  "
+                  f"IQR {r['iqr'][0]:+.2f} to {r['iqr'][1]:+.2f}  "
+                  f"slower now in {r['share_a_slower']:.1%}")
 
     day_pop = sum(1 for sp in by_segment.values()
                   if window_median(sp, DAY_WINDOW) is not None)

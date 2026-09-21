@@ -49,3 +49,20 @@ def test_profile_reports_the_segment_count_behind_each_slot():
     prof = profile(BY_SEGMENT)
     assert prof["08:00"] == (11.0, 4)   # median of 8, 10, 12, 20
     assert prof["00:00"] == (30.0, 1)
+
+
+# The same three segments a schedule period later. A slowed by 2 km/h, B is
+# unchanged, C is new to this period and E has gone: neither has a counterpart
+# to be compared against.
+LATER = {
+    ("a", "1"): {"08:00": 8.0, "12:00": 14.0},
+    ("b", "1"): {"08:00": 20.0, "12:00": 16.0},
+    ("e", "1"): {"08:00": 5.0, "12:00": 5.0},
+}
+
+
+def test_paired_across_periods_takes_each_side_from_its_own_period():
+    r = paired(LATER, "08:00", "08:00", other=BY_SEGMENT)
+    assert r["n"] == 2             # c and d are in one period only, e in neither
+    assert r["median_diff"] == -1.0            # median of -2.0 and 0.0
+    assert r["share_a_slower"] == 0.5
