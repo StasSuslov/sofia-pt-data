@@ -2,8 +2,9 @@
 """Daily speed profile of Sofia's surface network, plus the paired
 same-segment comparisons the report quotes.
 
-Every number in reports/2026-09-09-peak-vs-permanent.en.md comes out of this
-script. Run it and you get the figure and the numbers together:
+Every number in reports/2026-09-09-peak-vs-permanent.en.md and in
+reports/2026-09-21-school-week-repeat.en.md comes out of this script. Run it
+and you get the figure and the numbers together:
 
     python3 scripts/plot_daily_profile.py \
         data/sofia/processed/typical_weekday.json \
@@ -20,13 +21,16 @@ be measured on the object it describes.
 
 Paired comparisons only. Comparing the median over everything seen at 08:00
 against the median over everything seen at 03:00 compares two populations,
-not two times of day. Night belongs to night routes: of the 20,111 segments
-observed in the day window, 1,230 also carry a night median. A per-segment
-difference asks the question the report asks.
+not two times of day. Night belongs to night routes: only a fraction of the
+segments observed in the day window carry a night median at all, and both
+counts print with the profile. A per-segment difference asks the question
+the report asks.
 
 No zoomed y axis. The axis starts at zero. Rescaled to the data, the same
-line becomes a mountain range, and the reader would take a range of 1.8 km/h
-for a rush hour.
+line becomes a mountain range, and the reader would take a range of two or
+three km/h for a rush hour. The figure's caption names the range of the
+period it draws, measured off that line, never a number carried over from
+the last report.
 """
 
 import argparse
@@ -231,9 +235,16 @@ def svg(prof: dict, period: dict, out: Path) -> None:
         coords = " ".join(f"{px:.1f},{py:.1f}" for px, py in points)
         parts.append(f'<polyline points="{coords}" fill="none" {style}/>')
     parts.append(f'<text x="{left - 46}" y="{top - 10}" font-size="11" fill="#555">km/h</text>')
+    # The caption names the range of the line being drawn, not a remembered
+    # one: the first figure's 1.8 km/h stayed in this string while the second
+    # figure plotted 2.9, which is the report's own headline contradicted in
+    # its own image.
+    core = [prof[s][0] for s in all_slots
+            if CORE_WINDOW[0] <= s <= CORE_WINDOW[1] and s in prof]
     parts.append(f'<text x="{left}" y="{h - 20}" font-size="11" fill="#555">'
                  'The y axis starts at zero on purpose: rescaled to the data, a '
-                 'range of 1.8 km/h would look like a rush hour.</text>')
+                 f'range of {max(core) - min(core):.1f} km/h would look like a '
+                 'rush hour.</text>')
     parts.append("</svg>")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(parts) + "\n", encoding="utf-8")
