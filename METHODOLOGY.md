@@ -470,8 +470,11 @@ I would rather name these myself than leave you to find them:
   km/h. That reading comes from the data; the feed publisher has stated
   nothing about it.
 - Speed derived from consecutive positions and the feed's own speed reading
-  disagree by a median of 9.3 km/h, with 15% of samples differing by more
-  than 20 km/h. The two measure different things, an average over the
+  disagree by a median of 9.19 km/h over 15.0 million paired readings, with
+  15% of samples differing by more than 20 km/h. The figure is recomputed
+  over the whole archive on every run and published in
+  `validation_vs_feed_speed_ms`, so it moves as the archive grows: it read
+  9.3 when the archive held twelve days. The two measure different things, an average over the
   polling interval against an instantaneous reading, so the archive
   publishes both and reconciles neither.
 - The feed populates no bearing field at all, so direction of travel comes

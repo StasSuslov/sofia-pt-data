@@ -1,4 +1,4 @@
-# Sofia's morning peak shows up in the first school week. The evening peak grows to 1 km/h
+# Sofia's morning peak shows up in the first school week. The evening peak more than doubles
 
 *Published 2026-09-21. Data: typical weekday, 2026-09-14 to 2026-09-18, the
 first week of Bulgaria's school year. This repeats
@@ -55,25 +55,33 @@ would rather you read them before the finding than after.
   The one control I have is another pair of weeks: between the holiday week
   of 31 August and the holiday week of 8 September, the same segments moved
   0.05 km/h at 08:00. That bounds the week-to-week drift I can see on one
-  pair of weeks, not on every pair.
+  pair of weeks, not on every pair. That control week is four days, Tuesday
+  to Friday: Monday 7 September was a public holiday running a weekend-sized
+  timetable, and the rule that keeps holidays out of a weekday median dropped
+  it. So a week with an atypical Monday in it is measured against a week with
+  no Monday at all.
 - **The effect is smaller than the error of one measurement.** I derive
   speed from how far a vehicle moved between two position reports, 45
   seconds apart when the feed behaves. Checked against the speed field the
-  feed itself sends, the median disagreement is 9.3 km/h. A difference of
-  0.4 km/h survives that only because thousands of segments and five days
-  sit underneath it. Read it as a statement about the network, never about
-  your trip this morning.
+  feed itself sends, the median disagreement is 9.19 km/h over the archive's
+  15.0 million paired readings. The first report quoted 9.3 on an archive
+  half this size; the number moves as the archive grows, which is why it
+  carries its population here. A difference of 0.4 km/h survives it only
+  because thousands of segments and five days sit underneath it. Read it as
+  a statement about the network, never about your trip this morning.
 - **Most of the network is thin.** A segment needs two observations in a
   15-minute slot to produce a median. The paired comparisons below run on
   about 7,800 of this period's 26,807 segments, and the week-over-week rows
-  on about 7,200 of the 23,522 segments both weeks carry.
+  on about 7,000 to 7,600 of the segments a pair of weeks has in common:
+  23,522 for this week against the week of 8 September, 23,856 for the two
+  holiday weeks.
 - **The night row is the weakest number here.** It rests on the 1,246
   segments carrying both a night and a day median, out of 20,102 observed
   during the day.
 - **None of this week is in the published dataset yet.** Version 1 covers
-  through 2 September. This week goes out with version 2, which covers 3 to
-  30 September. Until then you can reproduce it from the code and the map,
-  not from the archive.
+  through 2 September. This week goes out with version 2, planned to
+  cover 3 to 30 September and not yet released. Until then you can
+  reproduce it from the code and the map, not from the archive.
 - **No metro.** Sofia's metro does not appear in the real-time feed at all.
   Everything here is trams, trolleybuses and buses.
 
@@ -121,10 +129,11 @@ piece of street still tells you most of it.
 ## The same segments, one week apart
 
 Segment keys address geometry by content, so a segment keeps its identity
-through a timetable change and 23,522 of them appear in both weeks. Each row
-below runs on the ones carrying a median at that time in both: between 6,715
-and 7,608 segments per hour, 17,273 and 17,415 for the daytime window, 1,860
-and 2,057 for the night.
+through a timetable change: 23,522 segments appear in both weeks of the right
+column, 23,856 in both weeks of the left. Each row runs on the ones carrying
+a median at that time in both of its own weeks: between 6,934 and 7,608
+segments per hour, 17,273 and 17,415 for the daytime window, 1,860 and 2,057
+for the night.
 
 | Time of day | 8 Sep week minus 31 Aug week | 14 Sep week minus 8 Sep week |
 |---|---|---|
@@ -146,11 +155,13 @@ week-to-week movement I can see. The evening does not: 17:15 had already
 slipped 0.26 km/h and 18:00 by 0.30 before a single school opened. Whatever
 is slowing Sofia's evenings started before term did.
 
-The right column is the school week arriving. The morning moves 0.44 km/h against
-the control column's 0.05 at the same hour, and the hours around it move
-with it. Midday moves 0.11 and the night 0.01. The
-change concentrates where term traffic would put it, in the hours schools
-and offices fill, and leaves the night alone.
+The right column is the school week arriving. The morning moves 0.44 km/h
+against the control column's 0.05 at the same hour, midday 0.11 and the night
+0.01. The shape is not a clean commute, though. 07:00 moves 0.26 and 17:15
+moves 0.48, but 09:00 moves 0.14, barely past midday, and 14:00 moves 0.34,
+which no school run explains. What the column shows is a week that lost speed
+through its daylight hours, most of it at 08:00 and in the evening, and lost
+nothing at night.
 
 ## Slow at eight, slow at noon
 
@@ -175,13 +186,22 @@ the street. It stays the minority. Of the segments crawling under 10 km/h
 during the school-week morning peak, 890 of 1,610 are still crawling four
 hours later.
 
+One caveat covers every comparison here against August. Each week pairs its
+own segments, so the 7,786 in this report and the 7,088 in the first are not
+the same streets, which is the objection this report makes against unpaired
+medians. On the 5,141 segments carrying a median at 08:00 and at 12:00 in
+both weeks, the morning gap goes from 0.05 km/h faster in August to 0.22 km/h
+slower now, the share under 10 km/h at 08:00 from 16.4% to 22.6%, and the
+share still under it at noon from 60.8% to 55.4%. The findings survive the
+stricter population. It is the comparison that is loose, not the conclusion.
+
 ## What I am claiming, and what I am not
 
 The first report found that Sofia's surface network is held at one speed all
 day rather than slowed by rush hour. That claim covered a holiday week, and
-this week takes the morning half of it away. A morning peak exists: 0.24 km/h below midday
-across the network, 0.44 km/h below the same segments a week earlier. It is
-small, and it is no longer nothing.
+this week takes the morning half of it away. A morning peak exists: 0.24
+km/h below midday across the network, 0.44 km/h below the same segments a
+week earlier. It is small, and it is no longer nothing.
 
 The rest holds. The network still spends its whole day inside a range of
 under 3 km/h, and the streets that are slow at 08:00 are mostly slow at
@@ -228,7 +248,8 @@ snapshots in the dataset.
 - **Method:** [METHODOLOGY.md](../METHODOLOGY.md), archived at
   [10.5281/zenodo.22256653](https://doi.org/10.5281/zenodo.22256653)
 - **Raw data:** [10.5281/zenodo.22285128](https://doi.org/10.5281/zenodo.22285128),
-  CC BY 4.0. Version 1 stops on 2 September; this week goes out with version 2
+  CC BY 4.0. Version 1 stops on 2 September; this week goes out with
+  version 2, not yet released
 - **Map:** https://stassuslov.github.io/sofia-pt-web/, which opens on this
   week
 
