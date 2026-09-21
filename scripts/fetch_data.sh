@@ -5,8 +5,8 @@
 # run repeatedly while the collector is still writing today's file. Remote
 # files are never deleted — clean them up on the server manually once you've
 # verified the local copy. Locally, the one file this script does remove is a
-# <day>.jsonl whose own <day>.jsonl.gz has arrived and decompresses to the
-# identical bytes.
+# <day>.jsonl whose own <day>.jsonl.gz has arrived and holds the same bytes,
+# or all of them and more (scripts/drop_superseded_plain.sh).
 #
 # Reads VPS_HOST (and optionally VPS_KEY, REMOTE_DIR) from .env.local at the
 # repo root — that file is gitignored on purpose, so the server's address
@@ -63,26 +63,11 @@ CHECKSUM_MISMATCH_EXIT_CODE=43
 echo "Fetching ${VPS_HOST%%@*}@<vps>:${REMOTE_DIR} → ${LOCAL_DIR}"
 rsync -avz --progress -e "ssh -i ${VPS_KEY}" "${VPS_HOST}:${REMOTE_DIR}" "${LOCAL_DIR}"
 
-# deploy/sofia-compress.service replaces <day>.jsonl with <day>.jsonl.gz in
-# place on the VPS, but rsync deletes nothing on this side, so the superseded
-# plain file lingers and every compressed day costs local disk twice (238 MB
-# by the time this was noticed). Drop the plain copy only once its .gz
-# decompresses to the very same bytes: cmp reads both streams directly, so the
-# rm rests on the data itself rather than on a matching filename. A truncated
-# or corrupt .gz fails the pipeline and keeps the plain file, which is the safe
-# way round. Readers already take whichever form is present (config.py's
-# resolve_day_file / open_maybe_gzip), so no downstream output changes.
-for gz in "$LOCAL_DIR"*/*.jsonl.gz; do
-    [[ -f "$gz" ]] || continue  # an unmatched glob stays literal under set -u
-    plain="${gz%.gz}"
-    [[ -f "$plain" ]] || continue
-    if gzip -cd "$gz" | cmp -s - "$plain"; then
-        rm "$plain"
-        echo "Dropped ${plain#"$REPO_ROOT"/}: identical to its .gz"
-    else
-        echo "Kept ${plain#"$REPO_ROOT"/}: its .gz holds different bytes" >&2
-    fi
-done
+# A plain <day>.jsonl lingers here once the VPS has gzipped that day, and it
+# may be a pull taken before the day closed. The script drops it when its .gz
+# holds the same bytes or all of them and more; why that is safe is written
+# down there.
+bash "$REPO_ROOT/scripts/drop_superseded_plain.sh" "$LOCAL_DIR"
 
 # What's actually running on the VPS vs what's in this working tree. Read-only
 # on the server: one ssh, sha256sum, nothing written, nothing restarted.
