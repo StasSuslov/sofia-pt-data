@@ -153,7 +153,11 @@ const dayManifest: BundleManifest = {
     source_name: "urbandata.sofia.bg",
     source_url: "https://urbandata.sofia.bg",
     feed_description: "CGM Sofia GTFS/GTFS-RT",
-    licence: "CC BY 4.0",
+    licence: "CC BY-SA 4.0",
+    feed_licences: {
+      vehicle_positions: "CC BY 4.0",
+      static: "CC BY-SA 4.0",
+    },
   },
   segment_count: 9155,
   timeslot_count: 52,

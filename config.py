@@ -116,6 +116,22 @@ def load_city(slug: str) -> dict:
     for key in ("source_name", "licence"):
         if not profile["attribution"].get(key):
             raise CityProfileError(f"{path} attribution is missing {key!r}")
+    # One licence per feed, stated, never inherited. A portal's default terms
+    # are a claim about the portal: Sofia's realtime feed takes that default
+    # (CC BY 4.0) while its static feed overrides it with share-alike, and a
+    # single "licence" field hid that difference for four weeks. Same D12
+    # mechanic as bbox and speed unit — no default means the second city
+    # cannot silently publish under the first city's terms.
+    feed_licences = profile["attribution"].get("feed_licences")
+    if not isinstance(feed_licences, dict):
+        raise CityProfileError(
+            f"{path} attribution has no 'feed_licences' map"
+        )
+    for feed in REQUIRED_FEEDS:
+        if not feed_licences.get(feed):
+            raise CityProfileError(
+                f"{path} feed_licences states no licence for {feed!r}"
+            )
     auth = profile.get("auth")
     if auth is not None and not auth.get("key_env"):
         raise CityProfileError(

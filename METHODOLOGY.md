@@ -10,9 +10,10 @@ change the method, the change goes out as a new version of that record, so
 you can always read a result against the method as it stood on the day the
 result was produced.
 
-The data this method runs on is archived as its own record under CC BY 4.0:
-[10.5281/zenodo.22285128](https://doi.org/10.5281/zenodo.22285128). Cite
-both when you cite a result.
+The data this method runs on is archived as its own record:
+[10.5281/zenodo.22285128](https://doi.org/10.5281/zenodo.22285128). It carries
+the licence each feed arrives under, CC BY 4.0 for the realtime positions and
+CC BY-SA 4.0 for the static snapshots. Cite both when you cite a result.
 
 ## Scope
 
@@ -27,17 +28,67 @@ second city without a rewrite.
 
 - **GTFS-RT vehicle positions.** Polled every 30–60 seconds from Sofia's
   public transport open data portal,
-  [urbandata.sofia.bg](https://urbandata.sofia.bg) (Level 1, CC BY 4.0).
+  [urbandata.sofia.bg](https://urbandata.sofia.bg) (Level 1). This feed
+  states no licence of its own and takes the portal's default, CC BY 4.0.
   Snapshot schema: `snapshot_ts, vehicle_id, route_id, trip_id, lat, lon,
   bearing, speed_ms, vehicle_ts`.
 - **GTFS Static.** Routes, stops, schedules and shapes, from the same
   portal. It gives me the collection bounding box and everything that works
-  without real-time data (route and stop coverage, accessibility).
-- **OpenStreetMap**, through the Overpass API. District boundaries and road
-  network, for the accessibility analysis.
+  without real-time data (route and stop coverage, accessibility). Unlike the
+  realtime feed it states a licence of its own, Creative Commons
+  Attribution-ShareAlike, which reaches everything I derive from it. See
+  "Licence of the source feeds" below.
+- **District boundaries** from the same portal, dataset `regions_sofia-zip`:
+  24 administrative districts, CC BY. OpenStreetMap carries no Sofia
+  districts, only the municipality as a single polygon and, below it,
+  neighbourhoods.
 
 I enter nothing by hand, and I assume no schedule or network fact that a
 feed has not confirmed.
+
+## Licence of the source feeds
+
+The feeds behind this project do not share one licence, and for the first
+four weeks of publication I said they did. Everything below is read from the
+portal's own pages, dated 2026-09-22.
+
+The platform's terms (Общи условия, version 1.1, in force from 2026-09-02)
+set CC BY 4.0 as the default in §5.1, "unless expressly stated otherwise".
+Three of the four transit feeds state otherwise. The dataset pages for the
+static GTFS feed, for trip updates and for service notices each carry a
+`rel="dc:rights"` link to the Open Definition entry for Creative Commons
+Attribution-ShareAlike. The vehicle-positions page states no licence, so it
+takes the §5.1 default.
+
+| Feed | Licence | Where it comes from |
+|---|---|---|
+| GTFS-RT vehicle positions | CC BY 4.0 | portal default, §5.1 |
+| GTFS Static | CC BY-SA 4.0 | stated on the dataset page |
+| GTFS-RT trip updates | CC BY-SA 4.0 | stated on the dataset page |
+| GTFS-RT service notices | CC BY-SA 4.0 | stated on the dataset page |
+
+The version is the part to check before you rely on it. The portal links an
+unversioned Open Definition entry and names no version itself. I read it as
+4.0 because that entry gives its domain of application as "Content, Data
+(latter 4.0 only)" and links the 4.0 deed for its overview, and because only
+4.0 carries the sui generis database clause a data licence needs in the EU.
+That is my reading of the page the publisher chose, not a statement by the
+publisher. A written answer from ЦГМ would settle it, and until one arrives
+this paragraph is the whole of the evidence.
+
+What follows from it: the schedule feed reaches everything derived from it.
+Segment geometry comes from `shapes.txt`, segment keys are hashes of that
+geometry, and the typical-weekday medians are keyed by those segments. So
+the published web export and the figures in the reports are share-alike, and
+the realtime positions on their own are not. The dataset record carries both
+licences rather than one, and names which file is under which.
+
+The machine-readable version of all of this is the `attribution` block in
+[`cities/sofia.json`](cities/sofia.json), which states a licence per feed
+with no default: a city profile that names one feed's terms and stays silent
+about another is rejected when it loads. The export manifest carries the
+same per-feed map, narrowed to the feeds the export actually read, and the
+published page prints it.
 
 ## Collection method
 

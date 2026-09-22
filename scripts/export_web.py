@@ -122,7 +122,7 @@ from pathlib import Path
 # doesn't always add a script's own directory to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import CityProfileError, city_slugs, load_city_for_path  # noqa: E402
+from config import REQUIRED_FEEDS, CityProfileError, city_slugs, load_city_for_path  # noqa: E402
 from segment_speeds import (  # noqa: E402
     BACKWARD_TOLERANCE_M,
     EARTH_RADIUS_M,
@@ -1106,8 +1106,13 @@ def main():
     city_common = dict(
         # The city's own name travels with the credit line, so a page can
         # title itself and a published README can name the city without
-        # either of them carrying a city constant of its own.
-        attribution=({**city["attribution"], "city": city["name"], "city_slug": city["slug"]}
+        # either of them carrying a city constant of its own. feed_licences is
+        # narrowed to the feeds this export actually read: the profile
+        # describes all of the city's feeds, but a manifest that listed terms
+        # for trip_updates or alerts would credit data no bundle here shows.
+        attribution=({**city["attribution"], "city": city["name"], "city_slug": city["slug"],
+                      "feed_licences": {feed: city["attribution"]["feed_licences"][feed]
+                                        for feed in REQUIRED_FEEDS}}
                      if city else None),
         city_limitations=tuple(city.get("known_limitations", ())) if city else (),
     )

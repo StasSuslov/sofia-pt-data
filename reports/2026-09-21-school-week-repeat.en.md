@@ -248,12 +248,17 @@ snapshots in the dataset.
 - **Method:** [METHODOLOGY.md](../METHODOLOGY.md), archived at
   [10.5281/zenodo.22256653](https://doi.org/10.5281/zenodo.22256653)
 - **Raw data:** [10.5281/zenodo.22285128](https://doi.org/10.5281/zenodo.22285128),
-  CC BY 4.0. Version 1 stops on 2 September; this week goes out with
+  CC BY 4.0 for the realtime positions, CC BY-SA 4.0 for the static
+  snapshots. Version 1 stops on 2 September; this week goes out with
   version 2, not yet released
 - **Map:** https://stassuslov.github.io/sofia-pt-web/, which opens on this
   week
 
 Feed data comes from Sofia's open data portal
-([urbandata.sofia.bg](https://urbandata.sofia.bg), CC BY 4.0), published by
-Sofia Urban Mobility Centre. Errors in this report are mine. If you find
+([urbandata.sofia.bg](https://urbandata.sofia.bg)), published by Sofia Urban
+Mobility Centre. The two feeds carry different licences: CC BY 4.0 for the
+realtime vehicle positions, CC BY-SA 4.0 for the static schedule and
+everything derived from it, this report's figure included. This paragraph
+said "CC BY 4.0" for both until 2026-09-22; see
+[METHODOLOGY.md](../METHODOLOGY.md) for what the portal actually states. Errors in this report are mine. If you find
 one, the raw data is right there and I would like to know.

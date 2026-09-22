@@ -414,7 +414,14 @@ def test_export_carries_the_citys_attribution_and_limitations(tmp_path: Path, mo
     main()
     bundle = data_dir / "web" / "typical_weekday" / "autumn00000000"
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["attribution"]["licence"] == "CC BY 4.0"
+    assert manifest["attribution"]["licence"] == "CC BY-SA 4.0"
+    # Only the feeds this export read. The profile also states terms for
+    # trip_updates and alerts, and a manifest carrying those would credit
+    # data no bundle here shows.
+    assert manifest["attribution"]["feed_licences"] == {
+        "vehicle_positions": "CC BY 4.0",
+        "static": "CC BY-SA 4.0",
+    }
     assert manifest["attribution"]["source_url"] == "https://urbandata.sofia.bg"
     assert any("no Sofia metro vehicles" in line for line in manifest["known_limitations"])
 

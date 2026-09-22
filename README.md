@@ -6,8 +6,9 @@
 I collect Sofia's public transport feeds and keep every day of them, so that
 a claim about how this network runs can be checked against something. The
 repository holds the collector and the pipeline that turns its output into
-speeds a map can draw. The collected data ships as a separate archive under
-CC BY 4.0.
+speeds a map can draw. The collected data ships as a separate archive, each
+feed under the terms it arrives with: the realtime vehicle positions under
+CC BY 4.0, the static feed snapshots under CC BY-SA 4.0.
 
 [METHODOLOGY.md](METHODOLOGY.md) has the data model, the thresholds and the
 limitations I know about.
@@ -58,10 +59,19 @@ limitations I know about.
 
 - **GTFS-RT and GTFS Static**, published by Sofia's public transport
   operator (ЦГМ) through the [urbandata.sofia.bg](https://urbandata.sofia.bg)
-  open data portal. Level 1, CC BY 4.0, no registration.
-- **OpenStreetMap** through the Overpass API for district boundaries and the
-  road network. I need those for the accessibility analysis, which is not
-  written yet.
+  open data portal. Level 1, no registration. The two feeds do not share one
+  licence. The vehicle positions state none of their own and take the
+  portal's default of CC BY 4.0; the static feed states Creative Commons
+  Attribution-ShareAlike, as do trip updates and service notices. The portal
+  names no version for the share-alike licence, and
+  [`cities/sofia.json`](cities/sofia.json) records both the evidence and the
+  reasoning behind reading it as 4.0. Everything this repository derives from
+  the schedule, the segment geometry included, is share-alike in turn.
+- **District boundaries** from the same portal, dataset `regions_sofia-zip`:
+  24 administrative districts, CC BY. OpenStreetMap does not have them. Its
+  Sofia boundaries jump from the municipality as one polygon straight to
+  neighbourhoods, with nothing at the district level in between. I need the
+  boundaries for the accessibility analysis, which is not written yet.
 
 I enter nothing by hand, and I assume nothing about the network that a feed
 has not confirmed.
@@ -215,8 +225,9 @@ record's own page when you need the exact code behind a result.
 > pipeline for Sofia's public transport feeds*. Zenodo.
 > https://doi.org/10.5281/zenodo.22256653
 
-The collected data has its own Zenodo record under CC BY 4.0, versioned
-apart from the code. v1.0.0 covers 27 August to 2 September 2026.
+The collected data has its own Zenodo record, versioned apart from the code
+and carrying both of its feeds' licences: CC BY 4.0 for the realtime
+positions, CC BY-SA 4.0 for the static snapshots. v1.0.0 covers 27 August to 2 September 2026.
 
 > Suslov, Stanislav (2026). *Sofia public transport: raw GTFS-Realtime
 > vehicle positions and static feed snapshots, 2026-08-27 to 2026-09-02*.
@@ -227,5 +238,8 @@ produced it.
 
 ## License
 
-Code: MIT, see [LICENSE](LICENSE). Collected data is released separately
-under CC BY 4.0: https://doi.org/10.5281/zenodo.22285128
+Code: MIT, see [LICENSE](LICENSE). Collected data is released separately,
+under the licence each feed carries, at
+https://doi.org/10.5281/zenodo.22285128: CC BY 4.0 for the realtime vehicle
+positions, CC BY-SA 4.0 for the static feed snapshots. Anything derived from
+the static feed, including the published segment geometry, is share-alike.

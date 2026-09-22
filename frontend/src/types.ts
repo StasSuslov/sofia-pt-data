@@ -52,7 +52,15 @@ export interface Attribution {
   source_name: string;
   source_url: string;
   feed_description: string;
+  /**
+   * What this export publishes under. Not always what the feeds arrive
+   * under: it is the strictest of `feed_licences`, because the segment
+   * geometry is derived from the schedule feed.
+   */
   licence: string;
+  /** Licence per feed the export read, keyed by feed name. The feeds need
+   * not agree, and one string for all of them would be wrong about some. */
+  feed_licences: Record<string, string>;
 }
 
 export interface BundleManifest {

@@ -31,7 +31,7 @@ earlier run:
 | Title | Sofia public transport: raw GTFS-Realtime vehicle positions and static feed snapshots, 2026-08-27 to 2026-09-02 |
 | Authors | Suslov, Stanislav · ORCID `0009-0001-8916-0822` · Independent researcher |
 | Description | the HTML block below |
-| License | Creative Commons Attribution 4.0 International (CC BY 4.0) |
+| License | Two, declared together: Creative Commons Attribution 4.0 International (CC BY 4.0) for `sofia-rt_*.zip`, Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0) for `sofia-gtfs-static_*.zip` |
 | Access right | Open |
 | Version | 1.0.0 |
 | Language | English |
@@ -99,7 +99,7 @@ they know what is in it.
 <p>Each day carries a manifest with the SHA256 of its data and heartbeat files, the poll counts behind its coverage figure, and the observed gaps. Manifest hashes describe the uncompressed bytes in every case. <code>SHA256SUMS.txt</code> covers both archives and both documents, so <code>sha256sum -c SHA256SUMS.txt</code> checks the whole download. Nothing in these archives was packed without first being checked against its own manifest.</p>
 
 <p><strong>Source</strong></p>
-<p>Collected from the open data portal of Sofia Municipality (urbandata.sofia.bg), which publishes the feeds of the Centre for Urban Mobility under CC BY 4.0, without registration. Feed publisher: Theoremus. This record redistributes that data under the same licence and adds the collection timestamps, heartbeat logs and integrity manifests.</p>
+<p>Collected from the open data portal of Sofia Municipality (urbandata.sofia.bg), which publishes the feeds of the Centre for Urban Mobility without registration. Feed publisher: Theoremus. The feeds do not share one licence. The realtime vehicle positions state none of their own and take the portal's default CC BY 4.0; the static GTFS feed states Creative Commons Attribution-ShareAlike, for which the portal names no version and which METHODOLOGY.md reads as 4.0, with the evidence for that reading set out there. This record redistributes each archive under the licence its feed carries and adds the collection timestamps, heartbeat logs and integrity manifests.</p>
 
 <p><strong>Code and methodology</strong></p>
 <p>The collector, the processing pipeline and the written methodology are archived separately: <a href="https://doi.org/10.5281/zenodo.22256653">10.5281/zenodo.22256653</a>. Cite both when citing a result derived from this data.</p>
@@ -112,3 +112,34 @@ they know what is in it.
 3. Upload five files: two zips, `METHODOLOGY.md`, `README.md`, `SHA256SUMS.txt`. Zenodo caps a record at 50 GB and 100 files; neither binds here.
 4. Set the fields above, paste the description as HTML, publish.
 5. Add the reverse related identifier on the code record, then put the new DOI into `README.md`, `METHODOLOGY.md` and `CLAUDE.md` section 8.
+
+## Correcting the published v1 record (2026-09-22)
+
+v1 went out declaring one licence, CC BY 4.0, over both archives. That is
+wrong for `sofia-gtfs-static_2026-08-27_2026-09-02.zip`: the static feed
+states Creative Commons Attribution-ShareAlike on its own dataset page and
+does not take the portal's default. See "Licence of the source feeds" in
+`METHODOLOGY.md` for the evidence and for why the unversioned licence reads
+as 4.0.
+
+What to change on the published record, by hand through **Edit**:
+
+1. **Licenses.** Keep CC BY 4.0, add CC BY-SA 4.0. Zenodo runs on InvenioRDM
+   and takes several licences on one record; both are standard SPDX entries,
+   so neither needs "Add custom".
+2. **Description.** Replace the **Source** paragraph with the one in the
+   block above, which names the split and which file falls under which.
+3. Publish the edit.
+
+What not to do: the files stay as they are. Editing metadata on a published
+record does not mint a new DOI, and files can only be changed by writing to
+Zenodo support. There is also no reason to want them changed. The publisher
+serves only the current build of the static feed and keeps no history, so
+this archive is the only public copy of those snapshots, and removing it to
+fix a label would destroy the thing the label describes.
+
+The code record `10.5281/zenodo.22256654` carries the same wrong sentence in
+its description ("released separately as a dataset record under CC BY 4.0")
+and needs the same hand edit. `.zenodo.json` is already corrected, but it is
+read only when a GitHub release mints a new version, so it does not reach the
+published record on its own.

@@ -33,7 +33,8 @@ ATTRIBUTION = {
     "source_name": "urbandata.sofia.bg",
     "source_url": "https://urbandata.sofia.bg",
     "feed_description": "CGM Sofia GTFS/GTFS-RT",
-    "licence": "CC BY 4.0",
+    "licence": "CC BY-SA 4.0",
+    "feed_licences": {"vehicle_positions": "CC BY 4.0", "static": "CC BY-SA 4.0"},
 }
 
 
@@ -169,7 +170,12 @@ def test_stale_data_dir_from_the_build_is_not_copied(tmp_path):
     # constant that would keep saying Sofia over anyone else's data.
     assert "# Sofia public transport" in readme
     assert "urbandata.sofia.bg" in readme
-    assert "CC BY 4.0" in readme
+    # The two feeds behind this export arrive under different terms, and a
+    # README stating one licence for the pair publishes the wrong terms for
+    # one of them. That is the mistake this site shipped for four weeks.
+    assert "vehicle positions: CC BY 4.0" in readme
+    assert "static: CC BY-SA 4.0" in readme
+    assert "everything published here CC BY-SA 4.0" in readme
 
 
 def test_a_bundle_without_attribution_is_not_published(tmp_path):

@@ -175,6 +175,18 @@ function esc(text: string): string {
 }
 
 /**
+ * The feeds behind one bundle need not share a licence: Sofia's vehicle
+ * positions take the portal's default CC BY 4.0 while its schedule feed
+ * overrides it with share-alike. Printing one licence for the pair states
+ * the wrong terms for one of them.
+ */
+function feedLicences(attribution: Attribution): string {
+  return Object.entries(attribution.feed_licences)
+    .map(([feed, licence]) => `${feed.replace(/_/g, " ")} ${licence}`)
+    .join(", ");
+}
+
+/**
  * The transit line is the bundle's own attribution, not a constant: the same
  * page serves any city whose export states its source. A bundle that states
  * none says so out loud — publish_web.py refuses to publish one, so this line
@@ -182,7 +194,8 @@ function esc(text: string): string {
  */
 function installSources(attribution: Attribution | null): void {
   const transit = attribution
-    ? `<p>Transit data: <a href="${esc(attribution.source_url)}" target="_blank" rel="noopener">${esc(attribution.source_name)}</a> (${esc(attribution.feed_description)}), ${esc(attribution.licence)}.</p>`
+    ? `<p>Transit data: <a href="${esc(attribution.source_url)}" target="_blank" rel="noopener">${esc(attribution.source_name)}</a> (${esc(attribution.feed_description)}): ${esc(feedLicences(attribution))}.</p>
+    <p>This page and the files it loads: ${esc(attribution.licence)}.</p>`
     : `<p class="error">This bundle names no source or licence for its transit data.</p>`;
   sourcesEl.innerHTML = `
     <summary>Sources &amp; citation</summary>

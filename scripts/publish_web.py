@@ -83,8 +83,8 @@ def readme_text(attribution: dict) -> str:
     actually holds and crediting that city's feed under that feed's licence.
 
     Written from the export's own manifests rather than from a constant here:
-    a constant would keep saying Sofia, and CC BY 4.0, over whatever tree was
-    handed to it."""
+    a constant would keep saying Sofia, and one licence, over whatever tree
+    was handed to it."""
     return f"""\
 # {attribution.get('city', 'Public')} public transport — map
 
@@ -101,11 +101,25 @@ complete archive is published as a dataset record with a DOI.
 - Dataset DOI (concept): 10.5281/zenodo.22285128
 
 Transit data: {attribution['source_name']} ({attribution.get('feed_description', 'GTFS/GTFS-RT')}),
-operated by {attribution.get('operator', 'the local operator')}, {attribution['licence']}.
+operated by {attribution.get('operator', 'the local operator')}.
 {attribution.get('source_url', '')}
 
-Licences: code MIT, data {attribution['licence']}.
+The feeds do not share one licence, so they are named apart:
+{feed_licence_lines(attribution)}
+
+Licences: code MIT, everything published here {attribution['licence']}, because the
+segment geometry is derived from the schedule feed.
 """
+
+
+def feed_licence_lines(attribution: dict) -> str:
+    """One line per feed, because the feeds disagree.
+
+    Sofia's vehicle positions take the portal's default CC BY 4.0 while its
+    schedule feed overrides it with share-alike. A single licence string had
+    to pick one of them, and for four weeks it picked the wrong one."""
+    return "\n".join(f"- {feed.replace('_', ' ')}: {licence}"
+                      for feed, licence in attribution["feed_licences"].items())
 
 
 def collect_attribution(staging_data: Path) -> dict:

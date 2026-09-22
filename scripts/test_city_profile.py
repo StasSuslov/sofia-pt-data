@@ -77,7 +77,15 @@ def test_sofia_profile_matches_the_deployed_pipeline_constants_to_the_digit():
 
     assert profile["speed_field_unit"] == "kmh"
 
-    assert profile["attribution"]["licence"] == "CC BY 4.0"
+    # Share-alike, not the portal's default: gtfs-static overrides the
+    # platform terms, and the geometry this project publishes derives from it.
+    assert profile["attribution"]["licence"] == "CC BY-SA 4.0"
+    assert profile["attribution"]["feed_licences"] == {
+        "vehicle_positions": "CC BY 4.0",
+        "static": "CC BY-SA 4.0",
+        "trip_updates": "CC BY-SA 4.0",
+        "alerts": "CC BY-SA 4.0",
+    }
     assert profile["attribution"]["source_url"] == "https://urbandata.sofia.bg"
 
     # Written as literals here, not read back from cities/sofia.json, so a
@@ -162,6 +170,22 @@ def test_load_city_rejects_attribution_without_a_licence(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CITIES_DIR", tmp_path)
     profile = load_sofia_dict()
     del profile["attribution"]["licence"]
+    write_profile(tmp_path, "sofia.json", profile)
+
+    with pytest.raises(CityProfileError):
+        load_city("sofia")
+
+
+def test_load_city_rejects_a_required_feed_with_no_licence(tmp_path, monkeypatch):
+    """A feed's terms are stated per feed, never inherited from a sibling.
+
+    Sofia's own feeds disagree: the realtime positions take the portal's
+    default CC BY 4.0 and the schedule overrides it with share-alike. A
+    profile that names one of them and stays silent about the other would
+    let the silent one be published under the wrong terms."""
+    monkeypatch.setattr(config, "CITIES_DIR", tmp_path)
+    profile = load_sofia_dict()
+    del profile["attribution"]["feed_licences"]["static"]
     write_profile(tmp_path, "sofia.json", profile)
 
     with pytest.raises(CityProfileError):

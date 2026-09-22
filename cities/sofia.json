@@ -31,7 +31,14 @@
     "source_name": "urbandata.sofia.bg",
     "source_url": "https://urbandata.sofia.bg",
     "feed_description": "CGM Sofia GTFS/GTFS-RT",
-    "licence": "CC BY 4.0"
+    "licence": "CC BY-SA 4.0",
+    "feed_licences": {
+      "vehicle_positions": "CC BY 4.0",
+      "static": "CC BY-SA 4.0",
+      "trip_updates": "CC BY-SA 4.0",
+      "alerts": "CC BY-SA 4.0"
+    },
+    "licence_provenance": "Read on 2026-09-22 from each feed's own dataset page, not from the portal's platform terms, because the terms are the fallback and three of the four feeds override them. gtfs-static, gtfs-trip-updates and gtfs-notices-warnings each carry rel=\"dc:rights\" pointing at opendefinition.org/licenses/cc-by-sa, labelled \"Creative Commons \u041f\u0440\u0438\u0437\u043d\u0430\u043d\u0438\u0435, \u0421\u043f\u043e\u0434\u0435\u043b\u044f\u043d\u0435 \u043d\u0430 \u0441\u043f\u043e\u0434\u0435\u043b\u0435\u043d\u043e\u0442\u043e\"; gtfs-vehicle-positions states no licence and so falls under the platform's \u041e\u0431\u0449\u0438 \u0443\u0441\u043b\u043e\u0432\u0438\u044f v1.1 \u00a75.1 default of CC BY 4.0. The portal names no version for the share-alike licence. 4.0 is derived, not assumed: the reference page the portal itself links states its domain of application as \"Content, Data (latter 4.0 only)\" and its overview links creativecommons.org/licenses/by-sa/4.0/, and only 4.0 carries the sui generis database clause that a data licence needs in the EU. That derivation is ours; a written answer from CGM Sofia would settle it, and until one arrives this field is the evidence, not the authority. \"licence\" is what this export publishes under: share-alike, because geometry.json, the segment keys and typical_weekday.json are all derived from shapes.txt."
   },
 
   "known_limitations": [
