@@ -96,10 +96,25 @@ body {
   margin-bottom: 12px;
 }
 
-#limitations summary {
+#sources {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+#sources p {
+  margin: 4px 0;
+}
+
+#limitations summary,
+#sources summary {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+#sources summary {
+  color: var(--text-primary);
 }
 
 #limitations ul {
@@ -125,24 +140,37 @@ body {
   color: var(--text-secondary);
 }
 
-.samples-scale {
+/* One line per channel, swatch first: the panel is read at a glance or not
+   at all, and prose here is what made it unreadable. */
+.keys {
+  list-style: none;
+  margin: 8px 0 12px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.keys li {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.key-casing {
+  flex: none;
+  width: 24px;
+  height: 6px;
+  border-radius: 3px;
 }
 
 .sample-swatch {
   display: inline-block;
+  flex: none;
   width: 24px;
   height: 4px;
   background: var(--text-primary);
   border-radius: 2px;
-}
-
-.samples-scale label {
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-right: 4px;
 }
 
 a {
@@ -173,10 +201,78 @@ a {
   padding: 0;
 }
 
-#day-select,
-#timeslot-slider {
+#day-select {
   width: 100%;
   font: inherit;
+}
+
+/* 96 slots across a 300 px panel is 3 px a slot: the knob is a target no
+   trackpad hits twice in a row, so the buttons carry the last step and the
+   knob only has to get close. */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.slider-row button {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  font: inherit;
+  line-height: 1;
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.slider-row button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#timeslot-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+#timeslot-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+}
+
+#timeslot-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -7px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
+}
+
+#timeslot-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+}
+
+#timeslot-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
 }
 
 #day-select {

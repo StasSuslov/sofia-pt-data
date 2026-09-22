@@ -63,6 +63,9 @@ const typeFilters = document.getElementById("type-filters") as HTMLFieldSetEleme
 const summaryEl = document.getElementById("summary")!;
 const limitationsEl = document.getElementById("limitations")!;
 const legendEl = document.getElementById("legend")!;
+const sourcesEl = document.getElementById("sources") as HTMLDetailsElement;
+const prevBtn = document.getElementById("slot-prev") as HTMLButtonElement;
+const nextBtn = document.getElementById("slot-next") as HTMLButtonElement;
 const panelBody = document.getElementById("panel-body")!;
 const panelToggle = document.getElementById("panel-toggle")!;
 
@@ -147,28 +150,22 @@ function speedLegendHtml(): string {
     </div>`;
 }
 
-/** Only shown when the bundle carries typical_kmh — nothing to explain otherwise. */
-function highlightLegendHtml(): string {
-  return `
-    <div class="legend-block">
-      <p class="hint">Highlight (orange casing): segment notably slower than its own typical speed for this timeslot.</p>
-    </div>`;
-}
-
-function samplesLegendHtml(): string {
-  const counts = [MIN_SAMPLES, 5, 10, MIN_SAMPLES_FOR_FULL_OPACITY];
-  const swatches = counts
-    .map(
-      (n) =>
-        `<span class="sample-swatch" style="opacity:${samplesToOpacity(n)}"></span><label>${n}${n === MIN_SAMPLES_FOR_FULL_OPACITY ? "+" : ""}</label>`,
-    )
-    .join("");
-  return `
-    <div class="legend-block">
-      <h3>Samples per bin (n_samples)</h3>
-      <p class="hint">A thin median (few samples) fades but stays visible — it is never hidden by a cutoff.</p>
-      <div class="samples-scale">${swatches}</div>
-    </div>`;
+/**
+ * The two channels that are not the speed ramp, one line each: the orange
+ * casing (only where the bundle carries typical_kmh) and the fade. What they
+ * mean in full is METHODOLOGY.md's job — on screen they get a swatch and a
+ * clause, because a legend nobody reads to the end explains nothing.
+ */
+function keysHtml(hasTypical: boolean): string {
+  const casing = hasTypical
+    ? `<li><span class="key-casing" style="background:${HIGHLIGHT_CASING_COLOR}"></span>slower than its own typical speed at this time</li>`
+    : "";
+  const fade =
+    `<li>` +
+    `<span class="sample-swatch" style="opacity:${samplesToOpacity(MIN_SAMPLES)}"></span>` +
+    `<span class="sample-swatch"></span>` +
+    `${MIN_SAMPLES} &rarr; ${MIN_SAMPLES_FOR_FULL_OPACITY}+ samples per bin &mdash; a thin median fades, never hides</li>`;
+  return `<ul class="keys">${casing}${fade}</ul>`;
 }
 
 function esc(text: string): string {
@@ -183,19 +180,20 @@ function esc(text: string): string {
  * none says so out loud — publish_web.py refuses to publish one, so this line
  * showing up means the tree on the server was not built by it.
  */
-function sourcesHtml(attribution: Attribution | null): string {
+function installSources(attribution: Attribution | null): void {
   const transit = attribution
     ? `<p>Transit data: <a href="${esc(attribution.source_url)}" target="_blank" rel="noopener">${esc(attribution.source_name)}</a> (${esc(attribution.feed_description)}), ${esc(attribution.licence)}.</p>`
     : `<p class="error">This bundle names no source or licence for its transit data.</p>`;
-  return `
-    <div class="legend-block">
-      <h3>Sources</h3>
-      <p>Map tiles &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>
-      ${transit}
-      <p>Dataset DOI: <a href="https://doi.org/${DATASET_DOI}" target="_blank" rel="noopener">${DATASET_DOI}</a></p>
-      <p>Code DOI: <a href="https://doi.org/${CODE_DOI}" target="_blank" rel="noopener">${CODE_DOI}</a></p>
-      <p><a href="${REPO_URL}/blob/main/METHODOLOGY.md" target="_blank" rel="noopener">Methodology</a></p>
-    </div>`;
+  sourcesEl.innerHTML = `
+    <summary>Sources &amp; citation</summary>
+    ${transit}
+    <p>Map tiles &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>
+    <p><a href="https://doi.org/${DATASET_DOI}" target="_blank" rel="noopener">Dataset DOI ${DATASET_DOI}</a> &middot; <a href="https://doi.org/${CODE_DOI}" target="_blank" rel="noopener">Code DOI ${CODE_DOI}</a></p>
+    <p><a href="${REPO_URL}/blob/main/METHODOLOGY.md" target="_blank" rel="noopener">Methodology</a></p>`;
+  // Collapsed is fine for a source that is stated; a bundle that states none
+  // has to say so with the panel open, or folding it away hides exactly the
+  // failure the line exists to report.
+  sourcesEl.open = attribution === null;
 }
 
 function count(n: number): string {
@@ -236,11 +234,12 @@ function summaryHtml(
   const notice = incompleteNotice(manifest);
   const incomplete = notice ? `<p class="notice">${notice}</p>` : "";
 
+  // Only the non-empty case is on screen: an exclusion changes how the map is
+  // read, "none" is a line the reader scrolls past every single time. The day
+  // select still names every excluded day with its reason.
   const excluded =
-    manifest.mode === "typical_weekday"
-      ? excludedDays.length > 0
-        ? `<p class="hint">${excludedDays.length} day(s) excluded from the median: ${excludedDays.map((d) => `${d.date} (${d.reason})`).join(", ")}.</p>`
-        : `<p class="hint">No days excluded from the median.</p>`
+    manifest.mode === "typical_weekday" && excludedDays.length > 0
+      ? `<p class="hint">${excludedDays.length} day(s) excluded from the median: ${excludedDays.map((d) => `${d.date} (${d.reason})`).join(", ")}.</p>`
       : "";
 
   return `
@@ -274,11 +273,8 @@ function installLimitations(manifest: BundleManifest): void {
  */
 function installAttribution(manifest: BundleManifest, hasTypical: boolean): void {
   const attribution = manifest.attribution ?? null;
-  legendEl.innerHTML =
-    sourcesHtml(attribution) +
-    speedLegendHtml() +
-    (hasTypical ? highlightLegendHtml() : "") +
-    samplesLegendHtml();
+  legendEl.innerHTML = speedLegendHtml() + keysHtml(hasTypical);
+  installSources(attribution);
   if (attribution) {
     document.title = `${attribution.city} public transport — typical weekday speeds`;
   }
@@ -421,17 +417,43 @@ async function refresh(): Promise<void> {
     }
     // Past here the knob's domain is this bundle's, so the hand may have it
     // back (a no-op unless a bundle change locked it).
-    slider.disabled = false;
+    setTimeControlsDisabled(false);
     draw(manifest, geometry, slot, timeslot);
   } catch (err: unknown) {
     if (mySeq === refreshSeq) {
       showError(err);
       // The bundle never arrived, so the slider still names the slots of the
       // one on screen — the failure must not leave the control dead.
-      slider.disabled = false;
+      setTimeControlsDisabled(false);
     }
   }
 }
+
+/** The knob and its two buttons are one control: they move the same index. */
+function setTimeControlsDisabled(off: boolean): void {
+  slider.disabled = off;
+  prevBtn.disabled = off;
+  nextBtn.disabled = off;
+}
+
+/**
+ * A trackpad cannot land on one slot in a 96-step range a panel wide, so the
+ * buttons move it a slot at a time. They drive the input and re-raise its own
+ * event rather than repeating the handler: one path updates the label and the
+ * map, whichever hand moved the value.
+ */
+function stepTimeslot(delta: number): void {
+  const next = Math.min(
+    Number(slider.max),
+    Math.max(0, Number(slider.value) + delta),
+  );
+  if (String(next) === slider.value) return;
+  slider.value = String(next);
+  slider.dispatchEvent(new Event("input"));
+}
+
+prevBtn.addEventListener("click", () => stepTimeslot(-1));
+nextBtn.addEventListener("click", () => stepTimeslot(1));
 
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleRefresh(delayMs: number): void {
@@ -453,7 +475,7 @@ daySelect.addEventListener("change", () => {
   // 96 slots. A drag started now would put the knob and the label on a time
   // the incoming bundle may not have. Locking is what keeps the rule above —
   // only a bundle change moves the knob — from needing an exception.
-  slider.disabled = true;
+  setTimeControlsDisabled(true);
   scheduleRefresh(0);
 });
 
@@ -471,7 +493,7 @@ async function main(): Promise<void> {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
 
-  legendEl.innerHTML = speedLegendHtml() + samplesLegendHtml();
+  legendEl.innerHTML = speedLegendHtml() + keysHtml(false);
 
   const index = await fetchIndex();
   const periodIndex = await fetchPeriodIndex(index.typical_weekday.path);
