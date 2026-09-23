@@ -113,33 +113,111 @@ they know what is in it.
 4. Set the fields above, paste the description as HTML, publish.
 5. Add the reverse related identifier on the code record, then put the new DOI into `README.md`, `METHODOLOGY.md` and `CLAUDE.md` section 8.
 
-## Correcting the published v1 record (2026-09-22)
+## Correcting the published records (2026-09-23)
 
-v1 went out declaring one licence, CC BY 4.0, over both archives. That is
-wrong for `sofia-gtfs-static_2026-08-27_2026-09-02.zip`: the static feed
+Both published records declare the wrong licence for the static GTFS feed.
+v1 of the dataset went out under one licence, CC BY 4.0, over both archives;
+the code record repeats the same claim in its description. The static feed
 states Creative Commons Attribution-ShareAlike on its own dataset page and
 does not take the portal's default. See "Licence of the source feeds" in
 `METHODOLOGY.md` for the evidence and for why the unversioned licence reads
-as 4.0.
+as 4.0. That reading is ours and not a statement by the publisher
+`[verify before relying on it]`.
 
-What to change on the published record, by hand through **Edit**:
+Both edits are hand edits in the Zenodo web form. Nothing here is scripted
+and nothing here happens on the next release.
 
-1. **Licenses.** Keep CC BY 4.0, add CC BY-SA 4.0. Zenodo runs on InvenioRDM
-   and takes several licences on one record; both are standard SPDX entries,
-   so neither needs "Add custom".
-2. **Description.** Replace the **Source** paragraph with the one in the
-   block above, which names the split and which file falls under which.
-3. Publish the edit.
+### What an edit does and does not touch
 
-What not to do: the files stay as they are. Editing metadata on a published
-record does not mint a new DOI, and files can only be changed by writing to
-Zenodo support. There is also no reason to want them changed. The publisher
-serves only the current build of the static feed and keeps no history, so
-this archive is the only public copy of those snapshots, and removing it to
-fix a label would destroy the thing the label describes.
+- Editing the metadata of a published record keeps its DOI. No new version
+  is minted, and the concept DOI keeps resolving to this same version.
+- Files stay as they are. Changing a file on a published record needs a
+  request to Zenodo support, and there is no reason to want one here. The
+  publisher serves only the current build of the static feed and keeps no
+  history, so this archive is the only public copy of those snapshots.
+- `README.md` and `METHODOLOGY.md` sit inside the v1 dataset record as
+  files, and both carry the original CC BY 4.0 sentence. The correction
+  cannot reach them, so the description says so instead.
+- `.zenodo.json` already carries the corrected text, but Zenodo reads it
+  only when a GitHub release mints a new version. It does not repair a
+  published record.
 
-The code record `10.5281/zenodo.22256654` carries the same wrong sentence in
-its description ("released separately as a dataset record under CC BY 4.0")
-and needs the same hand edit. `.zenodo.json` is already corrected, but it is
-read only when a GitHub release mints a new version, so it does not reach the
-published record on its own.
+### Order of work
+
+Correct the dataset record first. The code record's description points at
+the dataset, so a reader who follows the link lands on a corrected page
+either way round, but this order leaves no window where the link is the
+only wrong page left.
+
+### 1. Dataset v1: `10.5281/zenodo.22285129`
+
+Open the record through its DOI (`https://doi.org/10.5281/zenodo.22285129`)
+and use **Edit** on the record page. Do not type a record path from memory:
+the version DOI above is the one to resolve, and the concept DOI
+`10.5281/zenodo.22285128` lands on the latest version.
+
+1. **Licenses.** Keep Creative Commons Attribution 4.0 International, add
+   Creative Commons Attribution-ShareAlike 4.0 International. Both are
+   standard SPDX entries, so neither needs "Add custom". If the form takes
+   only one licence `[verify in the form]`, set CC BY-SA 4.0, which is the
+   condition a reuser of the whole record must meet, and rely on the
+   description below to state that the realtime archive travels under
+   CC BY 4.0 on its own.
+2. **Description.** Replace the **Source** paragraph with the two
+   paragraphs below. Zenodo's description field takes HTML; paste it as
+   HTML, the way the original went in.
+3. Save and publish the edit.
+
+```html
+<p><strong>Source</strong></p>
+<p>Collected from the open data portal of Sofia Municipality (urbandata.sofia.bg), which publishes the feeds of the Centre for Urban Mobility without registration. Feed publisher: Theoremus. The feeds do not share one licence. The realtime vehicle positions state none of their own and take the portal's default CC BY 4.0; the static GTFS feed states Creative Commons Attribution-ShareAlike, for which the portal names no version and which METHODOLOGY.md reads as 4.0, with the evidence for that reading set out there. This record redistributes each archive under the licence its feed carries and adds the collection timestamps, heartbeat logs and integrity manifests. <code>sofia-rt_2026-08-27_2026-09-02.zip</code> falls under CC BY 4.0, <code>sofia-gtfs-static_2026-08-27_2026-09-02.zip</code> under CC BY-SA 4.0.</p>
+
+<p><em>Correction, 2026-09-23: this record was published on 2026-09-03 declaring CC BY 4.0 over both archives, which was wrong for the static feed. The licence metadata and this description now name the split. The DOI is unchanged and no file was touched. <code>README.md</code> and <code>METHODOLOGY.md</code> inside this record still carry the original single-licence sentence, because a published record's files cannot be edited; the repository holds their corrected versions.</em></p>
+```
+
+### 2. Code and methodology: `10.5281/zenodo.22256654`
+
+Same route: resolve the version DOI, press **Edit**. The record's own
+licence is MIT and does not change. Two paragraphs of the description do.
+
+Find this sentence in the second paragraph:
+
+> The collected data is released separately as a dataset record under CC BY 4.0.
+
+and replace it with:
+
+> The collected data is released separately as a dataset record, under the licence each feed carries: CC BY 4.0 for the realtime vehicle positions, CC BY-SA 4.0 for the static feed snapshots.
+
+Find the closing **Source feeds** paragraph:
+
+> Source feeds: urbandata.sofia.bg, published under CC BY 4.0.
+
+and replace it with:
+
+```html
+<p>Source feeds: <a href="https://urbandata.sofia.bg">urbandata.sofia.bg</a>. The feeds do not share one licence: the realtime vehicle positions take the portal's default CC BY 4.0, while the static GTFS feed states Creative Commons Attribution-ShareAlike, which reaches the segment geometry and the typical-weekday medians derived from it. The portal names no version for the share-alike licence; METHODOLOGY.md sets out the evidence for reading it as 4.0.</p>
+```
+
+Both replacements match `.zenodo.json` word for word, so the next release
+produces the same text and the two records stop drifting.
+
+### Traps in the form
+
+- The DOI block's "No, I need one" radio does not survive a page reload. It
+  comes back as "Yes, I already have one" with an empty field. This bites on
+  a fresh upload rather than an edit, but a reloaded edit form is worth a
+  look before saving.
+- An aborted file upload leaves a `Pending` row with `N/A` for its size, and
+  re-uploading the same name is refused with "The following files already
+  exist". Delete the empty row first. Irrelevant to a metadata edit, kept
+  here because the same form serves both.
+
+### After both edits
+
+1. Reload each record as a logged-out reader would see it and read the
+   licence block and the description back.
+2. Check that the version DOI still resolves to the same version and that no
+   new version appeared on the concept DOI.
+3. Record the date in `JOURNAL.md` and clear the item from section 9 of
+   `CLAUDE.md`, which names these two records as the outstanding piece of the
+   licence correction.
