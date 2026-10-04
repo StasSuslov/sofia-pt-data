@@ -127,6 +127,9 @@ as 4.0. That reading is ours and not a statement by the publisher
 Both edits are hand edits in the Zenodo web form. Nothing here is scripted
 and nothing here happens on the next release.
 
+Applied to both records on 2026-10-04. The correction paragraph on the
+dataset record carries that date, not the date these steps were written.
+
 ### What an edit does and does not touch
 
 - Editing the metadata of a published record keeps its DOI. No new version
@@ -172,7 +175,7 @@ the version DOI above is the one to resolve, and the concept DOI
 <p><strong>Source</strong></p>
 <p>Collected from the open data portal of Sofia Municipality (urbandata.sofia.bg), which publishes the feeds of the Centre for Urban Mobility without registration. Feed publisher: Theoremus. The feeds do not share one licence. The realtime vehicle positions state none of their own and take the portal's default CC BY 4.0; the static GTFS feed states Creative Commons Attribution-ShareAlike, for which the portal names no version and which METHODOLOGY.md reads as 4.0, with the evidence for that reading set out there. This record redistributes each archive under the licence its feed carries and adds the collection timestamps, heartbeat logs and integrity manifests. <code>sofia-rt_2026-08-27_2026-09-02.zip</code> falls under CC BY 4.0, <code>sofia-gtfs-static_2026-08-27_2026-09-02.zip</code> under CC BY-SA 4.0.</p>
 
-<p><em>Correction, 2026-09-23: this record was published on 2026-09-03 declaring CC BY 4.0 over both archives, which was wrong for the static feed. The licence metadata and this description now name the split. The DOI is unchanged and no file was touched. <code>README.md</code> and <code>METHODOLOGY.md</code> inside this record still carry the original single-licence sentence, because a published record's files cannot be edited; the repository holds their corrected versions.</em></p>
+<p><em>Correction, 2026-10-04: this record was published on 2026-09-03 declaring CC BY 4.0 over both archives, which was wrong for the static feed. The licence metadata and this description now name the split. The DOI is unchanged and no file was touched. <code>README.md</code> and <code>METHODOLOGY.md</code> inside this record still carry the original single-licence sentence, because a published record's files cannot be edited; the repository holds their corrected versions.</em></p>
 ```
 
 ### 2. Code and methodology: `10.5281/zenodo.22256654`
