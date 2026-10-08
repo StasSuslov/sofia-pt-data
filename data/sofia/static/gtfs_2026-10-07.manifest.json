@@ -1,0 +1,13 @@
+{
+  "file": "gtfs_2026-10-07.zip",
+  "source_url": "https://gtfs.sofiatraffic.bg/api/v1/static",
+  "downloaded_at": "2026-10-07T01:05:01.188778+00:00",
+  "zip_sha256": "da244bb8969a4b52210dc2f5c769ce826ae6dce8309eafaa2d079d1434f7e7bd",
+  "content_hash": "c413d572c68c0b5416c215c841c038d789ccab47b60cfc5ce04c5c49c77cd858",
+  "size_bytes": 19052094,
+  "member_count": 13,
+  "feed_version": "1.0",
+  "feed_start_date": "20261007",
+  "feed_end_date": "20271007",
+  "feed_publisher_name": "Theoremus"
+}
