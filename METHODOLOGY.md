@@ -415,48 +415,78 @@ coverage is incomplete and why, instead of taking completeness on trust.
 
 I would rather name these myself than leave you to find them:
 
-- The "typical weekday" rests on seven weekdays split across two schedule
-  periods, one of them a partial day. The aggregation on record covers
-  2026-08-27 and 2026-08-28 in the first period, 2026-08-31 through
-  2026-09-04 in the second; the first of all of them covers 52.45% of its
-  calendar day, because collection began at 11:07 local. That day is flagged
-  as incomplete in the web export's own `manifest.json`, so a reader meets the
-  caveat there too. Days still being collected stay out of the aggregate:
-  their local copy reaches only as far as the last pull, so folding one in
-  would give a median that changes under a reader who re-runs the pipeline an
-  hour later. The two-day period spans 572,109 (segment, timeslot) bins over
-  24,365 segments, 49.83% of those bins resting on a single observation and
-  21.13% on three or more; the five-day period spans 837,130 bins over 28,872
-  segments, 19.72% on a single observation and 62.37% on three or more. Those
-  segment counts are the aggregation's own. The web export drops every
-  single-observation bin at its two-sample threshold, and what survives it is
-  18,499 segments in the two-day period and 27,138 in the five-day one, which
-  is what the map draws. Splitting by period buys medians that mean something
-  at the cost of thinner ones, and the two-day period is the visible price.
-  This archive began on 2026-08-27, and every weekday in it falls inside the
-  school summer holiday: Bulgaria's school year opens on 15 September 2026.
-  The feed says the same thing in its own calendar, scheduling 15,573 trips on
-  each weekday from Monday 14 September against 14,991 in the week of
-  2026-09-08, 582 more, as read from the 2026-09-08 snapshot. Read the numbers
-  above as the output of a working pipeline. They do not yet describe how
-  Sofia's network behaves.
-- The 0.5% and 80% thresholds rest on one feed and one year of its published
-  calendar, and they do not rest on it equally. The 80% one is pinned: against
-  a median of 15,595 trips the heaviest reduced-service weekday reaches
-  65.90% and the lightest ordinary weekday 93.67%, so any threshold between
-  those two selects the same eleven days. Both edges are the pipeline's own
-  reading, each day against the snapshot in force on it; the upper one falls
-  to 86.84% if 27 August is read out of the 2026-09-04 snapshot instead, for
-  the erosion reason above. 80% sits inside the band either way. The 0.5% one
-  is not pinned. Every boundary this
-  agency has published sits at 3.15% or above and every day inside a period
-  at 0, so the evidence rules out a threshold above 3.15% and says nothing
-  about the choice within it — on this archive the split would be identical
-  with no threshold at all. It is there for a feed that moves a few trips
-  without changing its timetable, which this one has not yet done. An agency
-  publishing timetable changes in small continuous steps would need a
-  different rule, not a different number. Both thresholds are recorded in
-  `typical_weekday.json` next to the results they produced.
+- A "typical weekday" is only as deep as the schedule period it sits in, and
+  the periods are far from equal. The aggregation run on 2026-10-08 holds 29
+  weekdays across six periods:
+
+  | Period | Weekdays | (segment, timeslot) bins | On one observation | On three or more | Segments, aggregation | Segments, map |
+  |---|---:|---:|---:|---:|---:|---:|
+  | 27 to 28 Aug | 2 | 572,109 | 49.83% | 21.13% | 24,365 | 18,499 |
+  | 31 Aug to 4 Sep | 5 | 837,130 | 19.72% | 62.37% | 28,872 | 27,138 |
+  | 8 to 11 Sep | 4 | 788,481 | 21.85% | 57.47% | 26,664 | 25,426 |
+  | 14 Sep to 2 Oct | 14 | 1,153,361 | 10.62% | 80.31% | 34,738 | 34,303 |
+  | 5 to 7 Oct | 3 | 780,628 | 27.35% | 48.26% | 26,686 | 25,103 |
+  | 8 Oct | 1 | 542,677 | 69.71% | 10.95% | 25,280 | 12,778 |
+
+  The map column counts what survives the web export's two-sample threshold,
+  which drops every single-observation bin. Splitting by period buys medians
+  that mean something at the cost of thinner ones: each timetable change
+  starts a period from nothing, and it fills only for as long as the
+  timetable holds. The period from 14 September is the first with a base
+  worth the name. The one-day period of 8 October is a median over one day,
+  which is that day, and the second bullet below explains why it exists at
+  all. Every figure in the table moves as the archive grows; the per-period
+  counts ship in `typical_weekday.json`.
+  The first day of the archive, 2026-08-27, covers 52.45% of its calendar
+  day, because collection began at 11:07 local. The web export's own
+  `manifest.json` flags it as incomplete, so a reader meets the caveat there
+  too. Days still being collected stay out of the aggregate: their local copy
+  reaches only as far as the last pull, so folding one in would give a median
+  that changes under a reader who re-runs the pipeline an hour later.
+  The first three periods fall inside the school summer holiday. Bulgaria's
+  school year opened on 15 September 2026, and the feed's weekday timetable
+  stepped from 14,991 scheduled trips to 16,628 the Monday before. Compare a
+  summer period with an autumn one as two timetables, not as one network on
+  two dates.
+- The 0.5% and 80% thresholds rest on one feed, and the archive now bounds
+  both from both sides. Every day below is read against the snapshot in
+  force on it, as the pipeline reads it.
+  The 80% one has room. Against a median of 16,662 scheduled trips over the
+  31 archived weekdays, the two reduced-service days reach 60.85% (7
+  September, 10,138 trips) and 63.84% (22 September, 10,637), and the
+  lightest ordinary weekday 87.67% (27 August, 14,608). Any threshold
+  between 63.84% and 87.67% excludes the same two days. Both line up with
+  Bulgarian public holidays: Independence Day on 22 September, and
+  Unification Day, which fell on Sunday 6 September.
+  The 0.5% one sits on its lower edge. Through September the agency adjusted
+  the school timetable in small steps, and against 14 September, the
+  period's first day, later weekdays moved by 34 to 82 trips. 18 September
+  reached 82 of 16,628, 0.49%, against a limit of 83.1 trips. Any threshold
+  below 0.49% splits that period on 18 September, and exact signatures would
+  cut it into seven. Every boundary between periods sits at 1.94% or above,
+  each measured against the outgoing period's first day: 1.94% on 8 October,
+  2.18% on 5 October, 3.01% on 8 September, 4.07% on 31 August and 11.52% on
+  14 September. The evidence puts the threshold between 0.49% and 1.94%, and
+  0.5% clears the lower edge by about one trip. I set 0.5% before September
+  supplied that edge, when no day inside a period had moved at all, and I
+  have not moved it since seeing where the edge fell. An agency adjusting
+  its timetable in steps this size, this often, needs a different rule, not
+  a different number. Both thresholds are recorded in `typical_weekday.json`
+  next to the results they produced.
+- A timetable that comes back does not rejoin its period. From 5 to 7
+  October the feed ran a three-day variant: route A117 appears with 192
+  trips, TM22 drops from 377 trips to 342 and TM56 from 98 to none. On 8
+  October every route's trip count returned to what it was on 29 September,
+  down to the same signature key, `97e87337807c86bd`, 37 trips (0.22%) from
+  the 14 September reference. The pipeline compares each day only with the
+  first day of the period it is in, so 8 October founded a period of its own
+  instead of rejoining 14 September to 2 October: one weekday and 12,778
+  drawn segments, against fourteen weekdays and 34,303 segments for the same
+  timetable a period earlier. The export marks the period with the most
+  weekdays as current, so the map's default view is the 14 September one,
+  but the one-day period still ships. Read a short period that follows a
+  short variant as a continuation of the one before it. If this recurs, the
+  grouping gets a check against earlier periods before it opens a new one.
 - The schedule period key cannot see a pure retiming. Two timetables that
   move departure times around while leaving every route's trip count
   unchanged hash to the same key, so their days would pool into one median
@@ -476,9 +506,10 @@ I would rather name these myself than leave you to find them:
 - The bounding-box filter can lose data at its edges by construction, even
   with the box derived from the network's own extent. Each day's manifest
   publishes the observed drop-out-of-bbox rate, so the loss is a number you
-  can read. So far that number is zero: of the 6,280,642 vehicle positions
+  can read. So far that number is zero: of the 28,845,105 vehicle positions
   the feed reported between the corrected box coming into force
-  (2026-08-28 17:04 local) and 2026-09-07, not one fell outside it. The
+  (2026-08-28 17:04 local) and the end of 2026-10-08, not one fell outside
+  it. The
   filter is insurance against a documented failure mode of GTFS-RT feeds,
   and on this feed it has not yet had anything to catch.
 - That risk was realised at the start of the archive. The box in force
@@ -515,22 +546,28 @@ I would rather name these myself than leave you to find them:
   which inflated coverage on days where collection started late and could
   not have detected a collector polling at half its configured rate.
 - The feed reports vehicle speed in km/h, in a field that GTFS-RT specifies
-  as metres per second. The values are whole numbers with a median of 17
-  and a maximum of 87, which as m/s would put a city bus at a 61 km/h
-  median and a 313 km/h maximum. Published figures treat the field as
-  km/h. That reading comes from the data; the feed publisher has stated
-  nothing about it.
+  as metres per second. Over the 29,762,446 records archived from
+  2026-08-27 to 2026-10-08 the values have a median of 17 and a p99 of 57,
+  which as m/s would put a city bus at a 61 km/h median. The maximum, 211,
+  is one report from a bus on route A46 on 28 August, served in two
+  consecutive polls under the same vehicle timestamp; 29 records exceed 100.
+  Every value was a whole number through 30 September. From 1 October the
+  feed has sent occasional decimals, 1,520 records over four days. Published
+  figures treat the field as km/h. That reading comes from the data; the
+  feed publisher has stated nothing about it.
 - Speed derived from consecutive positions and the feed's own speed reading
-  disagree by a median of 9.19 km/h over 15.0 million paired readings, with
-  15% of samples differing by more than 20 km/h. The figure is recomputed
-  over the whole archive on every run and published in
-  `validation_vs_feed_speed_ms`, so it moves as the archive grows: it read
-  9.3 when the archive held twelve days. The two measure different things, an average over the
+  disagree by a median of 9.14 km/h over 29.1 million paired readings, with
+  14.7% of samples differing by more than 20 km/h, as of the run on
+  2026-10-08. The figure is recomputed over the whole archive on every run
+  and published in `validation_vs_feed_speed_ms`, so it moves as the archive
+  grows: it read 9.3 when the archive held twelve days and 9.19 at 15.0
+  million readings. The two measure different things, an average over the
   polling interval against an instantaneous reading, so the archive
   publishes both and reconciles neither.
-- The feed populates no bearing field at all, so direction of travel comes
-  from the trip's shape_id in GTFS Static. direction_id, the usual field
-  for this, is empty for every trip in the feed.
+- The feed populates no bearing field at all, in none of the 29,762,446
+  records to 2026-10-08, so direction of travel comes from the trip's
+  shape_id in GTFS Static. direction_id, the usual field for this, is empty
+  for every trip in the feed.
 - The agency rebuilds GTFS Static every day. The member timestamps inside
   the zip put the build at 03:33 local time, identical to the second in the
   snapshots dated 2026-08-27, 2026-08-31 and 2026-09-01, and each
@@ -540,8 +577,8 @@ I would rather name these myself than leave you to find them:
   `stops.txt` and `calendar_dates.txt` all changed, while `agency.txt`,
   `transfers.txt`, `translations.txt`, `pathways.txt`, `levels.txt` and
   `fare_attributes.txt` were byte-identical. `feed_version` reads `1.0` in
-  every snapshot collected so far, which makes it useless for telling one
-  version from another. Each processed day is matched to the latest static
+  all 41 snapshots collected to 2026-10-09, which makes it useless for
+  telling one version from another. Each processed day is matched to the latest static
   snapshot dated on or before it, and where that date is the day's own and
   holds several captures, to the first of them — the feed the day started
   under, with the later captures reachable as the fallback described below.
@@ -594,14 +631,17 @@ I would rather name these myself than leave you to find them:
   against a later feed says so. This does not make the fallback feed the
   right one for that day — it is the nearest evidence of a build this
   archive never captured, and a renumbering it does not carry stays
-  unresolved.
+  unresolved. To 2026-10-08 the fallback has fired on four days: 48 trips
+  each on 2026-08-29 and 2026-08-30, 157 on 2026-09-02, and 60 trips with
+  3,258 records on 2026-10-07.
 - A slower-than-usual mark describes the network at peak, not one segment.
-  Splitting the current period in half and computing each half's baseline on
-  its own, a single mark reproduces in 36.9% of cases. Read the marks in
+  Splitting the 31 August to 4 September period in half and computing each
+  half's baseline on its own, a single mark reproduced in 36.9% of cases. I
+  have not re-measured that on a longer period. Read the marks in
   aggregate — which corridors light up, in which slots — and not as evidence
   about the segment under the cursor. They are also denser where the archive
-  is denser: 13,509 of the current period's 27,138 segments clear the 15-slot
-  gate, the rest carry no baseline and can never be marked, so an unmarked
+  is denser: 18,993 of the 34,303 drawn segments of the 14 September to 2
+  October period clear the 15-slot gate, the rest carry no baseline and can never be marked, so an unmarked
   segment may mean "not slower than usual" or "not enough observations to
   say".
 

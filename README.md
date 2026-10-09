@@ -209,11 +209,13 @@ python3 -m pytest
   arrived with, `speed_ms`. Preprocessed output calls it `feed_speed_kmh`,
   which is the unit the values are in. METHODOLOGY.md has the numbers behind
   that reading.
-- The "typical weekday" median rests on five weekdays so far, one of them a
-  partial day, and its base is uneven across the map. Segments outside that
-  old, narrower box drew on fewer days and carry fewer samples per bin.
-  METHODOLOGY.md's Known limitations section has the measured extent. Read
-  it together with the `n_samples` that ships next to every median.
+- The "typical weekday" median is computed per schedule period, and a period
+  is only as deep as its timetable lasted: on 2026-10-08 the six periods held
+  between one and fourteen weekdays. The first, 27 to 28 August, includes a
+  partial day, and its segments outside that old, narrower box drew on fewer
+  hours and carry fewer samples per bin. METHODOLOGY.md's Known limitations
+  section has the measured extent of both. Read it together with the
+  `n_samples` that ships next to every median.
 
 ## Citing
 
