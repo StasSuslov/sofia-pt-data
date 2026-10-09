@@ -608,5 +608,7 @@ I would rather name these myself than leave you to find them:
 ## Versioning
 
 Archive releases run on a fixed cadence, decoupled from findings: a first
-release, a quarterly one, then monthly. Each is versioned and citable on its
-own, apart from whatever analysis cites it.
+release covering 27 August to 2 September 2026, then one per calendar month,
+starting with 3 to 30 September. Each version holds only its own days, so a
+result that spans two months cites two versions. Each is versioned and
+citable on its own, apart from whatever analysis cites it.

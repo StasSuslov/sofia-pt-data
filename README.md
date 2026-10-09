@@ -227,11 +227,16 @@ record's own page when you need the exact code behind a result.
 
 The collected data has its own Zenodo record, versioned apart from the code
 and carrying both of its feeds' licences: CC BY 4.0 for the realtime
-positions, CC BY-SA 4.0 for the static snapshots. v1.0.0 covers 27 August to 2 September 2026.
+positions, CC BY-SA 4.0 for the static snapshots. Each version holds its own
+stretch of days and does not repeat the ones before it: v1.0.0 covers 27
+August to 2 September 2026, v2.0.0 covers 3 to 30 September, and later
+versions follow one calendar month each. The concept DOI below resolves to
+the latest version; the version you used carries its own title, date range
+and DOI on its record page.
 
 > Suslov, Stanislav (2026). *Sofia public transport: raw GTFS-Realtime
-> vehicle positions and static feed snapshots, 2026-08-27 to 2026-09-02*.
-> Zenodo. https://doi.org/10.5281/zenodo.22285128
+> vehicle positions and static feed snapshots*. Zenodo.
+> https://doi.org/10.5281/zenodo.22285128
 
 Cite both when you cite a result: the data it rests on, and the code that
 produced it.
