@@ -417,11 +417,11 @@ def touch(path: Path, mtime: float) -> None:
     os.utime(path, (mtime, mtime))
 
 
-def touch_manifest(path: Path, mtime: float, version=MANIFEST_SCHEMA_VERSION) -> None:
+def touch_manifest(path: Path, mtime: float, version=MANIFEST_SCHEMA_VERSION, **extra) -> None:
     """A manifest file has to be real JSON carrying a schema_version, because
     mtime is not the only thing manifest_is_current() reads any more. Pass a
     different `version` to stand in for one written by an older format."""
-    payload = {} if version is None else {"schema_version": version}
+    payload = ({} if version is None else {"schema_version": version}) | extra
     path.write_text(json.dumps(payload), encoding="utf-8")
     os.utime(path, (mtime, mtime))
 
@@ -459,6 +459,31 @@ def test_manifest_is_current_false_when_polls_file_is_newer(tmp_path: Path):
     touch(polls_path, 150)  # heartbeat log grew after the manifest was written
 
     assert manifest_is_current(manifest_path, data_path, polls_path) is False
+
+
+def test_manifest_is_current_false_when_remote_check_failed(tmp_path: Path):
+    # Finding 19: rsync -a restores the server's (older) mtime on the repaired
+    # file, so the manifest looks newer than its inputs. A recorded failure
+    # must override that.
+    data_path = tmp_path / "2026-09-23.jsonl"
+    polls_path = tmp_path / "2026-09-23.polls.jsonl"
+    manifest_path = tmp_path / "2026-09-23.manifest.json"
+    touch(data_path, 100)
+    touch(polls_path, 110)
+    touch_manifest(manifest_path, 200, remote_verified=False)
+
+    assert manifest_is_current(manifest_path, data_path, polls_path) is False
+
+
+def test_manifest_is_current_true_when_remote_check_passed(tmp_path: Path):
+    data_path = tmp_path / "2026-09-23.jsonl"
+    polls_path = tmp_path / "2026-09-23.polls.jsonl"
+    manifest_path = tmp_path / "2026-09-23.manifest.json"
+    touch(data_path, 100)
+    touch(polls_path, 110)
+    touch_manifest(manifest_path, 200, remote_verified=True)
+
+    assert manifest_is_current(manifest_path, data_path, polls_path) is True
 
 
 def test_manifest_is_current_false_when_manifest_missing(tmp_path: Path):
@@ -563,6 +588,19 @@ def test_carry_remote_verification_keeps_the_record_when_hashes_match():
 
     assert result["remote_verified"] is True
     assert result["remote_verified_at"] == "2026-08-31T11:06:33+00:00"
+
+
+def test_carry_remote_verification_drops_a_failure_even_when_hashes_match():
+    # Same bytes, still false: carrying it would leave verify (which skips any
+    # manifest holding a value) never to re-read the VPS for this day.
+    previous = {
+        "data_sha256": "aa", "polls_sha256": "bb",
+        "remote_verified": False, "remote_verified_at": "2026-09-24T08:00:00+00:00",
+        "remote_verify_note": "data_sha256 local=aa remote=zz",
+    }
+    fresh = {"data_sha256": "aa", "polls_sha256": "bb"}
+
+    assert carry_remote_verification(fresh, previous) == {"data_sha256": "aa", "polls_sha256": "bb"}
 
 
 def test_carry_remote_verification_drops_the_record_when_a_hash_moved():

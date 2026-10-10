@@ -20,7 +20,10 @@ Rules encoded here (see CLAUDE.md section 9 / the task this was written for):
     expected to differ from whatever's on the VPS mid-write, and that's not
     a finding.
   - A day already carrying a remote_verified value (true OR false) is never
-    re-checked. One remote read per file, for the life of the file.
+    re-checked here. One remote read per file, for the life of the file. A
+    false is cleared upstream: generate_manifest.py regenerates such a
+    manifest and does not carry the false over, so the day is pending again
+    (finding 19).
   - A checksum MISMATCH means possible corruption and must be loud: recorded
     in the manifest, logged, and surfaced via a distinct process exit code.
   - The VPS being unreachable is routine network noise, not evidence of

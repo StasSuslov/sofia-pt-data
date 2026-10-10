@@ -238,8 +238,17 @@ def carry_remote_verification(manifest: dict, previous: dict | None) -> dict:
     specific pair of SHA256s; carrying it across a manifest whose hashes
     moved would restate it about bytes it never saw. When the hashes differ,
     the fields are left off and the next verify run records the answer again.
+
+    A recorded failure (remote_verified false) is never carried either, even
+    over identical hashes. Finding 19: a pull copied 2026-09-23.jsonl at 56%
+    of the day, the manifest was built over that copy and the check wrote
+    false; the next pull brought the complete file, but regeneration over the
+    same bytes would have copied the false forward and verify, which skips any
+    manifest holding a value, would never have looked again. Dropping it makes
+    the regenerated manifest pending, so every run re-reads the VPS: a repaired
+    file turns true, a persisting mismatch raises its exit code again.
     """
-    if not previous:
+    if not previous or previous.get("remote_verified") is not True:
         return manifest
     if any(previous.get(k) != manifest.get(k) for k in ("data_sha256", "polls_sha256")):
         return manifest
@@ -274,7 +283,12 @@ def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) 
         return False
     if existing.get("schema_version") != MANIFEST_SCHEMA_VERSION:
         return False
-    manifest_mtime = manifest_path.stat().st_mtime
+    # A failed remote check says the local bytes are wrong, and rsync -a
+    # carries the server's mtime, so a repaired file can look older than the
+    # manifest that condemned it (finding 19). mtime cannot vouch for it.
+    if existing.get("remote_verified") is False:
+        return False
+    manifest_mtime =manifest_path.stat().st_mtime
     if data_path.stat().st_mtime > manifest_mtime:
         return False
     if polls_path.exists() and polls_path.stat().st_mtime > manifest_mtime:
