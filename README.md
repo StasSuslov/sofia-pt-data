@@ -42,6 +42,10 @@ limitations I know about.
   schedule and saves a dated snapshot when the contents changed. It compares
   the members inside the zip, so a rebuild of identical data does not look
   like a republish.
+- `scripts/archive_alerts.py` fetches the GTFS-RT service alerts every five
+  minutes and keeps the response when the alerts in it changed, compared
+  without the entity ids the feed regenerates on every request. Every run
+  goes into a log next to the files, so a gap in runs shows as one.
 - `scripts/segment_speeds.py` projects raw GTFS-RT positions onto GTFS
   Static shapes and derives one speed sample per 200 m segment. Monday to
   Friday samples become a "typical weekday" median per segment and

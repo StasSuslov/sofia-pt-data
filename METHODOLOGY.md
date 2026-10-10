@@ -31,7 +31,23 @@ second city without a rewrite.
   [urbandata.sofia.bg](https://urbandata.sofia.bg) (Level 1). This feed
   states no licence of its own and takes the portal's default, CC BY 4.0.
   Snapshot schema: `snapshot_ts, vehicle_id, route_id, trip_id, lat, lon,
-  bearing, speed_ms, vehicle_ts`.
+  bearing, speed_ms, vehicle_ts, stop_id, current_status, occupancy_status,
+  congestion_level, schedule_relationship`. The last five came with a
+  collector update in October 2026. Rows written before it have no such
+  keys. Rows after it carry `null` where the feed left the field out or sent
+  an enum value that gtfs-realtime-bindings 2.0.0 does not know, and the
+  archive cannot tell those two apart. Enums are written by name.
+  `occupancy_status` and `congestion_level` are ЦГМ's own readings, and I do
+  not know how ЦГМ derives either. My speed and slowdown figures come from
+  positions and do not use `congestion_level`.
+- **GTFS-RT service notices (alerts).** Fetched every five minutes since
+  October 2026. A response is kept, gzipped as served, only when the alerts
+  in it changed. The comparison leaves out the entity ids, which ЦГМ
+  regenerates on every request. A response with no alerts is kept only when
+  two runs in a row see none, and a response without a feed header is
+  refused. A run log beside the files records every attempt, so a stretch
+  with no new file can be told from a stretch with no runs. The alerts
+  archive is not part of the published dataset record yet.
 - **GTFS Static.** Routes, stops, schedules and shapes, from the same
   portal. It gives me the collection bounding box and everything that works
   without real-time data (route and stop coverage, accessibility). Unlike the

@@ -149,6 +149,78 @@ def test_fetch_vehicle_positions_reports_parse_failure():
     assert poll.records == []
 
 
+_NEW_FIELDS = ("stop_id", "current_status", "occupancy_status", "congestion_level", "schedule_relationship")
+
+
+def _feed_of(vehicle: gtfs_realtime_pb2.VehiclePosition) -> bytes:
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.header.gtfs_realtime_version = "2.0"
+    entity = feed.entity.add()
+    entity.id = "e0"
+    entity.vehicle.CopyFrom(vehicle)
+    return feed.SerializeToString()
+
+
+def _positioned_vehicle() -> gtfs_realtime_pb2.VehiclePosition:
+    v = gtfs_realtime_pb2.VehiclePosition()
+    v.position.latitude = 42.70
+    v.position.longitude = 23.32
+    return v
+
+
+def _only_record(content: bytes) -> dict:
+    poll = fetch_vehicle_positions("http://example.test", _FakeSession(content=content), BBOX)
+    assert len(poll.records) == 1
+    return poll.records[0]
+
+
+def test_fetch_vehicle_positions_writes_feed_enums_by_name():
+    v = _positioned_vehicle()
+    v.trip.trip_id = "T1"
+    v.trip.schedule_relationship = gtfs_realtime_pb2.TripDescriptor.ADDED
+    v.stop_id = "A0123"
+    v.current_status = gtfs_realtime_pb2.VehiclePosition.STOPPED_AT
+    v.occupancy_status = gtfs_realtime_pb2.VehiclePosition.FULL
+    v.congestion_level = gtfs_realtime_pb2.VehiclePosition.STOP_AND_GO
+
+    record = _only_record(_feed_of(v))
+    assert {k: record[k] for k in _NEW_FIELDS} == {
+        "stop_id": "A0123",
+        "current_status": "STOPPED_AT",
+        "occupancy_status": "FULL",
+        "congestion_level": "STOP_AND_GO",
+        "schedule_relationship": "ADDED",
+    }
+
+
+def test_fetch_vehicle_positions_writes_null_for_fields_the_feed_left_out():
+    # The trap: proto2 answers an unset enum with its default, and the
+    # defaults IN_TRANSIT_TO and SCHEDULED are exactly what ЦГМ sends live.
+    # Code that skips HasField would pass a test built from live-like
+    # values and still invent those two for every vehicle that never had them.
+    v = _positioned_vehicle()
+    v.trip.trip_id = "T1"  # trip present, schedule_relationship unset
+    record = _only_record(_feed_of(v))
+    assert {k: record[k] for k in _NEW_FIELDS} == dict.fromkeys(_NEW_FIELDS)
+
+    no_trip = _only_record(_feed_of(_positioned_vehicle()))
+    assert no_trip["schedule_relationship"] is None
+
+
+def test_fetch_vehicle_positions_writes_null_for_an_enum_value_the_bindings_do_not_know():
+    # A value newer than gtfs-realtime-bindings goes to unknown fields on a
+    # closed proto2 enum, so the record can't tell it from an absent field.
+    # METHODOLOGY.md says null means either; this pins that it stays null
+    # rather than raising out of Enum.Name() and losing the whole poll.
+    vp = gtfs_realtime_pb2.VehiclePosition
+    field_number = vp.DESCRIPTOR.fields_by_name["occupancy_status"].number
+    raw = _positioned_vehicle().SerializeToString() + bytes([field_number << 3, 99])
+    v = vp()
+    v.ParseFromString(raw)
+
+    assert _only_record(_feed_of(v))["occupancy_status"] is None
+
+
 def test_ping_healthcheck_calls_get(monkeypatch):
     calls = []
     monkeypatch.setattr(requests, "get", lambda url, timeout: calls.append((url, timeout)))

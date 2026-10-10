@@ -86,6 +86,13 @@ def heartbeat_path_for(data_path: Path) -> Path:
     return data_path.with_name(f"{data_path.stem}.polls.jsonl")
 
 
+_VP = gtfs_realtime_pb2.VehiclePosition
+
+
+def _enum_name(message, field: str, enum) -> str | None:
+    return enum.Name(getattr(message, field)) if message.HasField(field) else None
+
+
 class PollResult(NamedTuple):
     records: list[dict]
     fetch_ok: bool
@@ -158,6 +165,20 @@ def fetch_vehicle_positions(url: str, session: requests.Session, bbox: dict) -> 
             "bearing":     v.position.bearing if v.position.HasField("bearing") else None,  # type: ignore[attr-defined]
             "speed_ms":    round(v.position.speed, 2) if v.position.HasField("speed") else None,  # type: ignore[attr-defined]
             "vehicle_ts":  v.timestamp if v.HasField("timestamp") else None,
+            "stop_id":     v.stop_id if v.HasField("stop_id") else None,
+            # Enums go to disk by name, so the archive reads without the
+            # .proto. HasField and not the bare attribute: proto2 returns the
+            # default for an unset field, and IN_TRANSIT_TO and SCHEDULED are
+            # both defaults and the values ЦГМ actually sends. An enum value
+            # these bindings don't know also lands as None (proto2 enums are
+            # closed: the parser moves it to unknown fields).
+            "current_status":   _enum_name(v, "current_status", _VP.VehicleStopStatus),
+            "occupancy_status": _enum_name(v, "occupancy_status", _VP.OccupancyStatus),
+            "congestion_level": _enum_name(v, "congestion_level", _VP.CongestionLevel),
+            "schedule_relationship": (
+                _enum_name(v.trip, "schedule_relationship", gtfs_realtime_pb2.TripDescriptor.ScheduleRelationship)
+                if v.HasField("trip") else None
+            ),
         }
         records.append(record)
 

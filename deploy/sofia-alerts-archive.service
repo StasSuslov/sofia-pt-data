@@ -1,0 +1,21 @@
+[Unit]
+Description=Sofia PT GTFS-RT service alerts capture
+
+[Service]
+Type=oneshot
+# The collector's venv, not system python3 like sofia-static-archive.service:
+# the script parses the response to hash the alerts without ЦГМ's
+# per-response entity UUIDs, and parsing needs protobuf. See the module
+# docstring of scripts/archive_alerts.py.
+#
+# Output is /opt/sofia-pt/data/sofia/alerts/, inside the tree
+# scripts/fetch_data.sh pulls whole. Neither sofia-compress.service nor
+# sofia-prune.service matches *.pb.gz or runs.ndjson, so this directory is
+# kept for good, on purpose: one change costs about 19 KB, and the run log
+# about 20 KB a day.
+#
+# A failed run exits 1 and saves nothing but still writes its line to
+# runs.ndjson; nothing alerts on it live (the collector's healthchecks.io
+# check covers collect.py only).
+ExecStart=/opt/sofia-pt/venv/bin/python3 /opt/sofia-pt/scripts/archive_alerts.py /opt/sofia-pt/data/sofia/alerts
+User=root

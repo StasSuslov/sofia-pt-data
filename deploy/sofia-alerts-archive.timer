@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Sofia PT GTFS-RT service alerts capture every 5 minutes
+
+[Timer]
+# Five minutes bounds when an alert appeared or ended to within one interval,
+# at 288 requests a day. How often the feed changes is not measured yet. No
+# Persistent=: one catch-up run after downtime adds nothing a run five
+# minutes later wouldn't, and runs.ndjson already shows the gap.
+OnCalendar=*:0/5
+
+[Install]
+WantedBy=timers.target
