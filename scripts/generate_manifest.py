@@ -288,7 +288,7 @@ def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) 
     # manifest that condemned it (finding 19). mtime cannot vouch for it.
     if existing.get("remote_verified") is False:
         return False
-    manifest_mtime =manifest_path.stat().st_mtime
+    manifest_mtime = manifest_path.stat().st_mtime
     if data_path.stat().st_mtime > manifest_mtime:
         return False
     if polls_path.exists() and polls_path.stat().st_mtime > manifest_mtime:
