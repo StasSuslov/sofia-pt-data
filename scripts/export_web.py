@@ -72,7 +72,8 @@ weekday by the timetable each day ran under (its schedule_period_key), so
 this script writes web/typical_weekday/<period_key>/ for each of them —
 geometry, timeslots and manifest exactly as before, one median per
 timetable — plus web/typical_weekday/manifest.json, an index naming every
-period, its date range and which one is current. A client fetches the index
+period, the weekdays it holds (not always contiguous: a timetable that
+returns rejoins its period) and which one is current. A client fetches the index
 first and follows current_period. The --day switcher is untouched: one day
 ran one timetable, so it needs no split.
 
@@ -715,11 +716,17 @@ def build_manifest(
     # every city's export passes through.
     limitations.extend(city_limitations)
     if schedule_period:
+        # Weekday count and the list, not the range alone: a timetable that
+        # returns after a short variant rejoins its period (segment_speeds.py,
+        # assign_schedule_periods), so the range can enclose another period's days.
         limitations.append(
             "This median covers only the days that ran one published timetable "
-            f"({schedule_period['first_date']} to {schedule_period['last_date']}, "
+            f"({len(days_in_median)} weekdays from {schedule_period['first_date']} to "
+            f"{schedule_period['last_date']}, listed in days_in_median; "
             f"{schedule_period['route_count']} routes and {schedule_period['trip_count']} "
-            "trips). Days under a different timetable are exported as a separate period "
+            "trips). A timetable the agency returns to after a variant rejoins its period, "
+            "so a weekday inside that range can belong to another one. "
+            "Days under a different timetable are exported as a separate period "
             "and are never averaged into this one. Two timetables that differ only in "
             "departure times, with every route's trip count unchanged, are indistinguishable "
             "to that split and would share one period."

@@ -76,11 +76,13 @@ Algorithm (given, not reinvented — see the task write-up):
       190 running its four shapes and takes tram 8 from 261 trips a day to
       213, all of it taking effect 2026-09-08. Each day is
       therefore signed by the routes and trip counts its own snapshot
-      schedules for it (schedule_signature() below); consecutive weekdays
-      whose signatures differ by less than PERIOD_TOLERANCE_PCT of the
-      trips share a period, a bigger jump starts a new one, and a weekday
-      running a holiday's service leaves the median altogether
-      (assign_schedule_periods()). The aggregation groups on
+      schedules for it (schedule_signature() below); a weekday whose
+      signature differs from its period's first day by less than
+      PERIOD_TOLERANCE_PCT of the trips shares that period, a bigger jump
+      rejoins an earlier period if it is a timetable coming back and starts
+      a new one if it is not, and a weekday running a holiday's service
+      leaves the median altogether (assign_schedule_periods()), so a period
+      can hold days that are not contiguous. The aggregation groups on
       (period_key, segment, timeslot), so days running different
       timetables never merge into one median. D4's Mon-Fri rule is
       untouched, only the grouping is finer.
@@ -190,32 +192,41 @@ VALIDATION_DIFF_THRESHOLD_KMH = 20.0
 # How far two weekdays' timetables may differ and still pool into one median.
 # The measure is churn (schedule_churn): per route, the difference between the
 # two days' scheduled trip counts, summed as absolute values, as a share of
-# the reference day's trips. A weekday here publishes around 15,000 trips, so
-# 0.5% is 75 trips of movement.
+# the reference day's trips: 73 trips of movement against 27 August 2026's
+# 14,608, 83.1 against 14 September's 16,628.
 #
-# What the archive shows is a gap, not a fitted line, and the honest version
-# says so. Read each of the 267 weekdays from 2026-08-27 to 2027-09-04 out of
-# the snapshot in force on it, which is what the pipeline does — the eight
-# archived days by their own snapshot, the 259 later ones by 2026-09-04's,
-# the eleven holiday weekdays below taken out — and consecutive weekdays
-# produce four churn values and nothing else:
-#   every day inside a period                        0 trips   0%
-#   the autumn weekday timetable, 2026-09-08       470 trips   3.15%
-#   the step to the school year, 2026-09-14        582 trips   3.88%
-#   three trams starting and 10TM ending, 08-31    595 trips   4.07%
-# So the feed bounds this threshold from above and says nothing about where
-# inside (0, 3.15%) it belongs: no boundary it has published sits under
-# 3.15%, and no day inside a period sits above 0. 0.5% is a sixth of the
-# smallest real boundary, which leaves room for a feed that shifts a handful
-# of trips without changing the timetable. On this archive it changes no
-# grouping at all — exact signatures would give the same periods — so it is
-# insurance against a feed that drifts, and METHODOLOGY.md calls it that
-# rather than dressing it up as a value the data picked.
+# Measured on the archive to 2026-10-08, each weekday read out of the
+# snapshot in force on it (what the pipeline does) and held against the first
+# day of the period it would join, the feed pins this threshold from both
+# sides. From above, every boundary it has published, each against the
+# outgoing period's first day:
+#   a three-day variant, 2026-10-05 (A117 added, TM22 and TM56 cut)   2.18%
+#   the autumn weekday timetable, 2026-09-08             448 trips    3.01%
+#   three trams starting and 10TM ending, 2026-08-31                  4.07%
+#   the step to the school year, 2026-09-14            1,727 trips   11.52%
+# and 2026-10-08 at 1.94% against the 5 October variant. That one is no
+# longer a boundary — it returns to the timetable of 29 September, 37 trips
+# (0.22%) from the 14 September reference, and assign_schedule_periods()
+# now rejoins it there — but a threshold above 1.94% would pool it with the
+# variant instead, so it still bounds from above. From below, the school
+# timetable moved in small steps through September: against 14 September
+# later weekdays differ by 34 to 82 trips, and 18 September by 82 of 16,628
+# (0.49%) against a limit of 83.1. Any threshold under 0.49% splits that
+# period on 18 September, and exact signatures would cut 14 September to
+# 2 October into seven periods.
 #
-# Which snapshot answers for a past date decides two of those four numbers.
-# Read the same 267 weekdays out of the 2026-09-04 snapshot alone and two
-# more boundaries appear, 9.42% at the end of August and 0.60% between 2 and
-# 3 September, both of them artefacts: the agency erodes calendar rows for
+# So the evidence puts the threshold inside (0.49%, 1.94%), and 0.5% clears
+# the lower edge by about one trip. It was set before September supplied that
+# edge, when no day inside a period had moved at all and the value was
+# insurance against a drifting feed, and it has not been moved since the edge
+# appeared: an agency adjusting its timetable in steps this size, this often,
+# needs a different rule, not a different number. METHODOLOGY.md says so
+# rather than presenting 0.5% as a value the data picked.
+#
+# Which snapshot answers for a past date matters as well. Read the 267
+# weekdays from 2026-08-27 to 2027-09-04 out of the 2026-09-04 snapshot alone
+# and two boundaries appear that the feed never published, 9.42% at the end
+# of August and 0.60% between 2 and 3 September: the agency erodes calendar rows for
 # dates already past, and that snapshot no longer carries 1,066 of the trips
 # 2026-08-27 ran or 89 of 2026-09-02's (all of the 89 on route A53), which
 # both days' own snapshots do carry. A pipeline reading history out of the
@@ -227,10 +238,10 @@ PERIOD_TOLERANCE_PCT = 0.5
 # A weekday scheduling fewer trips than this share of the median weekday is
 # running a holiday's service, not a new timetable. 2026-09-07 is a Monday
 # carrying the same signature as the weekend either side of it: 10,149 trips
-# against 14,907 on the Thursday before, 35% churn, where a real timetable
-# change moves 3-4%. Over the same 267 weekdays eleven look like this, and
-# their dates line up with Bulgarian public holidays. This line is pinned
-# where the churn one is not: against a median of 15,595 trips the heaviest
+# against 14,907 on the Thursday before, 35% churn, where the timetable
+# changes on record move 2.18% to 11.52%. Over the same 267 weekdays eleven
+# look like this, and their dates line up with Bulgarian public holidays.
+# This line has room the churn one lacks: against a median of 15,595 trips the heaviest
 # such day reaches 65.90% and the lightest ordinary weekday 93.67%, so any
 # threshold between those two selects the same eleven days. Both edges are
 # the pipeline's own reading; the upper one falls to 86.84% if 2026-08-27 is
@@ -572,10 +583,26 @@ def assign_schedule_periods(days: list,
     The survivors are walked in date order. The first is its period's
     reference and lends the period its signature_key; each following day
     joins while its churn against that reference stays within tolerance_pct
-    of the reference's trips, and otherwise starts a new period as the new
-    reference. Measured against the reference rather than the previous day,
-    so a slow drift cannot walk a period arbitrarily far from the timetable
-    its key names, one tolerated step at a time.
+    of the reference's trips. Measured against the reference rather than the
+    previous day, so a slow drift cannot walk a period arbitrarily far from
+    the timetable its key names, one tolerated step at a time.
+
+    A day past the tolerance is then held against the reference of every
+    earlier period, and rejoins the one it sits closest to in trips (a tie
+    goes to the period opened later) if any is within that period's own
+    tolerance; that period becomes the current one, so the days after it are
+    measured against its reference again. Only a day no earlier timetable
+    accounts for starts a new period as the new reference. From 5 to 7
+    October 2026 the feed ran a three-day variant and on 8 October returned
+    to the signature 29 September had carried, 37 trips (0.22%) from the
+    14 September reference. Compared only with the variant, 8 October opened
+    a period of its own: one weekday, 12,778 segments exported against
+    34,303 for the same timetable, 69.71% of its bins resting on a single
+    observation. A period can therefore hold days that are not contiguous,
+    and the days in it, not its first and last date, say which ones it is.
+    It also keeps two periods from sharing one key: a returning day whose
+    signature equals an earlier reference's used to found a period under
+    that same key and pool into the old median unannounced.
     """
     # Zero-trip weekdays are holes in the archive, not the city running
     # fewer buses, and they are kept out of the baseline: enough of them and
@@ -587,6 +614,10 @@ def assign_schedule_periods(days: list,
                                         for d in days if d["is_weekday"]) if t)
     level = statistics.median(weekday_totals) if weekday_totals else 0
 
+    def within(churn, r):
+        return churn <= sum(r["counts"].values()) * tolerance_pct / 100
+
+    refs = []   # every period's reference day, in the order the periods opened
     ref = None
     for d in days:
         total = sum(d["counts"].values())
@@ -608,8 +639,15 @@ def assign_schedule_periods(days: list,
             continue
 
         churn = schedule_churn(d["counts"], ref["counts"]) if ref else 0
-        if ref is None or churn > sum(ref["counts"].values()) * tolerance_pct / 100:
+        if ref is not None and not within(churn, ref):
+            ref = None
+            for r in refs:  # opening order, so `<=` hands a tie to the later period
+                c = schedule_churn(d["counts"], r["counts"])
+                if within(c, r) and (ref is None or c <= churn):
+                    ref, churn = r, c
+        if ref is None:
             ref, churn = d, 0
+            refs.append(d)
             d["period_key"] = d["signature_key"]
         else:
             d["period_key"] = ref["period_key"]
@@ -634,6 +672,11 @@ def build_schedule_periods(days: list, bin_counts: dict) -> list:
     max_churn_vs_reference says how far the loosest day in the period sat
     from the reference, so a reader can see how tight the grouping actually
     was rather than trusting the threshold.
+
+    first_date and last_date bound the period, they do not fill it: a
+    timetable that returns after a variant rejoins its old period, so weekdays
+    between the two dates can sit in another one (14 September to 8 October
+    2026, with 5 to 7 October elsewhere). days_in_median_mon_fri is the list.
     """
     by_key = {}
     for d in days:

@@ -725,6 +725,82 @@ def test_drift_is_measured_against_the_reference_not_the_previous_day():
     assert days[2]["period_key"] == "sig_2026-08-31"
 
 
+def test_a_timetable_that_comes_back_rejoins_its_period():
+    """Finding 21 in miniature: 5-7 October 2026 ran a variant past the
+    tolerance, and 8 October went back to the 14 September timetable, 37
+    trips off its reference. Compared only with the variant, 8 October
+    founded a one-day period; it belongs to 14 September's, and from then on
+    14 September's reference is the one the following days answer to."""
+    variant = {"R1": 10000, "R2": 5000, "R3": 100}   # 100 trips past a 75-trip limit
+    days = assign_schedule_periods([
+        _day("2026-09-14", BASE),
+        _day("2026-09-15", BASE),
+        _day("2026-10-05", variant),
+        _day("2026-10-06", variant),
+        _day("2026-10-08", {"R1": 10037, "R2": 5000}),
+        # 60 trips from 14 September, 40 from the variant: inside both
+        # tolerances. Measured against the current period first, it stays
+        # with 14 September only if the return made that period current.
+        _day("2026-10-09", {"R1": 10000, "R2": 5000, "R3": 60}),
+    ])
+    keys = [d["period_key"] for d in days]
+    assert keys == ["sig_2026-09-14", "sig_2026-09-14", "sig_2026-10-05",
+                    "sig_2026-10-05", "sig_2026-09-14", "sig_2026-09-14"]
+    assert [d["period_reference_date"] for d in days[4:]] == ["2026-09-14", "2026-09-14"]
+    assert [d["churn_vs_reference"] for d in days[4:]] == [37, 60]
+
+    periods = build_schedule_periods(days, {"sig_2026-09-14": 1, "sig_2026-10-05": 1})
+    september = next(p for p in periods if p["period_key"] == "sig_2026-09-14")
+    # Not contiguous: the range bounds the period, the list fills it.
+    assert september["days_in_median_mon_fri"] == [
+        "2026-09-14", "2026-09-15", "2026-10-08", "2026-10-09"]
+    assert (september["first_date"], september["last_date"]) == ("2026-09-14", "2026-10-09")
+    assert september["max_churn_vs_reference"] == 60
+    assert len(periods) == 2
+
+
+def test_a_timetable_no_earlier_period_accounts_for_still_opens_a_new_one():
+    variant = {"R1": 10000, "R2": 5000, "R3": 100}
+    autumn = {"R1": 9800, "R2": 5000}                # 200 from BASE, 300 from the variant
+    days = assign_schedule_periods([
+        _day("2026-09-14", BASE),
+        _day("2026-10-05", variant),
+        _day("2026-10-12", autumn),
+        _day("2026-10-13", autumn, key="sig_2026-10-12"),
+    ])
+    assert days[2]["period_key"] == "sig_2026-10-12"
+    assert days[2]["period_reference_date"] == "2026-10-12"
+    assert days[2]["churn_vs_reference"] == 0
+    assert days[3]["period_key"] == "sig_2026-10-12"
+    assert len({d["period_key"] for d in days}) == 3
+
+
+def test_a_day_within_tolerance_of_two_earlier_periods_joins_the_closer_one():
+    """Two earlier periods 100 trips apart, both within reach of a day the
+    current period rejects. Lowest churn wins whichever period is older; a
+    tie goes to the one opened later, as current_period_key() breaks ties."""
+    older = BASE                                      # 15,000 trips, limit 75
+    newer = {"R1": 10100, "R2": 5000}                 # 100 from older: its own period
+    far = {"R1": 9000, "R2": 5000}                    # 1,000+ from both
+
+    def returning(counts):
+        return assign_schedule_periods([
+            _day("2026-09-01", older), _day("2026-09-02", newer),
+            _day("2026-09-03", far), _day("2026-09-04", counts),
+        ])[-1]
+
+    closer_to_older = returning({"R1": 10030, "R2": 5000})   # 30 vs 70
+    assert closer_to_older["period_key"] == "sig_2026-09-01"
+    assert closer_to_older["churn_vs_reference"] == 30
+
+    closer_to_newer = returning({"R1": 10070, "R2": 5000})   # 70 vs 30
+    assert closer_to_newer["period_key"] == "sig_2026-09-02"
+    assert closer_to_newer["churn_vs_reference"] == 30
+
+    tie = returning({"R1": 10050, "R2": 5000})               # 50 vs 50
+    assert tie["period_key"] == "sig_2026-09-02"
+
+
 def test_a_weekday_on_holiday_service_leaves_the_median_instead_of_founding_a_period():
     """2026-09-07, a Monday running 10,149 trips against 15,013 on the
     weekdays around it. Let through, it would be a period of one day; the

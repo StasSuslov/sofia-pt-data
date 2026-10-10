@@ -524,8 +524,10 @@ async function main(): Promise<void> {
     excludedDays.map((d) => [d.date, d.reason] as const),
   );
   const typicalPath = `${index.typical_weekday.path}/${currentPeriod.path}`;
+  // The count, not the range alone: a timetable that returns after a variant
+  // rejoins its period, so the range can enclose another period's weekdays.
   daySelect.innerHTML =
-    `<option value="${typicalPath}">Typical weekday (${currentPeriod.first_date} – ${currentPeriod.last_date})</option>` +
+    `<option value="${typicalPath}">Typical weekday (${currentPeriod.first_date} – ${currentPeriod.last_date}, ${currentPeriod.days_in_median.length} weekdays)</option>` +
     index.days
       .map((d) => {
         const reason = excludedReason.get(d.date);

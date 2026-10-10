@@ -461,12 +461,15 @@ def test_export_drops_a_period_directory_that_left_the_archive(tmp_path: Path, m
 
 
 def test_manifest_names_the_schedule_period_as_a_limitation():
-    period = {"period_key": "abc", "first_date": "2026-09-08", "last_date": "2026-09-12",
+    period = {"period_key": "abc", "first_date": "2026-09-08", "last_date": "2026-09-11",
               "route_count": 138, "trip_count": 15600}
+    # Not contiguous: 09-10 ran another timetable (a returning timetable
+    # rejoins its period), so the range alone would overstate it.
     with_period = build_manifest(
         mode="typical_weekday", min_samples=2, bins_before=10, bins_after=6,
         pairs_before=4, pairs_after=3, missing_shapes=0, timeslot_labels=["08:00"],
-        source={}, days_processed=[], days_in_median=[], incomplete_days={},
+        source={}, days_processed=[], days_in_median=["2026-09-08", "2026-09-09", "2026-09-11"],
+        incomplete_days={},
         shapes_observed=3, shapes_written=3, total_static_shapes=10, multi_route_shapes=1, schedule_period=period,
     )
     without = build_manifest(
@@ -476,7 +479,8 @@ def test_manifest_names_the_schedule_period_as_a_limitation():
         shapes_observed=3, shapes_written=3, total_static_shapes=10, multi_route_shapes=1,
     )
     assert with_period["schedule_period"] == period
-    assert any("2026-09-08 to 2026-09-12" in line for line in with_period["known_limitations"])
+    assert any("3 weekdays from 2026-09-08 to 2026-09-11" in line
+               for line in with_period["known_limitations"])
     assert not any("published timetable" in line for line in without["known_limitations"])
     # The day switcher exports one day, which ran one timetable -- no period
     # field, no extra caveat.
