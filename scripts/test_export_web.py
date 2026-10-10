@@ -593,7 +593,11 @@ def test_typical_kmh_ships_only_in_the_typical_weekday_bundle(tmp_path: Path, mo
     assert highlight["ratio_max"] == SLOWDOWN_RATIO_MAX
     assert highlight["absolute_min_kmh"] == SLOWDOWN_ABS_MIN_KMH
     assert highlight["min_filled_slots"] == TYPICAL_MIN_SLOTS
-    assert any("36.9%" in line for line in period_manifest["known_limitations"])
+    assert any(
+        "31 August to 4 September 2026 period (five weekdays) in 36.9% of cases, measured on "
+        "2026-09-08 and not re-measured on other periods" in line
+        for line in period_manifest["known_limitations"]
+    )
 
     day_manifest = json.loads(
         (data_dir / "web" / "2026-09-08" / "manifest.json").read_text(encoding="utf-8"))
