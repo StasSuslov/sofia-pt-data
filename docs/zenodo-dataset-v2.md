@@ -12,6 +12,10 @@ Artifacts come from:
 Every number in the description was read from the manifests and from the
 day files in this range on 2026-10-09. None was carried over from v1.
 
+Published 2026-10-10 as `10.5281/zenodo.23266354` (publication date on the
+record: 2026-10-09). The concept DOI `10.5281/zenodo.22285128` resolves to it,
+and each file's md5 on the record matches the local copy.
+
 ## Form fields
 
 | Field | Value |
@@ -114,8 +118,12 @@ survived the copy.
    use **Import files**: that pulls v1's archives into v2, and versions must
    not overlap.
 3. Upload five files: two zips, `METHODOLOGY.md`, `README.md`,
-   `SHA256SUMS.txt`. If an upload aborts, delete its `Pending` row before
-   retrying, or the same name is refused.
+   `SHA256SUMS.txt`. Send the zips with `scripts/zenodo_upload.sh <draft id>
+   <zip>` (a personal token with `deposit:write` in `.env.local` as
+   `ZENODO_TOKEN`, revoked after publishing): the form stalled three times on
+   the static zip. If an upload aborts, delete its `Pending` row before
+   retrying, or the same name is refused. Deleting a pending row may answer
+   504 and still succeed; check the file list.
 4. Replace title, version, dates and description. The description field
    commits only on blur, so click outside it before saving. Leave the DOI
    block on "No, I need one"; after any page reload, check it again.
