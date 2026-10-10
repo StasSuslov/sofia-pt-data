@@ -241,15 +241,19 @@ PERIOD_TOLERANCE_PCT = 0.5
 # against 14,907 on the Thursday before, 35% churn, where the timetable
 # changes on record move 2.18% to 11.52%. Over the same 267 weekdays eleven
 # look like this, and their dates line up with Bulgarian public holidays.
-# This line has room the churn one lacks: against a median of 15,595 trips the heaviest
-# such day reaches 65.90% and the lightest ordinary weekday 93.67%, so any
-# threshold between those two selects the same eleven days. Both edges are
-# the pipeline's own reading; the upper one falls to 86.84% if 2026-08-27 is
-# read out of the 2026-09-04 snapshot instead, for the erosion reason above.
-# 80% sits inside the band either way. Such a day leaves the median entirely — D4 asks for a
-# typical weekday — rather than founding a period of its own, which is what
-# the threshold alone would have handed it: one day, and a median over one
-# day is that day.
+# This line has room the churn one lacks: against a median of 15,595 trips
+# the heaviest such day reaches 65.90% and the lightest ordinary weekday
+# 93.67%, so any threshold between those two selects the same eleven days.
+# Both edges are the pipeline's own reading; the upper one falls to 86.84% if
+# 2026-08-27 is read out of the 2026-09-04 snapshot instead, for the erosion
+# reason above. The archive itself, 32 weekdays to 2026-10-09 each read
+# against its own snapshot, has a median of 16,662 now that the school
+# timetable runs: its two holidays reach 60.85% (2026-09-07) and 63.84%
+# (2026-09-22), and the lightest ordinary weekday 87.67% (2026-08-27).
+# 80% sits inside every one of these bands. Such a day leaves the median
+# entirely (D4 asks for a typical weekday) rather than founding a period of
+# its own, which is what the threshold alone would have handed it: one day,
+# and a median over one day is that day.
 REDUCED_SERVICE_PCT = 80.0
 
 REJECT_REASONS = (
