@@ -24,7 +24,7 @@
   "auth": null,
 
   "speed_field_unit": "kmh",
-  "speed_field_provenance": "GTFS-RT specifies m/s and this feed's field arrives named speed_ms, but the values are km/h: whole numbers, median 17, p99 56, max 87, which as m/s would be a 61 km/h median and 313 km/h for a city bus (found 2026-08-31, named in METHODOLOGY.md). A spec-compliant feed must set this to \"ms\" — the conversion is not a project-wide constant.",
+  "speed_field_provenance": "GTFS-RT specifies m/s and this feed's field arrives named speed_ms, but the values are km/h: over the 29,762,446 records archived 2026-08-27 to 2026-10-08, median 17 and p99 57, which as m/s would be a 61 km/h median for a city bus; whole numbers through 2026-09-30, occasional decimals since (found 2026-08-31, recomputed 2026-10-09, figures in METHODOLOGY.md). A spec-compliant feed must set this to \"ms\" — the conversion is not a project-wide constant.",
 
   "attribution": {
     "operator": "CGM Sofia",

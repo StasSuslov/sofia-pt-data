@@ -948,10 +948,10 @@ def process_group(
                         if feed_speed_kmh is not None:
                             # Both sides in km/h. Sofia's feed field is `speed`
                             # in GTFS-RT and lands in the raw archive as
-                            # `speed_ms`, but its values are km/h: whole numbers
-                            # with a median of 17 and a maximum of 87, which as
-                            # m/s would be a 61 km/h median and a 313 km/h top
-                            # speed for a city bus. Subtracting a km/h reading
+                            # `speed_ms`, but its values are km/h: a median of 17
+                            # and a p99 of 57 over the archive to 2026-10-08,
+                            # which as m/s would be a 61 km/h median and a
+                            # 205 km/h p99 for a city bus. Subtracting a km/h reading
                             # from an m/s one and scaling the result was this
                             # comparison's original bug — it reported a 48 km/h
                             # median disagreement where the real one is 9. Which

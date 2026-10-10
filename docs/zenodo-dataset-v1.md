@@ -224,3 +224,30 @@ produces the same text and the two records stop drifting.
 3. Record the date in `JOURNAL.md` and clear the item from section 9 of
    `CLAUDE.md`, which names these two records as the outstanding piece of the
    licence correction.
+
+## Correcting the speed figures (2026-10-10)
+
+The speed bullet in the description above gives a median of 17, a p99 of 56
+and a maximum of 87. Recomputed over the 4,273,952 records of 27 August to
+2 September, the record's own range, they are 18, 57 and 211. The 211 is one
+report from vehicle A7193 on route A46 on 28 August, served in two
+consecutive polls under the same `vehicle_ts`; the next highest value is 99,
+and six records exceed 87. Every value in the range is a whole number.
+
+Applied on 2026-10-10 through the InvenioRDM API rather than the form:
+`POST /api/records/22285129/draft`, `PUT` the draft with the new
+description, `POST .../draft/actions/publish`. The DOI and version stayed,
+and the concept DOI still resolves to v2. `METHODOLOGY.md` inside the record
+keeps "a median of 17 and a maximum of 87", so the note says so.
+
+The speed bullet now reads:
+
+```html
+<li>The feed reports <code>speed_ms</code> in kilometres per hour, not metres per second as the GTFS-RT specification requires. Across the 4,273,952 records in this range the values are whole numbers with median 18 and p99 57; read as m/s the median would be 65 km/h for a city bus. The maximum, 211, is one report from a bus on route A46 on 28 August, served in two consecutive polls under the same vehicle timestamp; the next highest value is 99. The raw files keep the field under the name the feed uses, since renaming it after the fact would misrepresent what was received. This is a conclusion drawn from the data, not a statement by the feed's publisher.</li>
+```
+
+This note follows the 2026-10-04 correction paragraph:
+
+```html
+<p><em>Correction, 2026-10-10: the speed limitation above was published giving a median of 17, a p99 of 56 and a maximum of 87, which do not describe this range. Recomputed over its 4,273,952 records they are 18, 57 and 211. The DOI is unchanged and no file was touched. <code>METHODOLOGY.md</code> inside this record still carries the original median and maximum; the repository holds the corrected version.</em></p>
+```
