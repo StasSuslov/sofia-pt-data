@@ -320,41 +320,41 @@ site cannot list a directory.
   that matters: this feed quietly drops calendar rows for dates once they
   have passed (1,281 services on 2026-08-27 as the 08-27 snapshot has it,
   1,271 as the 09-04 one does).
-- Signatures are not compared for equality. Two consecutive weekdays share a
-  period while the trips separating them stay under 0.5% of the first day's
-  total, and a larger jump starts a new period. The difference is counted per
-  route and summed as absolute values, so one route appearing and another
-  disappearing cannot cancel out. Days are compared against the day that
-  opened the period rather than against yesterday, so a slow drift cannot
-  walk a period away from the timetable its key names, one tolerated step at
-  a time. Read each of the 267 weekdays from 27 August 2026 to 4 September
-  2027 out of the snapshot in force on it, which is what the pipeline does,
-  and what the feed shows is a gap rather than a fitted line: consecutive
-  weekdays differ by 0% inside a period, by 3.15% on 8 September, 3.88% on
-  14 September and 4.07% at the end of August, and by nothing in between. The
-  data therefore bounds this threshold from above and is silent on where
-  inside it belongs; 0.5% is a sixth of the smallest boundary the agency has
-  published. On this archive it changes no grouping — comparing signatures
-  for equality would produce the same periods — so it is insurance against a
-  feed that shifts a handful of trips without changing its timetable, and I
-  would rather name it that than present it as a value the data chose.
-- Which snapshot answers for a past date decides two of those four numbers.
-  Reading the same 267 weekdays out of the 2026-09-04 snapshot alone adds two
-  boundaries, 9.42% at the end of August and 0.60% between 2 and 3 September,
-  and both are artefacts of the archive rather than timetable changes: the
-  agency erodes calendar rows for dates already past, so that snapshot no
-  longer carries 1,066 of the trips 27 August ran or 89 of 2 September's, all
-  89 of them on route A53, while both days' own snapshots still carry them. A
-  pipeline reading history out of the newest feed would see a 0.60% step
-  between two days that ran the same timetable, and a 0.5% threshold would
-  split them. This one reads each day against the feed it started under.
+- Signatures are not compared for equality. A weekday shares a period while
+  the trips separating it from the day that opened that period stay under
+  0.5% of that day's total. The difference is counted per route and summed
+  as absolute values, so one route appearing and another disappearing cannot
+  cancel out. Comparing against the opening day rather than yesterday stops a
+  slow drift from walking a period away from the timetable its key names,
+  one tolerated step at a time. A day past that limit is then compared with
+  the opening day of every earlier period. If one or more fall within their
+  own 0.5%, the day rejoins the closest, and that period becomes the one the
+  following days are compared with; a tie goes to the period opened later.
+  Only a day no earlier timetable accounts for opens a new period. A period
+  can therefore hold days that are not contiguous: 8 and 9 October rejoin
+  14 September to 2 October and leave 5 to 7 October to the variant that
+  ran in between. Each period lists its days, and its first and last dates
+  bound it without filling it. Where the archive puts 0.5% between the
+  smallest step inside a period and the smallest boundary between two is
+  measured under Known limitations.
+- Which snapshot answers for a past date matters as well. Reading the 267
+  weekdays from 27 August 2026 to 4 September 2027 out of the 2026-09-04
+  snapshot alone adds two boundaries, 9.42% at the end of August and 0.60%
+  between 2 and 3 September, and both are artefacts of the archive rather than
+  timetable changes: the agency erodes calendar rows for dates already past,
+  so that snapshot no longer carries 1,066 of the trips 27 August ran or 89 of
+  2 September's, all 89 of them on route A53, while both days' own snapshots
+  still carry them. A pipeline reading history out of the newest feed would
+  see a 0.60% step between two days that ran the same timetable, and a 0.5%
+  threshold would split them. This one reads each day against the feed it
+  started under.
 - A weekday scheduling less than 80% of the median weekday's trips leaves the
   median rather than opening a period of its own. Sofia runs a weekend
   timetable on public holidays: Monday 7 September 2026 schedules 10,149
   trips where the Thursday before schedules 14,907, a 35% difference against
-  the 3 to 4% of a real timetable change. Eleven weekdays in the year the
-  2026-09-04 snapshot publishes forward look like this, and their dates line
-  up with Bulgarian public holidays. A holiday is not a typical weekday, and
+  the 2 to 12% of the timetable changes on record. Eleven weekdays in the
+  year the 2026-09-04 snapshot publishes forward look like this, and their
+  dates line up with Bulgarian public holidays. A holiday is not a typical weekday, and
   a single day is not enough to take a median over.
 - Aggregation groups on (schedule period, segment, time slot), and the web
   export writes one bundle per period under
@@ -416,27 +416,27 @@ coverage is incomplete and why, instead of taking completeness on trust.
 I would rather name these myself than leave you to find them:
 
 - A "typical weekday" is only as deep as the schedule period it sits in, and
-  the periods are far from equal. The aggregation run on 2026-10-08 holds 29
-  weekdays across six periods:
+  the periods are far from equal. The aggregation run on 2026-10-10 holds 30
+  weekdays across five periods:
 
   | Period | Weekdays | (segment, timeslot) bins | On one observation | On three or more | Segments, aggregation | Segments, map |
   |---|---:|---:|---:|---:|---:|---:|
   | 27 to 28 Aug | 2 | 572,109 | 49.83% | 21.13% | 24,365 | 18,499 |
   | 31 Aug to 4 Sep | 5 | 837,130 | 19.72% | 62.37% | 28,872 | 27,138 |
   | 8 to 11 Sep | 4 | 788,481 | 21.85% | 57.47% | 26,664 | 25,426 |
-  | 14 Sep to 2 Oct | 14 | 1,153,361 | 10.62% | 80.31% | 34,738 | 34,303 |
+  | 14 Sep to 2 Oct, 8 to 9 Oct | 16 | 1,196,808 | 10.44% | 81.05% | 35,511 | 35,078 |
   | 5 to 7 Oct | 3 | 780,628 | 27.35% | 48.26% | 26,686 | 25,103 |
-  | 8 Oct | 1 | 542,677 | 69.71% | 10.95% | 25,280 | 12,778 |
 
   The map column counts what survives the web export's two-sample threshold,
   which drops every single-observation bin. Splitting by period buys medians
   that mean something at the cost of thinner ones: each timetable change
   starts a period from nothing, and it fills only for as long as the
   timetable holds. The period from 14 September is the first with a base
-  worth the name. The one-day period of 8 October is a median over one day,
-  which is that day, and the second bullet below explains why it exists at
-  all. Every figure in the table moves as the archive grows; the per-period
-  counts ship in `typical_weekday.json`.
+  worth the name, and the first that is not one run of dates: the feed left
+  its timetable for a three-day variant from 5 to 7 October and returned to
+  it on the 8th, and the second bullet below explains how those days found
+  their way back. Every figure in the table moves as the archive grows; the
+  per-period counts ship in `typical_weekday.json`.
   The first day of the archive, 2026-08-27, covers 52.45% of its calendar
   day, because collection began at 11:07 local. The web export's own
   `manifest.json` flags it as incomplete, so a reader meets the caveat there
@@ -452,7 +452,7 @@ I would rather name these myself than leave you to find them:
   both from both sides. Every day below is read against the snapshot in
   force on it, as the pipeline reads it.
   The 80% one has room. Against a median of 16,662 scheduled trips over the
-  31 archived weekdays, the two reduced-service days reach 60.85% (7
+  32 archived weekdays, the two reduced-service days reach 60.85% (7
   September, 10,138 trips) and 63.84% (22 September, 10,637), and the
   lightest ordinary weekday 87.67% (27 August, 14,608). Any threshold
   between 63.84% and 87.67% excludes the same two days. Both line up with
@@ -463,30 +463,36 @@ I would rather name these myself than leave you to find them:
   period's first day, later weekdays moved by 34 to 82 trips. 18 September
   reached 82 of 16,628, 0.49%, against a limit of 83.1 trips. Any threshold
   below 0.49% splits that period on 18 September, and exact signatures would
-  cut it into seven. Every boundary between periods sits at 1.94% or above,
-  each measured against the outgoing period's first day: 1.94% on 8 October,
-  2.18% on 5 October, 3.01% on 8 September, 4.07% on 31 August and 11.52% on
-  14 September. The evidence puts the threshold between 0.49% and 1.94%, and
+  cut it into seven. Every boundary between periods sits at 2.18% or above,
+  each measured against the outgoing period's first day: 2.18% on 5 October,
+  3.01% on 8 September, 4.07% on 31 August and 11.52% on 14 September. The
+  return on 8 October bounds the threshold from above as well. It moved
+  1.94% against the variant's first day, so a threshold of 1.94% or more
+  keeps it in the variant's period and never hands it back to 14 September.
+  The evidence puts the threshold between 0.49% and 1.94%, and
   0.5% clears the lower edge by about one trip. I set 0.5% before September
   supplied that edge, when no day inside a period had moved at all, and I
   have not moved it since seeing where the edge fell. An agency adjusting
   its timetable in steps this size, this often, needs a different rule, not
   a different number. Both thresholds are recorded in `typical_weekday.json`
   next to the results they produced.
-- A timetable that comes back does not rejoin its period. From 5 to 7
-  October the feed ran a three-day variant: route A117 appears with 192
-  trips, TM22 drops from 377 trips to 342 and TM56 from 98 to none. On 8
-  October every route's trip count returned to what it was on 29 September,
-  down to the same signature key, `97e87337807c86bd`, 37 trips (0.22%) from
-  the 14 September reference. The pipeline compares each day only with the
-  first day of the period it is in, so 8 October founded a period of its own
-  instead of rejoining 14 September to 2 October: one weekday and 12,778
-  drawn segments, against fourteen weekdays and 34,303 segments for the same
-  timetable a period earlier. The export marks the period with the most
-  weekdays as current, so the map's default view is the 14 September one,
-  but the one-day period still ships. Read a short period that follows a
-  short variant as a continuation of the one before it. If this recurs, the
-  grouping gets a check against earlier periods before it opens a new one.
+- A timetable that comes back rejoins its period, so a period's first and
+  last dates do not tell you which days it holds. From 5 to 7 October the
+  feed ran a three-day variant: route A117 appears with 192 trips, TM22
+  drops from 377 trips to 342 and TM56 from 98 to none. On 8 October every
+  route's trip count returned to what it was on 29 September, down to the
+  same signature key, `97e87337807c86bd`, 37 trips (0.22%) from the
+  14 September reference. Until 2026-10-10 the pipeline compared each day
+  only with the first day of the period it was in, so the run of 2026-10-08
+  gave 8 October a period of its own: one weekday and 12,778 drawn segments,
+  against fourteen weekdays and 34,303 segments for the same timetable a
+  period earlier. The rule above now hands 8 and 9 October back to the
+  14 September period, which spans 14 September to 9 October and holds 16
+  weekdays, 35,078 segments on the map. The three variant days inside that
+  span belong to their own period. Take a period's days from
+  `days_in_median_mon_fri` in `typical_weekday.json`, not from its first and
+  last dates; the map's period menu gives the span next to the number of
+  weekdays for the same reason.
 - The schedule period key cannot see a pure retiming. Two timetables that
   move departure times around while leaving every route's trip count
   unchanged hash to the same key, so their days would pool into one median

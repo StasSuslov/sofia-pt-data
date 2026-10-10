@@ -31,8 +31,10 @@ limitations I know about.
 - `scripts/verify_remote_checksums.py` reads each closed day's checksum off
   the collector host over `ssh` and records the comparison in that day's
   manifest. That way the local copy is checked against what the collector
-  wrote, not only against itself after `rsync`. Each file is checked once. A
-  mismatch exits with its own code; an unreachable host does not.
+  wrote, not only against itself after `rsync`. A file that matches is not
+  checked again; a day whose check failed is rebuilt and checked on every run
+  until it matches. A mismatch exits with its own code; an unreachable host
+  does not.
 - `scripts/derive_bbox.py` recomputes the network bounding box from a GTFS
   Static feed's `stops.txt` and `shapes.txt`, so I can show where the box
   came from instead of asserting it.
@@ -210,8 +212,8 @@ python3 -m pytest
   which is the unit the values are in. METHODOLOGY.md has the numbers behind
   that reading.
 - The "typical weekday" median is computed per schedule period, and a period
-  is only as deep as its timetable lasted: on 2026-10-08 the six periods held
-  between one and fourteen weekdays. The first, 27 to 28 August, includes a
+  is only as deep as its timetable lasted: on 2026-10-10 the five periods held
+  between two and sixteen weekdays. The first, 27 to 28 August, includes a
   partial day, and its segments outside that old, narrower box drew on fewer
   hours and carry fewer samples per bin. METHODOLOGY.md's Known limitations
   section has the measured extent of both. Read it together with the
