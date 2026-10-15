@@ -25,7 +25,7 @@ from export_web import (
     segment_pairs,
     simplify_rdp,
 )
-from segment_speeds import _project_onto_segment, build_shape, load_static
+from segment_speeds import build_shape, load_static, project_onto_segment
 
 SHAPE_ID = 'S1'
 ROUTE_ID = 'R_BUS'
@@ -107,7 +107,7 @@ def test_simplify_drops_near_collinear_points_but_keeps_a_real_corner():
     for px, py in points:
         assert (
             min(
-                _project_onto_segment(
+                project_onto_segment(
                     px,
                     py,
                     *simplified[i],

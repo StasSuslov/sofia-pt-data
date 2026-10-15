@@ -343,7 +343,7 @@ def to_local_xy(shape: Shape, lat: float, lon: float) -> tuple:
     return x, y
 
 
-def _project_onto_segment(px, py, ax, ay, bx, by) -> tuple:
+def project_onto_segment(px, py, ax, ay, bx, by) -> tuple:
     """Standard point-onto-segment projection; returns (t in [0,1], perpendicular distance)."""
     dx, dy = bx - ax, by - ay
     seg_len_sq = dx * dx + dy * dy
@@ -374,7 +374,7 @@ def project_point(
     px, py = to_local_xy(shape, lat, lon)
     best_i, best_t, best_dist = lo_idx, 0.0, float('inf')
     for i in range(lo_idx, hi_idx + 1):
-        t, dist = _project_onto_segment(
+        t, dist = project_onto_segment(
             px,
             py,
             shape.xs[i],

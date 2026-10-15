@@ -132,9 +132,9 @@ from segment_speeds import (
     SEGMENT_LENGTH_M,
     TIMESLOT_MINUTES,
     Shape,
-    _project_onto_segment,
     find_static_snapshots,
     load_static,
+    project_onto_segment,
 )
 
 from config import (
@@ -420,7 +420,7 @@ def simplify_rdp(points: list, tolerance_m: float) -> list:
         bx, by = points[hi]
         far_i, far_dist = -1, tolerance_m
         for i in range(lo + 1, hi):
-            _, dist = _project_onto_segment(
+            _, dist = project_onto_segment(
                 points[i][0],
                 points[i][1],
                 ax,
