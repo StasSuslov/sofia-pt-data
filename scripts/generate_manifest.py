@@ -26,7 +26,7 @@ import hashlib
 import json
 import statistics
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -36,12 +36,12 @@ from zoneinfo import ZoneInfo
 # itself would pull in requests and the protobuf bindings, which this file
 # never needs.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import (  # noqa: E402
+from config import (
     CityProfileError,
     city_slugs,
-    load_city_for_path,
     date_from_path,
     find_day_files,
+    load_city_for_path,
     open_maybe_gzip,
     resolve_day_file,
 )
@@ -65,7 +65,11 @@ MANIFEST_SCHEMA_VERSION = 2
 # build_manifest(), so a regeneration would otherwise silently drop a
 # recorded VPS comparison and force it to be redone. Carried over only when
 # the checksums it vouched for are unchanged (see carry_remote_verification()).
-REMOTE_VERIFICATION_FIELDS = ("remote_verified", "remote_verified_at", "remote_verify_note")
+REMOTE_VERIFICATION_FIELDS = (
+    'remote_verified',
+    'remote_verified_at',
+    'remote_verify_note',
+)
 
 
 def sha256_of(path: Path) -> tuple[str, int]:
@@ -80,8 +84,8 @@ def sha256_of(path: Path) -> tuple[str, int]:
     """
     h = hashlib.sha256()
     size = 0
-    with open_maybe_gzip(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+    with open_maybe_gzip(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
             h.update(chunk)
             size += len(chunk)
     return h.hexdigest(), size
@@ -102,7 +106,7 @@ def load_jsonl(path: Path) -> tuple[list[dict], int]:
     """
     records = []
     malformed = 0
-    with open_maybe_gzip(path, "rt", encoding="utf-8") as f:
+    with open_maybe_gzip(path, 'rt', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -114,7 +118,11 @@ def load_jsonl(path: Path) -> tuple[list[dict], int]:
     return records, malformed
 
 
-def day_bounds(date_str: str, tz: ZoneInfo, now: datetime | None = None) -> tuple[int, int, bool]:
+def day_bounds(
+    date_str: str,
+    tz: ZoneInfo,
+    now: datetime | None = None,
+) -> tuple[int, int, bool]:
     """
     UTC epoch seconds for the local midnight-to-midnight span of `date_str`
     in `tz`, so they compare directly against snapshot_ts (UTC epoch).
@@ -127,9 +135,14 @@ def day_bounds(date_str: str, tz: ZoneInfo, now: datetime | None = None) -> tupl
     for exactly that reason and reports the remainder as local_lag_sec.
     """
     local_date = date.fromisoformat(date_str)
-    day_start = datetime(local_date.year, local_date.month, local_date.day, tzinfo=tz)
+    day_start = datetime(
+        local_date.year,
+        local_date.month,
+        local_date.day,
+        tzinfo=tz,
+    )
     day_end = day_start + timedelta(days=1)
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
 
     day_in_progress = now < day_end
     if day_in_progress:
@@ -183,8 +196,13 @@ def analyze_gaps(
     # is a measured median of durations and a genuinely fractional value
     # (45.5) is a normal outcome, not a rounding artifact to be hidden.
     observed_interval_sec = (
-        float(statistics.median(b - a for a, b in zip(timestamps, timestamps[1:])))
-        if len(timestamps) >= 2 else None
+        float(
+            statistics.median(
+                b - a for a, b in zip(timestamps, timestamps[1:])
+            ),
+        )
+        if len(timestamps) >= 2
+        else None
     )
 
     # Day boundaries count as poll opportunities too: a gap between
@@ -193,39 +211,44 @@ def analyze_gaps(
     # is precisely how a mid-day collector start hid as "97% coverage".
     bounded = [day_start_ts, *timestamps, day_end_ts]
     gaps = [
-        {"after_ts": a, "before_ts": b, "gap_seconds": b - a}
+        {'after_ts': a, 'before_ts': b, 'gap_seconds': b - a}
         for a, b in zip(bounded, bounded[1:])
         if (b - a) > threshold
     ]
 
     expected_polls = (
-        day_seconds / nominal_interval_sec if nominal_interval_sec and day_seconds > 0 else None
+        day_seconds / nominal_interval_sec
+        if nominal_interval_sec and day_seconds > 0
+        else None
     )
     coverage_pct = (
-        round(100 * len(timestamps) / expected_polls, 2) if expected_polls else None
+        round(100 * len(timestamps) / expected_polls, 2)
+        if expected_polls
+        else None
     )
 
     return {
-        "nominal_interval_sec": nominal_interval_sec,
-        "observed_interval_sec": observed_interval_sec,
-        "gap_count": len(gaps),
-        "gaps": gaps,
-        "day_seconds": day_seconds,
+        'nominal_interval_sec': nominal_interval_sec,
+        'observed_interval_sec': observed_interval_sec,
+        'gap_count': len(gaps),
+        'gaps': gaps,
+        'day_seconds': day_seconds,
         # How stale this local copy is: seconds between its last poll and
         # generation time. None on a closed day. Not a coverage defect —
         # whether the collector is alive is the dead-man's switch's job.
-        "local_lag_sec": local_lag_sec,
-        "expected_polls": round(expected_polls, 1) if expected_polls else None,
-        "coverage_pct": coverage_pct,
+        'local_lag_sec': local_lag_sec,
+        'expected_polls': round(expected_polls, 1) if expected_polls else None,
+        'coverage_pct': coverage_pct,
     }
 
 
 def read_manifest(manifest_path: Path) -> dict | None:
     """The manifest already on disk, or None if it is missing or unreadable
     as JSON. A manifest that will not parse is not a manifest to build on:
-    both callers treat None as "regenerate"."""
+    both callers treat None as "regenerate".
+    """
     try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        return json.loads(manifest_path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -248,9 +271,12 @@ def carry_remote_verification(manifest: dict, previous: dict | None) -> dict:
     the regenerated manifest pending, so every run re-reads the VPS: a repaired
     file turns true, a persisting mismatch raises its exit code again.
     """
-    if not previous or previous.get("remote_verified") is not True:
+    if not previous or previous.get('remote_verified') is not True:
         return manifest
-    if any(previous.get(k) != manifest.get(k) for k in ("data_sha256", "polls_sha256")):
+    if any(
+        previous.get(k) != manifest.get(k)
+        for k in ('data_sha256', 'polls_sha256')
+    ):
         return manifest
     for field in REMOTE_VERIFICATION_FIELDS:
         if field in previous:
@@ -258,7 +284,11 @@ def carry_remote_verification(manifest: dict, previous: dict | None) -> dict:
     return manifest
 
 
-def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) -> bool:
+def manifest_is_current(
+    manifest_path: Path,
+    data_path: Path,
+    polls_path: Path,
+) -> bool:
     """
     True when an existing manifest is already newer than every input that
     could change it AND was written by the current schema version. A closed
@@ -281,12 +311,12 @@ def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) 
     existing = read_manifest(manifest_path)
     if existing is None:
         return False
-    if existing.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+    if existing.get('schema_version') != MANIFEST_SCHEMA_VERSION:
         return False
     # A failed remote check says the local bytes are wrong, and rsync -a
     # carries the server's mtime, so a repaired file can look older than the
     # manifest that condemned it (finding 19). mtime cannot vouch for it.
-    if existing.get("remote_verified") is False:
+    if existing.get('remote_verified') is False:
         return False
     manifest_mtime = manifest_path.stat().st_mtime
     if data_path.stat().st_mtime > manifest_mtime:
@@ -296,8 +326,17 @@ def manifest_is_current(manifest_path: Path, data_path: Path, polls_path: Path) 
     return True
 
 
-def should_skip(manifest_path: Path, data_path: Path, polls_path: Path, force: bool) -> bool:
-    return not force and manifest_is_current(manifest_path, data_path, polls_path)
+def should_skip(
+    manifest_path: Path,
+    data_path: Path,
+    polls_path: Path,
+    force: bool,
+) -> bool:
+    return not force and manifest_is_current(
+        manifest_path,
+        data_path,
+        polls_path,
+    )
 
 
 def build_manifest(
@@ -308,68 +347,75 @@ def build_manifest(
     now: datetime | None = None,
 ) -> dict:
     date_str = date_from_path(data_path)
-    polls_path = resolve_day_file(data_path.parent, date_str, ".polls.jsonl")
+    polls_path = resolve_day_file(data_path.parent, date_str, '.polls.jsonl')
     heartbeat_available = polls_path.exists()
 
     data_records, data_malformed_lines = load_jsonl(data_path)
-    data_timestamps = sorted({r["snapshot_ts"] for r in data_records})
+    data_timestamps = sorted({r['snapshot_ts'] for r in data_records})
 
     day_start_ts, day_end_ts, day_in_progress = day_bounds(date_str, tz, now)
 
     data_sha256, data_size_bytes = sha256_of(data_path)
 
     manifest = {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
-        "date": date_str,
+        'schema_version': MANIFEST_SCHEMA_VERSION,
+        'date': date_str,
         # Always the uncompressed name, regardless of what's actually on disk
         # locally — see "compressed" below for the storage detail, and
         # CLAUDE.md's manifest-describes-uncompressed-bytes invariant.
-        "data_file": f"{date_str}.jsonl",
-        "data_sha256": data_sha256,
-        "data_size_bytes": data_size_bytes,
-        "compressed": data_path.suffix == ".gz",
-        "total_vehicle_records": len(data_records),
+        'data_file': f'{date_str}.jsonl',
+        'data_sha256': data_sha256,
+        'data_size_bytes': data_size_bytes,
+        'compressed': data_path.suffix == '.gz',
+        'total_vehicle_records': len(data_records),
         # >0 usually means this file was checksummed mid-transfer (e.g. an
         # rsync pull racing a still-writing collector) rather than corrupt at
         # the source — the sha256 above is still an honest hash of what was
         # actually read, just not necessarily of a "final" file.
-        "data_malformed_lines": data_malformed_lines,
-        "heartbeat_available": heartbeat_available,
+        'data_malformed_lines': data_malformed_lines,
+        'heartbeat_available': heartbeat_available,
         # See day_bounds() docstring: for today's own file this being low
         # doesn't necessarily mean downtime, the local rsync copy lags too.
-        "day_in_progress": day_in_progress,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        'day_in_progress': day_in_progress,
+        'generated_at': datetime.now(UTC).isoformat(),
     }
 
     if heartbeat_available:
         polls, polls_malformed_lines = load_jsonl(polls_path)
-        ok_polls = [p for p in polls if p["fetch_ok"]]
-        error_polls = [p for p in polls if not p["fetch_ok"]]
-        empty_polls = [p for p in ok_polls if p["vehicle_count"] == 0]
-        heartbeat_timestamps = sorted(p["snapshot_ts"] for p in polls)
+        ok_polls = [p for p in polls if p['fetch_ok']]
+        error_polls = [p for p in polls if not p['fetch_ok']]
+        empty_polls = [p for p in ok_polls if p['vehicle_count'] == 0]
+        heartbeat_timestamps = sorted(p['snapshot_ts'] for p in polls)
 
         # .get() defaults: polls logged before these fields existed don't have them.
-        entities_total = sum(p.get("entities_total", 0) for p in polls)
-        vehicles_with_position = sum(p.get("vehicles_with_position", 0) for p in polls)
-        dropped_out_of_bbox = sum(p.get("dropped_out_of_bbox", 0) for p in polls)
-        polls_sha256, _ = sha256_of(polls_path)  # size not tracked for the heartbeat file
+        entities_total = sum(p.get('entities_total', 0) for p in polls)
+        vehicles_with_position = sum(
+            p.get('vehicles_with_position', 0) for p in polls
+        )
+        dropped_out_of_bbox = sum(
+            p.get('dropped_out_of_bbox', 0) for p in polls
+        )
+        polls_sha256, _ = sha256_of(
+            polls_path,
+        )  # size not tracked for the heartbeat file
 
         manifest.update({
-            "polls_file": f"{date_str}.polls.jsonl",  # uncompressed name, same reasoning as data_file
-            "polls_sha256": polls_sha256,
-            "polls_malformed_lines": polls_malformed_lines,
-            "polls_logged": len(polls),
-            "successful_polls": len(ok_polls),
-            "empty_polls": len(empty_polls),
-            "fetch_error_polls": len(error_polls),
-            "entities_total": entities_total,
-            "vehicles_with_position": vehicles_with_position,
-            "dropped_out_of_bbox": dropped_out_of_bbox,
+            'polls_file': f'{date_str}.polls.jsonl',  # uncompressed name, same reasoning as data_file
+            'polls_sha256': polls_sha256,
+            'polls_malformed_lines': polls_malformed_lines,
+            'polls_logged': len(polls),
+            'successful_polls': len(ok_polls),
+            'empty_polls': len(empty_polls),
+            'fetch_error_polls': len(error_polls),
+            'entities_total': entities_total,
+            'vehicles_with_position': vehicles_with_position,
+            'dropped_out_of_bbox': dropped_out_of_bbox,
             # rate, not just a bare count, so a reader doesn't have to divide
             # two numbers from different rows to tell if this is significant
-            "dropped_out_of_bbox_pct": (
+            'dropped_out_of_bbox_pct': (
                 round(100 * dropped_out_of_bbox / vehicles_with_position, 3)
-                if vehicles_with_position else None
+                if vehicles_with_position
+                else None
             ),
         })
 
@@ -383,21 +429,25 @@ def build_manifest(
         heartbeat_start = heartbeat_timestamps[0]
         data_start = data_timestamps[0] if data_timestamps else heartbeat_start
         heartbeat_partial = (heartbeat_start - data_start) > 120
-        manifest["heartbeat_partial"] = heartbeat_partial
+        manifest['heartbeat_partial'] = heartbeat_partial
 
         if heartbeat_partial:
-            manifest["pre_heartbeat_note"] = (
-                f"Heartbeat logging only starts at snapshot_ts {heartbeat_start} "
+            manifest['pre_heartbeat_note'] = (
+                f'Heartbeat logging only starts at snapshot_ts {heartbeat_start} '
                 # The uncompressed name, like polls_file above: whether the VPS
                 # has gzipped this day yet is a storage detail, and letting it
                 # into the note made the same day's manifest read differently
                 # before and after compression for no change in the data.
-                f"({date_str}.polls.jsonl was deployed partway through the day). Coverage "
-                "before that point is inferred from the data file alone and cannot "
-                "distinguish a genuinely empty poll, a fetch error, or real downtime."
+                f'({date_str}.polls.jsonl was deployed partway through the day). Coverage '
+                'before that point is inferred from the data file alone and cannot '
+                'distinguish a genuinely empty poll, a fetch error, or real downtime.'
             )
-            pre_heartbeat_timestamps = [t for t in data_timestamps if t < heartbeat_start]
-            timestamps = sorted(set(pre_heartbeat_timestamps) | set(heartbeat_timestamps))
+            pre_heartbeat_timestamps = [
+                t for t in data_timestamps if t < heartbeat_start
+            ]
+            timestamps = sorted(
+                set(pre_heartbeat_timestamps) | set(heartbeat_timestamps),
+            )
         else:
             timestamps = heartbeat_timestamps
     else:
@@ -405,54 +455,75 @@ def build_manifest(
         # signal left is which timestamps made it into the data file at all.
         timestamps = data_timestamps
         manifest.update({
-            "polls_file": None,
-            "polls_sha256": None,
-            "polls_malformed_lines": None,
-            "polls_logged": None,
-            "successful_polls": None,
-            "empty_polls": None,
-            "fetch_error_polls": None,
-            "entities_total": None,
-            "vehicles_with_position": None,
-            "dropped_out_of_bbox": None,
-            "dropped_out_of_bbox_pct": None,
+            'polls_file': None,
+            'polls_sha256': None,
+            'polls_malformed_lines': None,
+            'polls_logged': None,
+            'successful_polls': None,
+            'empty_polls': None,
+            'fetch_error_polls': None,
+            'entities_total': None,
+            'vehicles_with_position': None,
+            'dropped_out_of_bbox': None,
+            'dropped_out_of_bbox_pct': None,
         })
 
-    manifest.update(analyze_gaps(timestamps, nominal_interval_sec, gap_threshold_multiplier,
-                                 day_start_ts, day_end_ts, day_in_progress))
+    manifest.update(
+        analyze_gaps(
+            timestamps,
+            nominal_interval_sec,
+            gap_threshold_multiplier,
+            day_start_ts,
+            day_end_ts,
+            day_in_progress,
+        ),
+    )
     return manifest
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate checksummed, gap-annotated coverage manifests for collected GTFS-RT day files"
-    )
-    parser.add_argument("data_dir", type=Path, help="Directory containing <YYYY-MM-DD>.jsonl files")
-    parser.add_argument(
-        "--gap-threshold", type=float, default=3.0,
-        help="Flag a gap when it exceeds this multiple of the *configured* poll interval, "
-             "not the observed one (default: 3x)",
+        description='Generate checksummed, gap-annotated coverage manifests for collected GTFS-RT day files',
     )
     parser.add_argument(
-        "--city", type=str, default=None,
-        help="City profile supplying the poll cadence and timezone (cities/<slug>.json; have: "
-             f"{', '.join(city_slugs()) or 'none'}). Default: read from data_dir, laid out as "
-             ".../data/<city>/",
+        'data_dir',
+        type=Path,
+        help='Directory containing <YYYY-MM-DD>.jsonl files',
     )
     parser.add_argument(
-        "--interval", type=int, default=None,
-        help="Nominal collector poll interval in seconds, must match the cadence of the run "
-             "being audited (default: the city profile's, which is also collect.py's)",
+        '--gap-threshold',
+        type=float,
+        default=3.0,
+        help='Flag a gap when it exceeds this multiple of the *configured* poll interval, '
+        'not the observed one (default: 3x)',
     )
     parser.add_argument(
-        "--timezone", type=str, default=None,
+        '--city',
+        type=str,
+        default=None,
+        help='City profile supplying the poll cadence and timezone (cities/<slug>.json; have: '
+        f'{", ".join(city_slugs()) or "none"}). Default: read from data_dir, laid out as '
+        '.../data/<city>/',
+    )
+    parser.add_argument(
+        '--interval',
+        type=int,
+        default=None,
+        help='Nominal collector poll interval in seconds, must match the cadence of the run '
+        "being audited (default: the city profile's, which is also collect.py's)",
+    )
+    parser.add_argument(
+        '--timezone',
+        type=str,
+        default=None,
         help="Timezone for calendar-day boundaries, must match collect.py's (default: the city "
-             "profile's)",
+        "profile's)",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        '--force',
+        action='store_true',
         help="Recompute every manifest even if it's already newer than its data and "
-             "heartbeat files (default: skip days whose manifest is already current)",
+        'heartbeat files (default: skip days whose manifest is already current)',
     )
     args = parser.parse_args()
 
@@ -460,47 +531,61 @@ def main():
         city = load_city_for_path(args.data_dir, slug=args.city)
     except CityProfileError as e:
         parser.error(str(e))
-    interval = args.interval if args.interval is not None else city["poll_interval_sec"]
+    interval = (
+        args.interval
+        if args.interval is not None
+        else city['poll_interval_sec']
+    )
 
-    day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date
+    day_files = find_day_files(
+        args.data_dir,
+    )  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date
     if not day_files:
-        print(f"No day files found in {args.data_dir}", file=sys.stderr)
+        print(f'No day files found in {args.data_dir}', file=sys.stderr)
         sys.exit(1)
 
-    tz = ZoneInfo(args.timezone or city["timezone"])
+    tz = ZoneInfo(args.timezone or city['timezone'])
     for path in day_files:
         date_str = date_from_path(path)
-        polls_path = resolve_day_file(args.data_dir, date_str, ".polls.jsonl")
-        manifest_path = args.data_dir / f"{date_str}.manifest.json"
+        polls_path = resolve_day_file(args.data_dir, date_str, '.polls.jsonl')
+        manifest_path = args.data_dir / f'{date_str}.manifest.json'
 
         if should_skip(manifest_path, path, polls_path, args.force):
-            print(f"{path.name}: skipped (manifest already up to date)")
+            print(f'{path.name}: skipped (manifest already up to date)')
             continue
 
         manifest = build_manifest(path, args.gap_threshold, interval, tz)
-        manifest = carry_remote_verification(manifest, read_manifest(manifest_path))
-        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        manifest = carry_remote_verification(
+            manifest,
+            read_manifest(manifest_path),
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
 
-        if not manifest["heartbeat_available"]:
-            hb_note = "  [no heartbeat log — coverage inferred, less reliable]"
-        elif manifest["heartbeat_partial"]:
-            hb_note = "  [heartbeat started mid-day — coverage before that point is inferred, less reliable]"
+        if not manifest['heartbeat_available']:
+            hb_note = '  [no heartbeat log — coverage inferred, less reliable]'
+        elif manifest['heartbeat_partial']:
+            hb_note = '  [heartbeat started mid-day — coverage before that point is inferred, less reliable]'
         else:
-            hb_note = ""
+            hb_note = ''
 
-        malformed = manifest["data_malformed_lines"] + (manifest["polls_malformed_lines"] or 0)
+        malformed = manifest['data_malformed_lines'] + (
+            manifest['polls_malformed_lines'] or 0
+        )
         if malformed:
             hb_note += (
-                f"  [WARNING: {malformed} malformed line(s) skipped — likely a mid-transfer pull; "
-                "checksum reflects exactly what was read, not necessarily a complete file]"
+                f'  [WARNING: {malformed} malformed line(s) skipped — likely a mid-transfer pull; '
+                'checksum reflects exactly what was read, not necessarily a complete file]'
             )
 
         print(
-            f"{path.name}: {manifest['total_vehicle_records']:,} records | "
-            f"coverage {manifest['coverage_pct']}% | {manifest['gap_count']} gap(s) | "
-            f"sha256={manifest['data_sha256'][:12]}…{hb_note}"
+            f'{path.name}: {manifest["total_vehicle_records"]:,} records | '
+            f'coverage {manifest["coverage_pct"]}% | {manifest["gap_count"]} gap(s) | '
+            f'sha256={manifest["data_sha256"][:12]}…{hb_note}',
         )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

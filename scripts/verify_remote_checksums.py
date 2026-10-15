@@ -41,9 +41,9 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 # Keep in sync with CHECKSUM_MISMATCH_EXIT_CODE in scripts/fetch_data.sh and
 # scripts/scheduled_fetch.sh — same convention as POST_PULL_FAILED_EXIT_CODE
@@ -63,7 +63,12 @@ class RemoteUnreachable(Exception):
     """
 
 
-def ssh_remote_sha256sums(vps_host: str, vps_key: str, remote_dir: str, filenames: list[str]) -> dict[str, str]:
+def ssh_remote_sha256sums(
+    vps_host: str,
+    vps_key: str,
+    remote_dir: str,
+    filenames: list[str],
+) -> dict[str, str]:
     """
     One ssh call, one remote `for` loop over every requested filename —
     verifying N pending days costs one round trip, not N. Returns
@@ -83,22 +88,34 @@ def ssh_remote_sha256sums(vps_host: str, vps_key: str, remote_dir: str, filename
     line always names the uncompressed path so parsing below can't tell
     which branch ran.
     """
-    remote_dir = remote_dir.rstrip("/")
-    names_quoted = " ".join(f'"{name}"' for name in filenames)
+    remote_dir = remote_dir.rstrip('/')
+    names_quoted = ' '.join(f'"{name}"' for name in filenames)
     # stderr redirected on the remote side: nothing here should print to it
     # given the -f guards, but a permission error or a corrupt .gz must not
     # abort the batch or leak a remote path into our own stderr.
     remote_cmd = (
-        f"for f in {names_quoted}; do "
+        f'for f in {names_quoted}; do '
         f'p="{remote_dir}/$f"; '
         f'if [ -f "$p" ]; then sha256sum "$p"; '
         f'elif [ -f "$p.gz" ]; then h=$(gzip -dc "$p.gz" | sha256sum | cut -d\' \' -f1); echo "$h  $p"; '
-        f"fi; done 2>/dev/null"
+        f'fi; done 2>/dev/null'
     )
     try:
         result = subprocess.run(
-            ["ssh", "-i", vps_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", vps_host, remote_cmd],
-            capture_output=True, text=True, timeout=30,
+            [
+                'ssh',
+                '-i',
+                vps_key,
+                '-o',
+                'BatchMode=yes',
+                '-o',
+                'ConnectTimeout=10',
+                vps_host,
+                remote_cmd,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RemoteUnreachable(type(exc).__name__) from exc
@@ -110,11 +127,11 @@ def ssh_remote_sha256sums(vps_host: str, vps_key: str, remote_dir: str, filename
     # file), and stdout still holds valid lines for every file that WAS
     # found, so that case falls through to the normal parsing below.
     if result.returncode == 255:
-        raise RemoteUnreachable("ssh connection failed")
+        raise RemoteUnreachable('ssh connection failed')
 
     checksums = {}
     for line in result.stdout.splitlines():
-        digest, _, path = line.partition("  ")
+        digest, _, path = line.partition('  ')
         if digest and path:
             checksums[Path(path.strip()).name] = digest
     return checksums
@@ -123,17 +140,21 @@ def ssh_remote_sha256sums(vps_host: str, vps_key: str, remote_dir: str, filename
 def find_pending_manifests(data_dir: Path) -> list[Path]:
     """Closed-day manifests with no remote verification recorded yet."""
     pending = []
-    for manifest_path in sorted(data_dir.glob("????-??-??.manifest.json")):
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("day_in_progress", True):
+    for manifest_path in sorted(data_dir.glob('????-??-??.manifest.json')):
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        if manifest.get('day_in_progress', True):
             continue
-        if manifest.get("remote_verified") is not None:
+        if manifest.get('remote_verified') is not None:
             continue
         pending.append(manifest_path)
     return pending
 
 
-def verify_pending(data_dir: Path, remote_dir: str, get_remote_checksums: RemoteChecksumGetter) -> tuple[list[str], bool]:
+def verify_pending(
+    data_dir: Path,
+    remote_dir: str,
+    get_remote_checksums: RemoteChecksumGetter,
+) -> tuple[list[str], bool]:
     """
     Verify every pending manifest under data_dir in a single batched call to
     get_remote_checksums(remote_dir, filenames) -> {filename: hexdigest}.
@@ -145,73 +166,113 @@ def verify_pending(data_dir: Path, remote_dir: str, get_remote_checksums: Remote
     """
     pending = find_pending_manifests(data_dir)
     if not pending:
-        return ["nothing pending remote verification"], False
+        return ['nothing pending remote verification'], False
 
-    manifests = {p: json.loads(p.read_text(encoding="utf-8")) for p in pending}
+    manifests = {p: json.loads(p.read_text(encoding='utf-8')) for p in pending}
 
     filenames = set()
     for manifest in manifests.values():
-        filenames.add(manifest["data_file"])
-        if manifest.get("polls_file"):
-            filenames.add(manifest["polls_file"])
+        filenames.add(manifest['data_file'])
+        if manifest.get('polls_file'):
+            filenames.add(manifest['polls_file'])
 
     try:
         remote_sums = get_remote_checksums(remote_dir, sorted(filenames))
     except RemoteUnreachable as exc:
-        return [f"remote verification skipped for {len(pending)} day(s) — VPS unreachable ({exc}); will retry next run"], False
+        return [
+            f'remote verification skipped for {len(pending)} day(s) — VPS unreachable ({exc}); will retry next run',
+        ], False
 
     log_lines = []
     mismatch_found = False
     for manifest_path, manifest in manifests.items():
-        data_remote = remote_sums.get(manifest["data_file"])
-        polls_needed = manifest.get("polls_file")
+        data_remote = remote_sums.get(manifest['data_file'])
+        polls_needed = manifest.get('polls_file')
         polls_remote = remote_sums.get(polls_needed) if polls_needed else None
 
         if data_remote is None or (polls_needed and polls_remote is None):
-            log_lines.append(f"{manifest['date']}: could not verify — file not found on VPS, will retry next run")
+            log_lines.append(
+                f'{manifest["date"]}: could not verify — file not found on VPS, will retry next run',
+            )
             continue
 
         mismatches = []
-        if data_remote != manifest["data_sha256"]:
-            mismatches.append(f"data_sha256 local={manifest['data_sha256']} remote={data_remote}")
-        if polls_needed and polls_remote != manifest["polls_sha256"]:
-            mismatches.append(f"polls_sha256 local={manifest['polls_sha256']} remote={polls_remote}")
+        if data_remote != manifest['data_sha256']:
+            mismatches.append(
+                f'data_sha256 local={manifest["data_sha256"]} remote={data_remote}',
+            )
+        if polls_needed and polls_remote != manifest['polls_sha256']:
+            mismatches.append(
+                f'polls_sha256 local={manifest["polls_sha256"]} remote={polls_remote}',
+            )
 
-        manifest["remote_verified"] = not mismatches
-        manifest["remote_verified_at"] = datetime.now(timezone.utc).isoformat()
+        manifest['remote_verified'] = not mismatches
+        manifest['remote_verified_at'] = datetime.now(UTC).isoformat()
         if mismatches:
-            manifest["remote_verify_note"] = "; ".join(mismatches)
+            manifest['remote_verify_note'] = '; '.join(mismatches)
             mismatch_found = True
-            log_lines.append(f"{manifest['date']}: CHECKSUM MISMATCH — {manifest['remote_verify_note']}")
+            log_lines.append(
+                f'{manifest["date"]}: CHECKSUM MISMATCH — {manifest["remote_verify_note"]}',
+            )
         else:
-            manifest.pop("remote_verify_note", None)
-            log_lines.append(f"{manifest['date']}: remote checksum verified, matches VPS")
+            manifest.pop('remote_verify_note', None)
+            log_lines.append(
+                f'{manifest["date"]}: remote checksum verified, matches VPS',
+            )
 
-        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
 
     return log_lines, mismatch_found
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Verify closed-day manifest checksums against the VPS that actually wrote the data, once per file"
+        description='Verify closed-day manifest checksums against the VPS that actually wrote the data, once per file',
     )
-    parser.add_argument("data_dir", type=Path, help="Directory containing <YYYY-MM-DD>.manifest.json files")
-    parser.add_argument("--vps-host", required=True, help="ssh destination, e.g. root@203.0.113.5")
-    parser.add_argument("--vps-key", required=True, help="Path to the ssh private key")
-    parser.add_argument("--remote-dir", required=True, help="Remote directory holding this data_dir's day files")
+    parser.add_argument(
+        'data_dir',
+        type=Path,
+        help='Directory containing <YYYY-MM-DD>.manifest.json files',
+    )
+    parser.add_argument(
+        '--vps-host',
+        required=True,
+        help='ssh destination, e.g. root@203.0.113.5',
+    )
+    parser.add_argument(
+        '--vps-key',
+        required=True,
+        help='Path to the ssh private key',
+    )
+    parser.add_argument(
+        '--remote-dir',
+        required=True,
+        help="Remote directory holding this data_dir's day files",
+    )
     args = parser.parse_args()
 
     def getter(remote_dir: str, filenames: list[str]) -> dict[str, str]:
-        return ssh_remote_sha256sums(args.vps_host, args.vps_key, remote_dir, filenames)
+        return ssh_remote_sha256sums(
+            args.vps_host,
+            args.vps_key,
+            remote_dir,
+            filenames,
+        )
 
-    log_lines, mismatch_found = verify_pending(args.data_dir, args.remote_dir, getter)
+    log_lines, mismatch_found = verify_pending(
+        args.data_dir,
+        args.remote_dir,
+        getter,
+    )
     for line in log_lines:
-        print(f"{args.data_dir}: {line}")
+        print(f'{args.data_dir}: {line}')
 
     if mismatch_found:
         sys.exit(MISMATCH_EXIT_CODE)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

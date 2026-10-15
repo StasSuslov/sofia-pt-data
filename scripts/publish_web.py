@@ -49,34 +49,35 @@ Usage:
 """
 
 import argparse
-import os
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # export_web.py lives beside this file; the index format is defined there and
 # is imported rather than restated, for the reason in the docstring above.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from export_web import write_root_index  # noqa: E402
+from export_web import write_root_index
 
 DEFAULT_DAYS = 30
-DEFAULT_REPO = "git@github.com:StasSuslov/sofia-pt-web.git"
+DEFAULT_REPO = 'git@github.com:StasSuslov/sofia-pt-web.git'
 
 # A GitHub Pages *project* site serves from /<repo>/, not from /. Both the
 # built asset URLs (Vite's `base`) and the data fetches
 # (VITE_DATA_BASE_URL, see frontend/src/data.ts) have to agree with that or
 # every request resolves one level too high.
-DEFAULT_BASE_PATH = "/sofia-pt-web/"
+DEFAULT_BASE_PATH = '/sofia-pt-web/'
 
 # GitHub Pages runs Jekyll over the published tree unless this file exists,
 # and Jekyll drops paths beginning with an underscore. Nothing here starts
 # with one today, but a future Vite asset name could, and the failure mode is
 # a silent 404 rather than a build error.
-NOJEKYLL = ".nojekyll"
+NOJEKYLL = '.nojekyll'
+
 
 def readme_text(attribution: dict) -> str:
     """The published repository's README, named after the city whose data it
@@ -84,7 +85,8 @@ def readme_text(attribution: dict) -> str:
 
     Written from the export's own manifests rather than from a constant here:
     a constant would keep saying Sofia, and one licence, over whatever tree
-    was handed to it."""
+    was handed to it.
+    """
     return f"""\
 # {attribution.get('city', 'Public')} public transport — map
 
@@ -117,9 +119,12 @@ def feed_licence_lines(attribution: dict) -> str:
 
     Sofia's vehicle positions take the portal's default CC BY 4.0 while its
     schedule feed overrides it with share-alike. A single licence string had
-    to pick one of them, and for four weeks it picked the wrong one."""
-    return "\n".join(f"- {feed.replace('_', ' ')}: {licence}"
-                      for feed, licence in attribution["feed_licences"].items())
+    to pick one of them, and for four weeks it picked the wrong one.
+    """
+    return '\n'.join(
+        f'- {feed.replace("_", " ")}: {licence}'
+        for feed, licence in attribution['feed_licences'].items()
+    )
 
 
 def collect_attribution(staging_data: Path) -> dict:
@@ -129,35 +134,42 @@ def collect_attribution(staging_data: Path) -> dict:
     at all. Both refusals guard the same mistake: a site that credits one
     city's operator, or publishes one city's licence, over another city's
     data. export_web.py writes attribution: null when it could not resolve a
-    city, so that export reaches exactly this check instead of the web."""
+    city, so that export reaches exactly this check instead of the web.
+    """
     found = {}
-    bundles = sorted(staging_data.glob("*/manifest.json")) + \
-        sorted(staging_data.glob("typical_weekday/*/manifest.json"))
+    bundles = sorted(staging_data.glob('*/manifest.json')) + sorted(
+        staging_data.glob('typical_weekday/*/manifest.json'),
+    )
     for path in bundles:
-        if path.parent.name == "typical_weekday":
+        if path.parent.name == 'typical_weekday':
             continue  # the period index, not a bundle
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        attribution = manifest.get("attribution")
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        attribution = manifest.get('attribution')
         if not attribution:
             raise ValueError(
-                f"{path.relative_to(staging_data)} carries no attribution — refusing to "
-                f"publish data whose source and licence it cannot state. Re-run "
-                f"export_web.py with --city, or with a data directory named after the city.")
+                f'{path.relative_to(staging_data)} carries no attribution — refusing to '
+                f'publish data whose source and licence it cannot state. Re-run '
+                f'export_web.py with --city, or with a data directory named after the city.',
+            )
         found[json.dumps(attribution, sort_keys=True)] = attribution
     if not found:
-        raise ValueError(f"no bundle manifests found under {staging_data}")
+        raise ValueError(f'no bundle manifests found under {staging_data}')
     if len(found) > 1:
         raise ValueError(
-            f"the bundles in this export carry {len(found)} different attributions — one "
-            f"site publishes one city's data; export each city to its own tree")
+            f'the bundles in this export carry {len(found)} different attributions — one '
+            f"site publishes one city's data; export each city to its own tree",
+        )
     return next(iter(found.values()))
 
 
 def tree_size_bytes(root: Path) -> int:
-    return sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
+    return sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
 
 
-def select_day_bundles(web_dir: Path, days: int) -> tuple[list[Path], list[Path]]:
+def select_day_bundles(
+    web_dir: Path,
+    days: int,
+) -> tuple[list[Path], list[Path]]:
     """(published, skipped) day-bundle directories, newest `days` published.
 
     Same admission rule as write_root_index(): a `????-??-??` directory
@@ -168,14 +180,22 @@ def select_day_bundles(web_dir: Path, days: int) -> tuple[list[Path], list[Path]
     Sorted by name, which for ISO dates is chronological — no date parsing
     needed, and a directory that merely looks like a date sorts harmlessly.
     """
-    bundles = [d for d in sorted(web_dir.glob("????-??-??"))
-               if d.is_dir() and (d / "manifest.json").exists()]
+    bundles = [
+        d
+        for d in sorted(web_dir.glob('????-??-??'))
+        if d.is_dir() and (d / 'manifest.json').exists()
+    ]
     if days <= 0:
-        raise ValueError(f"--days must be positive, got {days}")
+        raise ValueError(f'--days must be positive, got {days}')
     return bundles[-days:], bundles[:-days]
 
 
-def build_staging_tree(web_dir: Path, dist_dir: Path, staging_dir: Path, days: int) -> dict:
+def build_staging_tree(
+    web_dir: Path,
+    dist_dir: Path,
+    staging_dir: Path,
+    days: int,
+) -> dict:
     """Assemble the complete publishable tree in `staging_dir`, and report
     what went into it.
 
@@ -188,9 +208,11 @@ def build_staging_tree(web_dir: Path, dist_dir: Path, staging_dir: Path, days: i
     docstring) rather than updated in place, so a period or a day that
     disappeared upstream also disappears here instead of lingering.
     """
-    typical_src = web_dir / "typical_weekday"
+    typical_src = web_dir / 'typical_weekday'
     if not typical_src.is_dir():
-        raise ValueError(f"no typical_weekday/ in {web_dir} — run export_web.py first")
+        raise ValueError(
+            f'no typical_weekday/ in {web_dir} — run export_web.py first',
+        )
 
     # Refusing a non-empty directory here is what keeps three separate
     # failures out of the published site, all of them ending in a force-push:
@@ -209,9 +231,10 @@ def build_staging_tree(web_dir: Path, dist_dir: Path, staging_dir: Path, days: i
     # accident; it fires when a human points --staging somewhere real.
     if staging_dir.exists() and any(staging_dir.iterdir()):
         raise ValueError(
-            f"{staging_dir} is not empty — refusing to build a publishable tree in it. "
-            f"Publishing force-pushes this directory as a fresh repository; point --staging "
-            f"at a new or empty path.")
+            f'{staging_dir} is not empty — refusing to build a publishable tree in it. '
+            f'Publishing force-pushes this directory as a fresh repository; point --staging '
+            f'at a new or empty path.',
+        )
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     # dist/data is Vite's dereferenced copy of the public/data dev symlink:
@@ -219,13 +242,19 @@ def build_staging_tree(web_dir: Path, dist_dir: Path, staging_dir: Path, days: i
     # Matched against dist_dir itself so a `data` directory nested somewhere
     # inside the built assets would still be copied.
     shutil.copytree(
-        dist_dir, staging_dir, dirs_exist_ok=True,
-        ignore=lambda src, names: {"data"} if Path(src) == dist_dir else set(),
+        dist_dir,
+        staging_dir,
+        dirs_exist_ok=True,
+        ignore=lambda src, names: {'data'} if Path(src) == dist_dir else set(),
     )
 
-    staging_data = staging_dir / "data"
-    shutil.copytree(typical_src, staging_data / "typical_weekday")
-    period_dirs = sorted(p.name for p in (staging_data / "typical_weekday").iterdir() if p.is_dir())
+    staging_data = staging_dir / 'data'
+    shutil.copytree(typical_src, staging_data / 'typical_weekday')
+    period_dirs = sorted(
+        p.name
+        for p in (staging_data / 'typical_weekday').iterdir()
+        if p.is_dir()
+    )
 
     published, skipped = select_day_bundles(web_dir, days)
     for d in published:
@@ -237,17 +266,22 @@ def build_staging_tree(web_dir: Path, dist_dir: Path, staging_dir: Path, days: i
 
     attribution = collect_attribution(staging_data)
 
-    (staging_dir / NOJEKYLL).write_text("", encoding="utf-8")
-    (staging_dir / "README.md").write_text(readme_text(attribution), encoding="utf-8")
+    (staging_dir / NOJEKYLL).write_text('', encoding='utf-8')
+    (staging_dir / 'README.md').write_text(
+        readme_text(attribution),
+        encoding='utf-8',
+    )
 
     return {
-        "index": index,
-        "attribution": attribution,
-        "days_published": [d.name for d in published],
-        "days_skipped": [d.name for d in skipped],
-        "period_dirs": period_dirs,
-        "current_period": (index.get("typical_weekday") or {}).get("current_period"),
-        "size_bytes": tree_size_bytes(staging_dir),
+        'index': index,
+        'attribution': attribution,
+        'days_published': [d.name for d in published],
+        'days_skipped': [d.name for d in skipped],
+        'period_dirs': period_dirs,
+        'current_period': (index.get('typical_weekday') or {}).get(
+            'current_period',
+        ),
+        'size_bytes': tree_size_bytes(staging_dir),
     }
 
 
@@ -260,13 +294,22 @@ def build_frontend(frontend_dir: Path, base_path: str) -> Path:
     prefixes data URLs with VITE_DATA_BASE_URL (frontend/src/data.ts). They
     are derived from the same argument here so they cannot drift apart.
     """
-    env = {**os.environ,
-           "VITE_BASE_PATH": base_path,
-           "VITE_DATA_BASE_URL": f"{base_path}data"}
-    subprocess.run(["npm", "run", "build"], cwd=frontend_dir, env=env, check=True)
-    dist_dir = frontend_dir / "dist"
+    env = {
+        **os.environ,
+        'VITE_BASE_PATH': base_path,
+        'VITE_DATA_BASE_URL': f'{base_path}data',
+    }
+    subprocess.run(
+        ['npm', 'run', 'build'],
+        cwd=frontend_dir,
+        env=env,
+        check=True,
+    )
+    dist_dir = frontend_dir / 'dist'
     if not dist_dir.is_dir():
-        raise ValueError(f"npm run build reported success but produced no {dist_dir}")
+        raise ValueError(
+            f'npm run build reported success but produced no {dist_dir}',
+        )
     return dist_dir
 
 
@@ -280,71 +323,129 @@ def push(staging_dir: Path, repo: str) -> None:
     discarded by the next publish — it is generated output, and the README
     written into it says so.
     """
-    message = f"Publish web export {datetime.now(timezone.utc).isoformat(timespec='seconds')}"
-    for cmd in (["init", "-q"],
-                ["add", "-A"],
-                ["commit", "-q", "-m", message],
-                ["branch", "-M", "main"],
-                ["remote", "add", "origin", repo],
-                ["push", "--force", "origin", "main"]):
-        subprocess.run(["git", "-C", str(staging_dir), *cmd], check=True)
+    message = (
+        f'Publish web export {datetime.now(UTC).isoformat(timespec="seconds")}'
+    )
+    for cmd in (
+        ['init', '-q'],
+        ['add', '-A'],
+        ['commit', '-q', '-m', message],
+        ['branch', '-M', 'main'],
+        ['remote', 'add', 'origin', repo],
+        ['push', '--force', 'origin', 'main'],
+    ):
+        subprocess.run(['git', '-C', str(staging_dir), *cmd], check=True)
 
 
-def print_summary(report: dict, staging_dir: Path, base_path: str, dry_run: bool,
-                  staging_kept: bool) -> None:
-    days = report["days_published"]
-    skipped = report["days_skipped"]
-    print(f"\n{'DRY RUN — nothing pushed' if dry_run else 'Published'}")
+def print_summary(
+    report: dict,
+    staging_dir: Path,
+    base_path: str,
+    dry_run: bool,
+    staging_kept: bool,
+) -> None:
+    days = report['days_published']
+    skipped = report['days_skipped']
+    print(f'\n{"DRY RUN — nothing pushed" if dry_run else "Published"}')
     if staging_kept:
-        print(f"  staging:        {staging_dir}")
-    print(f"  base path:      {base_path} (data at {base_path}data)")
+        print(f'  staging:        {staging_dir}')
+    print(f'  base path:      {base_path} (data at {base_path}data)')
     if days:
-        print(f"  days published: {len(days)} ({days[0]} .. {days[-1]})")
+        print(f'  days published: {len(days)} ({days[0]} .. {days[-1]})')
     else:
-        print("  days published: 0")
-    print(f"  days skipped:   {len(skipped)}" + (f" (oldest {skipped[0]})" if skipped else ""))
-    print(f"  periods:        {len(report['period_dirs'])}, current {report['current_period']}")
-    print(f"  total size:     {report['size_bytes'] / 1e6:.1f} MB")
+        print('  days published: 0')
+    print(
+        f'  days skipped:   {len(skipped)}'
+        + (f' (oldest {skipped[0]})' if skipped else ''),
+    )
+    print(
+        f'  periods:        {len(report["period_dirs"])}, current {report["current_period"]}',
+    )
+    print(f'  total size:     {report["size_bytes"] / 1e6:.1f} MB')
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("web_dir", type=Path, help="Web export to publish from, e.g. data/sofia/web")
-    parser.add_argument("frontend_dir", type=Path, help="Vite project to build, e.g. frontend")
-    parser.add_argument("--days", type=int, default=DEFAULT_DAYS,
-                        help=f"How many of the newest day bundles to publish (default: {DEFAULT_DAYS}); "
-                             f"older days stay addressable through the Zenodo dataset record")
-    parser.add_argument("--staging", type=Path, default=None,
-                        help="Directory to assemble the tree in (default: a fresh temp directory). "
-                             "Give one to inspect what would be published.")
-    parser.add_argument("--repo", default=DEFAULT_REPO, help=f"Push target (default: {DEFAULT_REPO})")
-    parser.add_argument("--base-path", default=DEFAULT_BASE_PATH,
-                        help=f"URL prefix the site is served from, with a trailing slash "
-                             f"(default: {DEFAULT_BASE_PATH})")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Build the tree and report it, then stop without pushing")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'web_dir',
+        type=Path,
+        help='Web export to publish from, e.g. data/sofia/web',
+    )
+    parser.add_argument(
+        'frontend_dir',
+        type=Path,
+        help='Vite project to build, e.g. frontend',
+    )
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=DEFAULT_DAYS,
+        help=f'How many of the newest day bundles to publish (default: {DEFAULT_DAYS}); '
+        f'older days stay addressable through the Zenodo dataset record',
+    )
+    parser.add_argument(
+        '--staging',
+        type=Path,
+        default=None,
+        help='Directory to assemble the tree in (default: a fresh temp directory). '
+        'Give one to inspect what would be published.',
+    )
+    parser.add_argument(
+        '--repo',
+        default=DEFAULT_REPO,
+        help=f'Push target (default: {DEFAULT_REPO})',
+    )
+    parser.add_argument(
+        '--base-path',
+        default=DEFAULT_BASE_PATH,
+        help=f'URL prefix the site is served from, with a trailing slash '
+        f'(default: {DEFAULT_BASE_PATH})',
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Build the tree and report it, then stop without pushing',
+    )
     args = parser.parse_args()
 
-    base_path = args.base_path if args.base_path.endswith("/") else args.base_path + "/"
-    staging_dir = args.staging or Path(tempfile.mkdtemp(prefix="publish-web-"))
+    base_path = (
+        args.base_path if args.base_path.endswith('/') else args.base_path + '/'
+    )
+    staging_dir = args.staging or Path(tempfile.mkdtemp(prefix='publish-web-'))
     ephemeral = args.staging is None
 
     try:
         dist_dir = build_frontend(args.frontend_dir, base_path)
-        report = build_staging_tree(args.web_dir, dist_dir, staging_dir, args.days)
+        report = build_staging_tree(
+            args.web_dir,
+            dist_dir,
+            staging_dir,
+            args.days,
+        )
     except (ValueError, subprocess.CalledProcessError) as e:
-        print(f"Nothing published: {e}", file=sys.stderr)
+        print(f'Nothing published: {e}', file=sys.stderr)
         sys.exit(1)
 
     if not args.dry_run:
         try:
             push(staging_dir, args.repo)
         except subprocess.CalledProcessError as e:
-            print(f"Tree built in {staging_dir} but the push failed: {e}", file=sys.stderr)
+            print(
+                f'Tree built in {staging_dir} but the push failed: {e}',
+                file=sys.stderr,
+            )
             sys.exit(1)
 
-    print_summary(report, staging_dir, base_path, args.dry_run, staging_kept=not ephemeral)
+    print_summary(
+        report,
+        staging_dir,
+        base_path,
+        args.dry_run,
+        staging_kept=not ephemeral,
+    )
 
     # A temp directory this script made has done its job once the tree is
     # pushed or reported; left alone it puts another ~30 MB in $TMPDIR on
@@ -355,5 +456,5 @@ def main():
         shutil.rmtree(staging_dir, ignore_errors=True)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

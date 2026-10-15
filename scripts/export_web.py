@@ -114,7 +114,7 @@ import sys
 import time
 import zipfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # segment_speeds.py lives next to this file; reuse its shape-loading and
@@ -123,8 +123,7 @@ from pathlib import Path
 # doesn't always add a script's own directory to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import REQUIRED_FEEDS, CityProfileError, city_slugs, load_city_for_path  # noqa: E402
-from segment_speeds import (  # noqa: E402
+from segment_speeds import (
     BACKWARD_TOLERANCE_M,
     EARTH_RADIUS_M,
     MAX_SPEED_KMH,
@@ -136,6 +135,13 @@ from segment_speeds import (  # noqa: E402
     _project_onto_segment,
     find_static_snapshots,
     load_static,
+)
+
+from config import (
+    REQUIRED_FEEDS,
+    CityProfileError,
+    city_slugs,
+    load_city_for_path,
 )
 
 # ─── Constants: web export decisions (this file's job to pick, per task) ───
@@ -254,6 +260,7 @@ INCOMPLETE_COVERAGE_PCT = 99.0
 
 # ─── Loading the two possible sources into one shape ────────────────────────
 
+
 def load_typical_weekday_bins(path: Path) -> tuple:
     """typical_weekday.json's segments, as
     {schedule_period_key: {(shape_key, segment_index, timeslot):
@@ -269,14 +276,18 @@ def load_typical_weekday_bins(path: Path) -> tuple:
     segment_speeds.build_shape_key) and never contains "|". Returns
     (bins_by_period, raw_json) so the caller can also pull provenance fields
     (days_processed, schedule_periods, static_feeds, ...) out of the same
-    file."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    file.
+    """
+    raw = json.loads(path.read_text(encoding='utf-8'))
     bins_by_period = {}
-    for period_key, segments in raw["segments"].items():
+    for period_key, segments in raw['segments'].items():
         bins = {}
         for key, v in segments.items():
-            shape_key, seg_idx, slot = key.split("|")
-            bins[(shape_key, int(seg_idx), slot)] = (v["median_speed_ms"], v["n_samples"])
+            shape_key, seg_idx, slot = key.split('|')
+            bins[shape_key, int(seg_idx), slot] = (
+                v['median_speed_ms'],
+                v['n_samples'],
+            )
         bins_by_period[period_key] = bins
     return bins_by_period, raw
 
@@ -289,9 +300,10 @@ def aggregate_day_bins(segment_speeds_path: Path) -> dict:
     D feature 2) needs this computed here. Keyed on shape_key, not the
     bare shape_id also present in each row: the day switcher must not
     re-introduce the exact bug typical_weekday.json's aggregation was fixed
-    for by pooling two different geometries under one shape_id."""
+    for by pooling two different geometries under one shape_id.
+    """
     agg = defaultdict(list)
-    with segment_speeds_path.open(encoding="utf-8") as f:
+    with segment_speeds_path.open(encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -300,15 +312,16 @@ def aggregate_day_bins(segment_speeds_path: Path) -> dict:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue  # torn line from a mid-write rsync pull, same tolerance as the rest of the pipeline
-            key = (rec["shape_key"], rec["segment_index"], rec["timeslot"])
-            agg[key].append(rec["speed_ms"])
+            key = (rec['shape_key'], rec['segment_index'], rec['timeslot'])
+            agg[key].append(rec['speed_ms'])
     return {k: (statistics.median(v), len(v)) for k, v in agg.items()}
 
 
 def segment_pairs(bins: dict) -> set:
     """(shape_key, segment_index) pairs referenced by `bins` — shape_key, not
     the bare shape_id, so two geometry versions of what was once one
-    shape_id stay two distinct segments here too."""
+    shape_id stay two distinct segments here too.
+    """
     return {(shape_key, seg_idx) for shape_key, seg_idx, _ in bins}
 
 
@@ -319,30 +332,38 @@ def apply_threshold(bins: dict, min_samples: int) -> tuple:
 
 
 def incomplete_day_notes(data_dir: Path, days: list) -> dict:
-    """day -> human-readable reason, for every day in `days` whose own
+    """Day -> human-readable reason, for every day in `days` whose own
     <date>.manifest.json (generate_manifest.py's output) shows it wasn't a
     complete, closed calendar day. Says nothing about a day whose manifest
-    is missing, rather than guessing."""
+    is missing, rather than guessing.
+    """
     notes = {}
     for d in days:
-        manifest_path = data_dir / f"{d}.manifest.json"
+        manifest_path = data_dir / f'{d}.manifest.json'
         if not manifest_path.exists():
             continue
-        m = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if m.get("day_in_progress"):
-            notes[d] = "day was still in progress when its own manifest was generated, not a closed calendar day"
-        elif m.get("coverage_pct") is not None and m["coverage_pct"] < INCOMPLETE_COVERAGE_PCT:
-            notes[d] = f"only {m['coverage_pct']}% coverage of the calendar day"
+        m = json.loads(manifest_path.read_text(encoding='utf-8'))
+        if m.get('day_in_progress'):
+            notes[d] = (
+                'day was still in progress when its own manifest was generated, not a closed calendar day'
+            )
+        elif (
+            m.get('coverage_pct') is not None
+            and m['coverage_pct'] < INCOMPLETE_COVERAGE_PCT
+        ):
+            notes[d] = f'only {m["coverage_pct"]}% coverage of the calendar day'
     return notes
 
 
 # ─── Geometry: one simplified polyline per (shape_key, segment_index) ───────
 
+
 def xy_along_shape(shape: Shape, dist_m: float) -> tuple:
     """Local-plane (x, y) metres at along-shape distance `dist_m` — linear
     interpolation between the two shape vertices bracketing it, in the same
     projection segment_speeds.py's project_point() uses for matching.
-    Distance past either end of the shape clamps to that end."""
+    Distance past either end of the shape clamps to that end.
+    """
     cum = shape.cum_dist
     dist_m = max(0.0, min(dist_m, cum[-1]))
     i = bisect.bisect_right(cum, dist_m) - 1
@@ -358,13 +379,16 @@ def xy_to_latlon(shape: Shape, x: float, y: float) -> tuple:
     """Inverse of segment_speeds.to_local_xy(), rounded to COORD_DECIMALS."""
     ref_lat_rad = math.radians(shape.ref_lat_deg)
     lat = shape.ref_lat_deg + math.degrees(y / EARTH_RADIUS_M)
-    lon = shape.ref_lon + math.degrees(x / (math.cos(ref_lat_rad) * EARTH_RADIUS_M))
+    lon = shape.ref_lon + math.degrees(
+        x / (math.cos(ref_lat_rad) * EARTH_RADIUS_M),
+    )
     return round(lat, COORD_DECIMALS), round(lon, COORD_DECIMALS)
 
 
 def point_along_shape(shape: Shape, dist_m: float) -> tuple:
     """(lat, lon), rounded to COORD_DECIMALS, at along-shape distance
-    `dist_m`."""
+    `dist_m`.
+    """
     return xy_to_latlon(shape, *xy_along_shape(shape, dist_m))
 
 
@@ -396,7 +420,14 @@ def simplify_rdp(points: list, tolerance_m: float) -> list:
         bx, by = points[hi]
         far_i, far_dist = -1, tolerance_m
         for i in range(lo + 1, hi):
-            _, dist = _project_onto_segment(points[i][0], points[i][1], ax, ay, bx, by)
+            _, dist = _project_onto_segment(
+                points[i][0],
+                points[i][1],
+                ax,
+                ay,
+                bx,
+                by,
+            )
             if dist > far_dist:
                 far_i, far_dist = i, dist
         if far_i >= 0:
@@ -406,7 +437,11 @@ def simplify_rdp(points: list, tolerance_m: float) -> list:
     return [p for p, k in zip(points, keep) if k]
 
 
-def segment_polyline(shape: Shape, seg_idx: int, tolerance_m: float = SIMPLIFY_TOLERANCE_M) -> list:
+def segment_polyline(
+    shape: Shape,
+    seg_idx: int,
+    tolerance_m: float = SIMPLIFY_TOLERANCE_M,
+) -> list:
     """The drawn path of one 200 m bin as [(lat, lon), ...]: the bin's start
     point, every shapes.txt vertex strictly inside it, the bin's end point —
     Douglas-Peucker simplified at `tolerance_m` metres.
@@ -428,7 +463,9 @@ def segment_polyline(shape: Shape, seg_idx: int, tolerance_m: float = SIMPLIFY_T
     points = [xy_along_shape(shape, start_d)]
     points += [(shape.xs[i], shape.ys[i]) for i in range(lo, hi)]
     points.append(xy_along_shape(shape, end_d))
-    return [xy_to_latlon(shape, x, y) for x, y in simplify_rdp(points, tolerance_m)]
+    return [
+        xy_to_latlon(shape, x, y) for x, y in simplify_rdp(points, tolerance_m)
+    ]
 
 
 def load_route_info(gtfs_zip_path: Path) -> dict:
@@ -443,27 +480,34 @@ def load_route_info(gtfs_zip_path: Path) -> dict:
     directly. GTFS route_type: 0 tram, 1 metro, 3 bus, 11 trolleybus.
     """
     with zipfile.ZipFile(gtfs_zip_path) as z:
-        with z.open("routes.txt") as f:
+        with z.open('routes.txt') as f:
             routes = {
-                row["route_id"]: (row.get("route_short_name") or row["route_id"], row["route_type"])
-                for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+                row['route_id']: (
+                    row.get('route_short_name') or row['route_id'],
+                    row['route_type'],
+                )
+                for row in csv.DictReader(
+                    io.TextIOWrapper(f, encoding='utf-8-sig'),
+                )
             }
         shape_routes = defaultdict(set)
-        with z.open("trips.txt") as f:
-            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
-                if row["shape_id"] and row["route_id"] in routes:
-                    shape_routes[row["shape_id"]].add(row["route_id"])
+        with z.open('trips.txt') as f:
+            for row in csv.DictReader(
+                io.TextIOWrapper(f, encoding='utf-8-sig'),
+            ):
+                if row['shape_id'] and row['route_id'] in routes:
+                    shape_routes[row['shape_id']].add(row['route_id'])
 
     info = {}
     for shape_id, route_ids in shape_routes.items():
         ids = sorted(route_ids)
         types = {routes[r][1] for r in ids}
         info[shape_id] = {
-            "route_ids": ids,
-            "route_names": sorted({routes[r][0] for r in ids}),
+            'route_ids': ids,
+            'route_names': sorted({routes[r][0] for r in ids}),
             # A mixed-type shape would make a type filter lie, so it is left
             # unset rather than resolved by picking a winner.
-            "route_type": int(types.pop()) if len(types) == 1 else None,
+            'route_type': int(types.pop()) if len(types) == 1 else None,
         }
     return info
 
@@ -499,7 +543,10 @@ def load_static_sources(static_source: Path) -> tuple:
     if static_source.is_dir():
         snapshots = find_static_snapshots(static_source)
         if not snapshots:
-            print(f"No gtfs_<YYYY-MM-DD>.zip snapshots found in {static_source}", file=sys.stderr)
+            print(
+                f'No gtfs_<YYYY-MM-DD>.zip snapshots found in {static_source}',
+                file=sys.stderr,
+            )
             sys.exit(1)
         paths = [p for _, p in snapshots]
     else:
@@ -509,20 +556,24 @@ def load_static_sources(static_source: Path) -> tuple:
     route_info = {}
     shape_ids_by_key = defaultdict(set)
     for path in paths:
-        print(f"Loading static feed {path} ...")
+        print(f'Loading static feed {path} ...')
         t0 = time.time()
         _, shapes, ids_by_key = load_static(path)
         shapes_by_key.update(shapes)
         for key, shape_ids in ids_by_key.items():
             shape_ids_by_key[key].update(shape_ids)
         route_info.update(load_route_info(path))
-        print(f"  {len(shapes):,} shapes ({time.time() - t0:.1f}s)")
+        print(f'  {len(shapes):,} shapes ({time.time() - t0:.1f}s)')
 
     return shapes_by_key, route_info, dict(shape_ids_by_key), paths
 
 
-def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | None = None,
-                    shape_ids_by_key: dict | None = None) -> tuple:
+def build_geometry(
+    retained_pairs: set,
+    shapes_by_key: dict,
+    route_info: dict | None = None,
+    shape_ids_by_key: dict | None = None,
+) -> tuple:
     """Returns (geometry_dict, index_of, missing_count).
 
     index_of maps (shape_key, segment_index) -> its position in geometry's
@@ -563,7 +614,7 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
         point_offset.append(len(lat))
         shape_idx.append(shape_pos[shape_key])
         segment_index.append(seg_idx)
-        index_of[(shape_key, seg_idx)] = i
+        index_of[shape_key, seg_idx] = i
 
     # Route metadata is stored per shape (hundreds of entries), not per
     # segment (tens of thousands): a type filter needs one lookup hop through
@@ -572,46 +623,53 @@ def build_geometry(retained_pairs: set, shapes_by_key: dict, route_info: dict | 
     shape_route_ids, shape_route_names, shape_route_type = [], [], []
     for ids in ids_per_key:
         infos = [route_info[sid] for sid in ids if sid in route_info]
-        shape_route_ids.append(sorted({r for i in infos for r in i["route_ids"]}))
-        shape_route_names.append(sorted({n for i in infos for n in i["route_names"]}))
+        shape_route_ids.append(
+            sorted({r for i in infos for r in i['route_ids']}),
+        )
+        shape_route_names.append(
+            sorted({n for i in infos for n in i['route_names']}),
+        )
         # One type or nothing, same rule load_route_info() applies per id: a
         # geometry served by both a tram and a bus can't answer a type
         # filter, and guessing which to show would be worse than a null.
-        types = {i["route_type"] for i in infos if i["route_type"] is not None}
+        types = {i['route_type'] for i in infos if i['route_type'] is not None}
         shape_route_type.append(types.pop() if len(types) == 1 else None)
 
     geometry = {
-        "segment_length_m": SEGMENT_LENGTH_M,
-        "shape_keys": keys,
-        "shape_ids": ids_per_key,
-        "shape_route_ids": shape_route_ids,
-        "shape_route_names": shape_route_names,
-        "shape_route_type": shape_route_type,
-        "shape_idx": shape_idx,
-        "segment_index": segment_index,
-        "point_offset": point_offset,
-        "lat": lat,
-        "lon": lon,
+        'segment_length_m': SEGMENT_LENGTH_M,
+        'shape_keys': keys,
+        'shape_ids': ids_per_key,
+        'shape_route_ids': shape_route_ids,
+        'shape_route_names': shape_route_names,
+        'shape_route_type': shape_route_type,
+        'shape_idx': shape_idx,
+        'segment_index': segment_index,
+        'point_offset': point_offset,
+        'lat': lat,
+        'lon': lon,
     }
     return geometry, index_of, missing
 
 
 def build_timeslot_files(bins: dict, index_of: dict) -> dict:
-    """slot -> {"timeslot": slot, "segment_idx": [...], "speed_kmh": [...],
+    """Slot -> {"timeslot": slot, "segment_idx": [...], "speed_kmh": [...],
     "n_samples": [...]} — parallel arrays, one entry per surviving bin.
     A bin whose (shape_id, segment_index) isn't in index_of (see
     build_geometry's `missing` count) is skipped: there's no index to
-    reference it by."""
-    by_slot = defaultdict(lambda: {"segment_idx": [], "speed_kmh": [], "n_samples": []})
+    reference it by.
+    """
+    by_slot = defaultdict(
+        lambda: {'segment_idx': [], 'speed_kmh': [], 'n_samples': []},
+    )
     for (shape_id, seg_idx, slot), (median_ms, n) in bins.items():
         pos = index_of.get((shape_id, seg_idx))
         if pos is None:
             continue
         d = by_slot[slot]
-        d["segment_idx"].append(pos)
-        d["speed_kmh"].append(round(median_ms * 3.6))
-        d["n_samples"].append(n)
-    return {slot: {"timeslot": slot, **d} for slot, d in by_slot.items()}
+        d['segment_idx'].append(pos)
+        d['speed_kmh'].append(round(median_ms * 3.6))
+        d['n_samples'].append(n)
+    return {slot: {'timeslot': slot, **d} for slot, d in by_slot.items()}
 
 
 def build_typical_kmh(timeslot_files: dict, segment_count: int) -> list:
@@ -627,18 +685,22 @@ def build_typical_kmh(timeslot_files: dict, segment_count: int) -> list:
     Median of medians, and named as such — the measurement does not choose
     the formula (mean, p60 and p75 land within a few points of it with no
     stable winner); it is a median because D4 already made the typical
-    weekday a median."""
+    weekday a median.
+    """
     by_segment = defaultdict(list)
     for payload in timeslot_files.values():
-        for pos, kmh in zip(payload["segment_idx"], payload["speed_kmh"]):
+        for pos, kmh in zip(payload['segment_idx'], payload['speed_kmh']):
             by_segment[pos].append(kmh)
     return [
-        round(statistics.median(by_segment[i])) if len(by_segment.get(i, ())) >= TYPICAL_MIN_SLOTS else None
+        round(statistics.median(by_segment[i]))
+        if len(by_segment.get(i, ())) >= TYPICAL_MIN_SLOTS
+        else None
         for i in range(segment_count)
     ]
 
 
 # ─── Manifest ────────────────────────────────────────────────────────────────
+
 
 def build_manifest(
     *,
@@ -670,46 +732,46 @@ def build_manifest(
     # file. Naming the observed count as what "appears here" reports one object
     # and points at another.
     shapes_line = (
-        f"Only shapes actually observed in the source archive appear here: "
+        f'Only shapes actually observed in the source archive appear here: '
         f"{shapes_written} of the static feed's {total_static_shapes} shapes for this "
-        f"export ({mode})."
+        f'export ({mode}).'
     )
     lost = shapes_observed - shapes_written
     if lost > 0:
         shapes_line += (
-            f" {lost} further shape{'' if lost == 1 else 's'} "
-            f"{'was' if lost == 1 else 'were'} observed but kept no bin at the "
-            f"{min_samples}-sample threshold."
+            f' {lost} further shape{"" if lost == 1 else "s"} '
+            f'{"was" if lost == 1 else "were"} observed but kept no bin at the '
+            f'{min_samples}-sample threshold.'
         )
     limitations = [
         "Segment geometry is the shape's own polyline inside the 200 m bin, simplified "
-        f"with Douglas-Peucker at {SIMPLIFY_TOLERANCE_M:g} m: every dropped shapes.txt "
-        f"vertex lies within {SIMPLIFY_TOLERANCE_M:g} m of the line drawn in its place, "
-        "so a turn or roundabout inside a segment is drawn, but not to the last metre. "
+        f'with Douglas-Peucker at {SIMPLIFY_TOLERANCE_M:g} m: every dropped shapes.txt '
+        f'vertex lies within {SIMPLIFY_TOLERANCE_M:g} m of the line drawn in its place, '
+        'so a turn or roundabout inside a segment is drawn, but not to the last metre. '
         "Through format_version 1 this was the straight chord between the bin's two "
-        "ends, which departed from the true path by a median of 3.4 m and up to 90.6 m.",
-        "Speed is an integer km/h for map colouring, not the scientific record. The "
-        "underlying float m/s and every individual sample it was built from live in "
-        "segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).",
+        'ends, which departed from the true path by a median of 3.4 m and up to 90.6 m.',
+        'Speed is an integer km/h for map colouring, not the scientific record. The '
+        'underlying float m/s and every individual sample it was built from live in '
+        'segment_speeds_<date>.jsonl and typical_weekday.json, published as-is (D5).',
         shapes_line,
-        f"Route metadata is per shape, not per segment. {multi_route_shapes} "
-        f"shape{'' if multi_route_shapes == 1 else 's'} in this export "
-        f"{'serves' if multi_route_shapes == 1 else 'serve'} more than one route, so "
-        "shape_route_ids is a list; no shape here mixes route types, so shape_route_type "
-        "is a single GTFS value (0 tram, 1 metro, 3 bus, 11 trolleybus) and is null if "
-        "that ever stops holding.",
+        f'Route metadata is per shape, not per segment. {multi_route_shapes} '
+        f'shape{"" if multi_route_shapes == 1 else "s"} in this export '
+        f'{"serves" if multi_route_shapes == 1 else "serve"} more than one route, so '
+        'shape_route_ids is a list; no shape here mixes route types, so shape_route_type '
+        'is a single GTFS value (0 tram, 1 metro, 3 bus, 11 trolleybus) and is null if '
+        'that ever stops holding.',
     ]
-    if mode == "typical_weekday":
+    if mode == 'typical_weekday':
         limitations.append(
-            "typical_kmh is a baseline, not a verdict on one street. A segment is marked "
-            f"slower than usual when the slot shown is at or below {SLOWDOWN_RATIO_MAX:g} of its "
-            f"typical_kmh and at least {SLOWDOWN_ABS_MIN_KMH} km/h under it, and a single such "
-            "mark reproduced between the two halves of the 31 August to 4 September 2026 period "
-            "(five weekdays) in 36.9% of cases, measured on 2026-09-08 and not re-measured on "
-            "other periods. Read the "
-            "marks as where the network slows at peak, not as evidence about one segment; "
-            "segments with fewer than "
-            f"{TYPICAL_MIN_SLOTS} filled slots carry typical_kmh null and are never marked."
+            'typical_kmh is a baseline, not a verdict on one street. A segment is marked '
+            f'slower than usual when the slot shown is at or below {SLOWDOWN_RATIO_MAX:g} of its '
+            f'typical_kmh and at least {SLOWDOWN_ABS_MIN_KMH} km/h under it, and a single such '
+            'mark reproduced between the two halves of the 31 August to 4 September 2026 period '
+            '(five weekdays) in 36.9% of cases, measured on 2026-09-08 and not re-measured on '
+            'other periods. Read the '
+            'marks as where the network slows at peak, not as evidence about one segment; '
+            'segments with fewer than '
+            f'{TYPICAL_MIN_SLOTS} filled slots carry typical_kmh null and are never marked.',
         )
     # Whatever this particular city's feed does not cover — Sofia's metro, for
     # one — comes from its profile rather than from a list in this file, which
@@ -720,150 +782,154 @@ def build_manifest(
         # returns after a short variant rejoins its period (segment_speeds.py,
         # assign_schedule_periods), so the range can enclose another period's days.
         limitations.append(
-            "This median covers only the days that ran one published timetable "
-            f"({len(days_in_median)} weekdays from {schedule_period['first_date']} to "
-            f"{schedule_period['last_date']}, listed in days_in_median; "
-            f"{schedule_period['route_count']} routes and {schedule_period['trip_count']} "
-            "trips). A timetable the agency returns to after a variant rejoins its period, "
-            "so a weekday inside that range can belong to another one. "
-            "Days under a different timetable are exported as a separate period "
-            "and are never averaged into this one. Two timetables that differ only in "
+            'This median covers only the days that ran one published timetable '
+            f'({len(days_in_median)} weekdays from {schedule_period["first_date"]} to '
+            f'{schedule_period["last_date"]}, listed in days_in_median; '
+            f'{schedule_period["route_count"]} routes and {schedule_period["trip_count"]} '
+            'trips). A timetable the agency returns to after a variant rejoins its period, '
+            'so a weekday inside that range can belong to another one. '
+            'Days under a different timetable are exported as a separate period '
+            'and are never averaged into this one. Two timetables that differ only in '
             "departure times, with every route's trip count unchanged, are indistinguishable "
-            "to that split and would share one period."
+            'to that split and would share one period.',
         )
     web_export = {
-        "min_samples_threshold": min_samples,
-        "min_samples_rationale": (
-            "a median needs at least two independent observations to be an aggregate "
-            "rather than a single relabeled raw sample; n_samples still ships with every "
-            "surviving bin so a thin median stays visually distinguishable client-side "
+        'min_samples_threshold': min_samples,
+        'min_samples_rationale': (
+            'a median needs at least two independent observations to be an aggregate '
+            'rather than a single relabeled raw sample; n_samples still ships with every '
+            'surviving bin so a thin median stays visually distinguishable client-side '
             "instead of this cutoff hiding it (D4; CLAUDE.md section 6, 'name the "
             "limitation before someone else does')"
         ),
-        "coordinate_decimal_places": COORD_DECIMALS,
-        "coordinate_precision_rationale": (
-            "~1.1 m at this latitude, below the accuracy of the GPS units behind the "
-            "underlying feed"
+        'coordinate_decimal_places': COORD_DECIMALS,
+        'coordinate_precision_rationale': (
+            '~1.1 m at this latitude, below the accuracy of the GPS units behind the '
+            'underlying feed'
         ),
-        "geometry_simplification": "douglas_peucker",
-        "simplify_tolerance_m": SIMPLIFY_TOLERANCE_M,
-        "simplify_tolerance_rationale": (
-            "a segment ships the shapes.txt polyline inside its 200 m bin, simplified "
-            "in metres on the same local plane the projection uses, not in degrees, "
-            "where one tolerance would mean two distances depending on heading. "
-            "Re-measured 2026-09-08 over the 27,138 segments the current schedule "
-            "period then held: a bin holds 10.55 points with every vertex kept, and "
-            "dropping all of them for the straight chord of format_version 1 (2.00 "
-            "points) moved the drawn line off the true path by a median of 3.3 m, "
-            "35.7 m at p90, 68.1 m at p99 and 90.6 m at worst, by more than 5 m on "
-            "43.9% of bins. "
+        'geometry_simplification': 'douglas_peucker',
+        'simplify_tolerance_m': SIMPLIFY_TOLERANCE_M,
+        'simplify_tolerance_rationale': (
+            'a segment ships the shapes.txt polyline inside its 200 m bin, simplified '
+            'in metres on the same local plane the projection uses, not in degrees, '
+            'where one tolerance would mean two distances depending on heading. '
+            'Re-measured 2026-09-08 over the 27,138 segments the current schedule '
+            'period then held: a bin holds 10.55 points with every vertex kept, and '
+            'dropping all of them for the straight chord of format_version 1 (2.00 '
+            'points) moved the drawn line off the true path by a median of 3.3 m, '
+            '35.7 m at p90, 68.1 m at p99 and 90.6 m at worst, by more than 5 m on '
+            '43.9% of bins. '
             "Douglas-Peucker's retention test is the distance from a dropped vertex to "
-            "the line replacing it, so this tolerance is a bound on the residual error "
-            "rather than an average of it (worst case measured on that archive: "
-            "4.999 m). 5 m is the coarsest tolerance still under a lane width plus the "
-            "GPS error already in the source, so the simplification stays below the "
-            "noise it sits on. Paid for in points and therefore file size: 2.72 points "
-            "per bin instead of 2.00, and 345,488 B of gzipped geometry against the "
-            "251,598 B the same segments cost as chords in this same layout — the "
-            "chord release served them from four endpoint arrays with no point_offset, "
-            "a layout in which they would be 269,539 B, so the two releases are not a "
-            "like-for-like pair. Keeping every vertex is not an option the 1 MB "
-            "first-load budget leaves open: at 10.55 points per bin geometry.json "
-            "alone gzips to 1,203,512 B"
+            'the line replacing it, so this tolerance is a bound on the residual error '
+            'rather than an average of it (worst case measured on that archive: '
+            '4.999 m). 5 m is the coarsest tolerance still under a lane width plus the '
+            'GPS error already in the source, so the simplification stays below the '
+            'noise it sits on. Paid for in points and therefore file size: 2.72 points '
+            'per bin instead of 2.00, and 345,488 B of gzipped geometry against the '
+            '251,598 B the same segments cost as chords in this same layout — the '
+            'chord release served them from four endpoint arrays with no point_offset, '
+            'a layout in which they would be 269,539 B, so the two releases are not a '
+            'like-for-like pair. Keeping every vertex is not an option the 1 MB '
+            'first-load budget leaves open: at 10.55 points per bin geometry.json '
+            'alone gzips to 1,203,512 B'
         ),
-        "bins_total_before_threshold": bins_before,
-        "bins_retained": bins_after,
-        "bins_dropped": bins_dropped,
-        "bins_dropped_pct": round(100 * bins_dropped / bins_before, 2) if bins_before else None,
-        "segments_total_before_threshold": pairs_before,
-        "segments_retained": pairs_after,
-        "segments_dropped_pct": round(100 * segments_dropped / pairs_before, 2) if pairs_before else None,
-        "segments_missing_from_static_feed": missing_shapes,
+        'bins_total_before_threshold': bins_before,
+        'bins_retained': bins_after,
+        'bins_dropped': bins_dropped,
+        'bins_dropped_pct': round(100 * bins_dropped / bins_before, 2)
+        if bins_before
+        else None,
+        'segments_total_before_threshold': pairs_before,
+        'segments_retained': pairs_after,
+        'segments_dropped_pct': round(100 * segments_dropped / pairs_before, 2)
+        if pairs_before
+        else None,
+        'segments_missing_from_static_feed': missing_shapes,
     }
-    if mode == "typical_weekday":
-        web_export["slowdown_highlight"] = {
-            "typical_speed_field": "typical_kmh (geometry.json)",
-            "typical_speed_formula": "median of the segment's per-slot medians over its filled slots",
-            "min_filled_slots": TYPICAL_MIN_SLOTS,
-            "ratio_max": SLOWDOWN_RATIO_MAX,
-            "absolute_min_kmh": SLOWDOWN_ABS_MIN_KMH,
-            "predicate": (
-                f"a segment is marked slower than usual in a slot when "
-                f"slot_kmh <= {SLOWDOWN_RATIO_MAX:g} * typical_kmh AND "
-                f"typical_kmh - slot_kmh >= {SLOWDOWN_ABS_MIN_KMH} km/h; both conditions, not "
-                "either. Evaluated client-side against the arrays published here, so the same "
-                "numbers reproduce the marks on the map"
+    if mode == 'typical_weekday':
+        web_export['slowdown_highlight'] = {
+            'typical_speed_field': 'typical_kmh (geometry.json)',
+            'typical_speed_formula': "median of the segment's per-slot medians over its filled slots",
+            'min_filled_slots': TYPICAL_MIN_SLOTS,
+            'ratio_max': SLOWDOWN_RATIO_MAX,
+            'absolute_min_kmh': SLOWDOWN_ABS_MIN_KMH,
+            'predicate': (
+                f'a segment is marked slower than usual in a slot when '
+                f'slot_kmh <= {SLOWDOWN_RATIO_MAX:g} * typical_kmh AND '
+                f'typical_kmh - slot_kmh >= {SLOWDOWN_ABS_MIN_KMH} km/h; both conditions, not '
+                'either. Evaluated client-side against the arrays published here, so the same '
+                'numbers reproduce the marks on the map'
             ),
-            "rationale": (
-                "the absolute colour scale answers whether a street is slow, which is not the "
-                "question of whether it is slower than it usually is: of the 1,209 segments "
-                "below 10 km/h at 08:00 in the current period, 55.4% are still below it at "
-                "19:00 and 48.1% at 22:00, so one colour was carrying two meanings. The mark is "
-                "drawn over the absolute colour rather than replacing it, so a permanently "
-                "congested segment stays dark. "
-                f"The {SLOWDOWN_ABS_MIN_KMH} km/h floor is the number the measurement chooses: "
-                "separation between segments that ease off by evening and segments that are "
-                "always stopped peaks at 4 km/h in eight of the nine ratio/gate configurations "
-                f"measured. The {SLOWDOWN_RATIO_MAX:g} ratio is not chosen by the data and is "
-                "named as insurance rather than a fitted value, the same way the 0.5% schedule-"
-                "period churn tolerance is: nothing in the archive bounds it from below. What "
-                "bounds it from above is day-to-day spread — a single day sits below 0.80 of its "
-                "own across-day median in 20.2% of (segment, slot) cells, so a looser ratio "
-                f"would mark ordinary variation between weekdays. The {TYPICAL_MIN_SLOTS}-slot "
-                "gate is not a cliff in the false-flag rate either (19.3% at 15 slots against "
-                "26.0% at 10 and 10.7% at 30, no break between them); it is where the baseline "
-                "stops being made of night traffic, which is the free-flow reading a daytime "
-                "slot would then be marked against: at 1-4 filled slots 19.8% of them are night "
-                "slots, at 15 or more none are. The formula for the baseline is not chosen by "
-                "the data at all — median, mean, p60 and p75 differ by 1 to 4 points of "
-                "separation with no stable winner — and it is a median because D4 already "
-                "defines the typical weekday as one"
+            'rationale': (
+                'the absolute colour scale answers whether a street is slow, which is not the '
+                'question of whether it is slower than it usually is: of the 1,209 segments '
+                'below 10 km/h at 08:00 in the current period, 55.4% are still below it at '
+                '19:00 and 48.1% at 22:00, so one colour was carrying two meanings. The mark is '
+                'drawn over the absolute colour rather than replacing it, so a permanently '
+                'congested segment stays dark. '
+                f'The {SLOWDOWN_ABS_MIN_KMH} km/h floor is the number the measurement chooses: '
+                'separation between segments that ease off by evening and segments that are '
+                'always stopped peaks at 4 km/h in eight of the nine ratio/gate configurations '
+                f'measured. The {SLOWDOWN_RATIO_MAX:g} ratio is not chosen by the data and is '
+                'named as insurance rather than a fitted value, the same way the 0.5% schedule-'
+                'period churn tolerance is: nothing in the archive bounds it from below. What '
+                'bounds it from above is day-to-day spread — a single day sits below 0.80 of its '
+                'own across-day median in 20.2% of (segment, slot) cells, so a looser ratio '
+                f'would mark ordinary variation between weekdays. The {TYPICAL_MIN_SLOTS}-slot '
+                'gate is not a cliff in the false-flag rate either (19.3% at 15 slots against '
+                '26.0% at 10 and 10.7% at 30, no break between them); it is where the baseline '
+                'stops being made of night traffic, which is the free-flow reading a daytime '
+                'slot would then be marked against: at 1-4 filled slots 19.8% of them are night '
+                'slots, at 15 or more none are. The formula for the baseline is not chosen by '
+                'the data at all — median, mean, p60 and p75 differ by 1 to 4 points of '
+                'separation with no stable winner — and it is a median because D4 already '
+                'defines the typical weekday as one'
             ),
         }
 
     return {
         # 2: segment geometry is a simplified polyline in CSR layout
         # (lat/lon/point_offset), not four endpoint arrays of a chord.
-        "format_version": 2,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": mode,  # "typical_weekday" or a specific "YYYY-MM-DD"
+        'format_version': 2,
+        'generated_at': datetime.now(UTC).isoformat(),
+        'mode': mode,  # "typical_weekday" or a specific "YYYY-MM-DD"
         # Which timetable this bundle's days ran, from typical_weekday.json's
         # schedule_periods; null for a single-day export, which needs no split.
-        "schedule_period": schedule_period,
+        'schedule_period': schedule_period,
         # Who the data belongs to and under what licence, copied from the city
         # profile so the page can credit the operator whose feed it is showing.
         # null when the export could not resolve a city: no attribution is a
         # visible gap, while a default one would publish the wrong licence.
-        "attribution": attribution,
-        "source": source,
-        "days_processed": days_processed,
-        "days_in_median": days_in_median,
-        "incomplete_days": incomplete_days,
-        "preprocessing_thresholds": {
-            "segment_length_m": SEGMENT_LENGTH_M,
-            "timeslot_minutes": TIMESLOT_MINUTES,
-            "max_time_gap_sec": MAX_TIME_GAP_SEC,
-            "max_speed_kmh": MAX_SPEED_KMH,
-            "backward_tolerance_m": BACKWARD_TOLERANCE_M,
-            "search_margin_m": SEARCH_MARGIN_M,
+        'attribution': attribution,
+        'source': source,
+        'days_processed': days_processed,
+        'days_in_median': days_in_median,
+        'incomplete_days': incomplete_days,
+        'preprocessing_thresholds': {
+            'segment_length_m': SEGMENT_LENGTH_M,
+            'timeslot_minutes': TIMESLOT_MINUTES,
+            'max_time_gap_sec': MAX_TIME_GAP_SEC,
+            'max_speed_kmh': MAX_SPEED_KMH,
+            'backward_tolerance_m': BACKWARD_TOLERANCE_M,
+            'search_margin_m': SEARCH_MARGIN_M,
         },
-        "web_export": web_export,
-        "segment_count": pairs_after,
-        "timeslot_count": len(timeslot_labels),
-        "timeslots": sorted(timeslot_labels),
-        "known_limitations": limitations,
+        'web_export': web_export,
+        'segment_count': pairs_after,
+        'timeslot_count': len(timeslot_labels),
+        'timeslots': sorted(timeslot_labels),
+        'known_limitations': limitations,
     }
 
 
-
-
 # ─── Size reporting (measure the budget, don't assume it) ──────────────────
+
 
 def gzip_size(path: Path) -> int:
     return len(gzip.compress(path.read_bytes(), compresslevel=9))
 
 
 # ─── Writing one bundle (a schedule period, or one day) ────────────────────
+
 
 def write_export(
     *,
@@ -887,13 +953,18 @@ def write_export(
 
     One bundle is one median: a schedule period of the typical weekday, or a
     single day for the day switcher. Both callers reach the files through
-    here, so the format cannot drift between them."""
+    here, so the format cannot drift between them.
+    """
     pairs_before = segment_pairs(bins)
     retained, n_before, n_after = apply_threshold(bins, min_samples)
     pairs_after = segment_pairs(retained)
 
-    geometry, index_of, missing_shapes = build_geometry(pairs_after, shapes_by_key, route_info,
-                                                         shape_ids_by_key)
+    geometry, index_of, missing_shapes = build_geometry(
+        pairs_after,
+        shapes_by_key,
+        route_info,
+        shape_ids_by_key,
+    )
     timeslot_files = build_timeslot_files(retained, index_of)
 
     # Typical-weekday bundles only. The thresholds the frontend compares
@@ -901,8 +972,11 @@ def write_export(
     # day's medians are a different object, and carrying the array into a day
     # bundle would invite exactly the reuse of a number measured elsewhere
     # that CLAUDE.md section 9 keeps a tally of.
-    if mode == "typical_weekday":
-        geometry["typical_kmh"] = build_typical_kmh(timeslot_files, len(geometry["shape_idx"]))
+    if mode == 'typical_weekday':
+        geometry['typical_kmh'] = build_typical_kmh(
+            timeslot_files,
+            len(geometry['shape_idx']),
+        )
 
     # This script owns everything under out_dir once it exists, so rebuild
     # it from scratch rather than overwrite in place — a rerun with a
@@ -910,18 +984,20 @@ def write_export(
     # export, would otherwise leave stale timeslot files on disk that the
     # freshly written manifest.json's "timeslots" list doesn't mention.
     shutil.rmtree(out_dir, ignore_errors=True)
-    slots_dir = out_dir / "timeslots"
+    slots_dir = out_dir / 'timeslots'
     slots_dir.mkdir(parents=True)
 
     for slot, payload in timeslot_files.items():
-        fname = slot.replace(":", "") + ".json"
+        fname = slot.replace(':', '') + '.json'
         (slots_dir / fname).write_text(
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
+            json.dumps(payload, separators=(',', ':'), ensure_ascii=False),
+            encoding='utf-8',
         )
 
-    geometry_path = out_dir / "geometry.json"
+    geometry_path = out_dir / 'geometry.json'
     geometry_path.write_text(
-        json.dumps(geometry, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
+        json.dumps(geometry, separators=(',', ':'), ensure_ascii=False),
+        encoding='utf-8',
     )
 
     manifest = build_manifest(
@@ -938,20 +1014,27 @@ def write_export(
         days_in_median=days_in_median,
         incomplete_days=incomplete_days,
         shapes_observed=len({sid for sid, _ in pairs_before}),
-        shapes_written=len(geometry["shape_keys"]),
+        shapes_written=len(geometry['shape_keys']),
         total_static_shapes=len(shapes_by_key),
-        multi_route_shapes=sum(1 for ids in geometry["shape_route_ids"] if len(ids) > 1),
+        multi_route_shapes=sum(
+            1 for ids in geometry['shape_route_ids'] if len(ids) > 1
+        ),
         attribution=attribution,
         city_limitations=city_limitations,
         schedule_period=schedule_period,
     )
-    manifest_path = out_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    manifest_path = out_dir / 'manifest.json'
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8',
+    )
 
     # --- size report: measure the budget, don't assume it holds ---
-    slot_paths = sorted(slots_dir.glob("*.json"))
+    slot_paths = sorted(slots_dir.glob('*.json'))
     slot_sizes = [(p.stat().st_size, gzip_size(p)) for p in slot_paths]
-    avg_gz = sum(g for _, g in slot_sizes) / len(slot_sizes) if slot_sizes else 0
+    avg_gz = (
+        sum(g for _, g in slot_sizes) / len(slot_sizes) if slot_sizes else 0
+    )
     max_gz = max((g for _, g in slot_sizes), default=0)
 
     manifest_gz = gzip_size(manifest_path)
@@ -962,24 +1045,37 @@ def write_export(
     # the cheapest slot reports a load nobody performs.
     first_load_gz = manifest_gz + geometry_gz + max_gz
 
-    print(f"\n{out_dir}")
-    print(f"  manifest.json  {manifest_path.stat().st_size:,}B raw / {manifest_gz:,}B gz")
-    print(f"  geometry.json  {geometry_path.stat().st_size:,}B raw / {geometry_gz:,}B gz  "
-          f"({len(geometry['shape_idx']):,} segments, {len(geometry['shape_ids']):,} shapes)")
-    print(f"  {len(slot_paths)} timeslot files, avg {avg_gz:,.0f}B gz, largest {max_gz:,}B gz")
-    print(f"  first load (manifest + geometry + heaviest slot): {first_load_gz:,}B gz  "
-          f"(budget: ~1,000,000B)")
-    print(f"  bins: {n_before:,} -> {n_after:,} retained (min_samples={min_samples}), "
-          f"segments: {len(pairs_before):,} -> {len(pairs_after):,}")
+    print(f'\n{out_dir}')
+    print(
+        f'  manifest.json  {manifest_path.stat().st_size:,}B raw / {manifest_gz:,}B gz',
+    )
+    print(
+        f'  geometry.json  {geometry_path.stat().st_size:,}B raw / {geometry_gz:,}B gz  '
+        f'({len(geometry["shape_idx"]):,} segments, {len(geometry["shape_ids"]):,} shapes)',
+    )
+    print(
+        f'  {len(slot_paths)} timeslot files, avg {avg_gz:,.0f}B gz, largest {max_gz:,}B gz',
+    )
+    print(
+        f'  first load (manifest + geometry + heaviest slot): {first_load_gz:,}B gz  '
+        f'(budget: ~1,000,000B)',
+    )
+    print(
+        f'  bins: {n_before:,} -> {n_after:,} retained (min_samples={min_samples}), '
+        f'segments: {len(pairs_before):,} -> {len(pairs_after):,}',
+    )
     if missing_shapes:
-        print(f"  WARNING: {missing_shapes} (shape,segment) pair(s) referenced a shape_key absent "
-              f"from the static feed(s) loaded -- dropped from geometry and every timeslot file",
-              file=sys.stderr)
+        print(
+            f'  WARNING: {missing_shapes} (shape,segment) pair(s) referenced a shape_key absent '
+            f'from the static feed(s) loaded -- dropped from geometry and every timeslot file',
+            file=sys.stderr,
+        )
 
     return manifest
 
 
 # ─── The index over the schedule periods ────────────────────────────────────
+
 
 def current_period_key(schedule_periods: list) -> str | None:
     """The period whose median rests on the most weekdays — the one a client
@@ -998,20 +1094,24 @@ def current_period_key(schedule_periods: list) -> str | None:
     is observed as widely as the old one rather than needing to beat it.
     Weekday days only: a weekend runs its own schedule and never enters the
     median (D4), so the newest weekend day says nothing about which weekday
-    median is current."""
+    median is current.
+    """
     best = None
     for p in schedule_periods:
-        days = p.get("days_in_median_mon_fri", [])
+        days = p.get('days_in_median_mon_fri', [])
         if not days:
             continue
         rank = (len(days), max(days))
         if best is None or rank > best[0]:
-            best = (rank, p["period_key"])
+            best = (rank, p['period_key'])
     return best[1] if best else None
 
 
-def build_period_index(period_entries: list, current: str | None,
-                       days_excluded: list) -> dict:
+def build_period_index(
+    period_entries: list,
+    current: str | None,
+    days_excluded: list,
+) -> dict:
     """The index a client fetches first: which timetables this archive has
     medians for, which one is current, and where each bundle lives. Without
     it a client would have to guess directory names built from a hash.
@@ -1021,19 +1121,21 @@ def build_period_index(period_entries: list, current: str | None,
     period bundle can only list its own days, so without this the web tree
     would say which days were averaged and never which ones were dropped —
     and a dropped public holiday is exactly the kind of omission a reader
-    should be able to see rather than infer from a gap in the dates."""
+    should be able to see rather than infer from a gap in the dates.
+    """
     return {
-        "format_version": 2,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": "typical_weekday_index",
-        "current_period": current,
-        "period_count": len(period_entries),
-        "periods": period_entries,
-        "days_excluded_from_median": days_excluded,
+        'format_version': 2,
+        'generated_at': datetime.now(UTC).isoformat(),
+        'mode': 'typical_weekday_index',
+        'current_period': current,
+        'period_count': len(period_entries),
+        'periods': period_entries,
+        'days_excluded_from_median': days_excluded,
     }
 
 
 # ─── The root index over everything on disk ─────────────────────────────────
+
 
 def write_root_index(output_root: Path) -> dict:
     """web/index.json: which day bundles exist, and where the typical-weekday
@@ -1047,59 +1149,97 @@ def write_root_index(output_root: Path) -> dict:
 
     Minimum fields on purpose: everything else a client could want about a
     day is already in that day's own manifest.json, one fetch away, and a
-    second copy here would be a second thing to keep true."""
+    second copy here would be a second thing to keep true.
+    """
     days = []
-    for d in sorted(output_root.glob("????-??-??")):
-        if (d / "manifest.json").exists():
-            days.append({"date": d.name, "path": d.name})
+    for d in sorted(output_root.glob('????-??-??')):
+        if (d / 'manifest.json').exists():
+            days.append({'date': d.name, 'path': d.name})
 
     typical = None
-    typical_index = output_root / "typical_weekday" / "manifest.json"
+    typical_index = output_root / 'typical_weekday' / 'manifest.json'
     if typical_index.exists():
         typical = {
-            "path": "typical_weekday",
-            "current_period": json.loads(typical_index.read_text(encoding="utf-8"))["current_period"],
+            'path': 'typical_weekday',
+            'current_period': json.loads(
+                typical_index.read_text(encoding='utf-8'),
+            )['current_period'],
         }
 
     index = {
-        "format_version": 2,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "days": days,
-        "typical_weekday": typical,
+        'format_version': 2,
+        'generated_at': datetime.now(UTC).isoformat(),
+        'days': days,
+        'typical_weekday': typical,
     }
     output_root.mkdir(parents=True, exist_ok=True)
-    (output_root / "index.json").write_text(
-        json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"\n{output_root / 'index.json'}: {len(days)} day bundle(s), "
-          f"typical_weekday {'present' if typical else 'absent'}")
+    (output_root / 'index.json').write_text(
+        json.dumps(index, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8',
+    )
+    print(
+        f'\n{output_root / "index.json"}: {len(days)} day bundle(s), '
+        f'typical_weekday {"present" if typical else "absent"}',
+    )
     return index
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("static_source", type=Path,
-                        help="GTFS static zip (needs shapes.txt), or a directory of gtfs_<YYYY-MM-DD>.zip "
-                             "snapshots -- every snapshot found is loaded and merged (see load_static_sources)")
-    parser.add_argument("data_dir", type=Path, help="Directory with <YYYY-MM-DD>.jsonl/.manifest.json and segment_speeds.py's processed/ output")
-    parser.add_argument("--processed-dir", type=Path, default=None,
-                        help="Where segment_speeds.py wrote its output (default: <data_dir>/processed)")
-    parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Where to write the web export (default: <data_dir>/web)")
-    parser.add_argument("--day", type=str, default=None,
-                        help="Export one specific YYYY-MM-DD day's own median instead of typical_weekday.json "
-                             "(Component D feature 2, the day switcher)")
-    parser.add_argument("--min-samples", type=int, default=MIN_SAMPLES_DEFAULT,
-                        help=f"Drop (segment, timeslot) bins with fewer observations than this (default: {MIN_SAMPLES_DEFAULT})")
-    parser.add_argument("--city", type=str, default=None,
-                        help="City profile supplying attribution and the city's own known "
-                             f"limitations (cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
-                             "Default: read from data_dir, laid out as .../data/<city>/")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'static_source',
+        type=Path,
+        help='GTFS static zip (needs shapes.txt), or a directory of gtfs_<YYYY-MM-DD>.zip '
+        'snapshots -- every snapshot found is loaded and merged (see load_static_sources)',
+    )
+    parser.add_argument(
+        'data_dir',
+        type=Path,
+        help="Directory with <YYYY-MM-DD>.jsonl/.manifest.json and segment_speeds.py's processed/ output",
+    )
+    parser.add_argument(
+        '--processed-dir',
+        type=Path,
+        default=None,
+        help='Where segment_speeds.py wrote its output (default: <data_dir>/processed)',
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=None,
+        help='Where to write the web export (default: <data_dir>/web)',
+    )
+    parser.add_argument(
+        '--day',
+        type=str,
+        default=None,
+        help="Export one specific YYYY-MM-DD day's own median instead of typical_weekday.json "
+        '(Component D feature 2, the day switcher)',
+    )
+    parser.add_argument(
+        '--min-samples',
+        type=int,
+        default=MIN_SAMPLES_DEFAULT,
+        help=f'Drop (segment, timeslot) bins with fewer observations than this (default: {MIN_SAMPLES_DEFAULT})',
+    )
+    parser.add_argument(
+        '--city',
+        type=str,
+        default=None,
+        help="City profile supplying attribution and the city's own known "
+        f'limitations (cities/<slug>.json; have: {", ".join(city_slugs()) or "none"}). '
+        'Default: read from data_dir, laid out as .../data/<city>/',
+    )
     args = parser.parse_args()
 
-    processed_dir = args.processed_dir or (args.data_dir / "processed")
-    output_root = args.output_dir or (args.data_dir / "web")
+    processed_dir = args.processed_dir or (args.data_dir / 'processed')
+    output_root = args.output_dir or (args.data_dir / 'web')
 
     # An export whose city cannot be resolved still runs and says so: the
     # manifest carries attribution: null, and publish_web.py refuses to put a
@@ -1109,8 +1249,11 @@ def main():
     try:
         city = load_city_for_path(args.data_dir, slug=args.city)
     except CityProfileError as e:
-        print(f"WARNING: no city profile resolved ({e}); the export will carry no "
-              f"attribution and cannot be published as is", file=sys.stderr)
+        print(
+            f'WARNING: no city profile resolved ({e}); the export will carry no '
+            f'attribution and cannot be published as is',
+            file=sys.stderr,
+        )
         city = None
     city_common = dict(
         # The city's own name travels with the credit line, so a page can
@@ -1119,35 +1262,57 @@ def main():
         # narrowed to the feeds this export actually read: the profile
         # describes all of the city's feeds, but a manifest that listed terms
         # for trip_updates or alerts would credit data no bundle here shows.
-        attribution=({**city["attribution"], "city": city["name"], "city_slug": city["slug"],
-                      "feed_licences": {feed: city["attribution"]["feed_licences"][feed]
-                                        for feed in REQUIRED_FEEDS}}
-                     if city else None),
-        city_limitations=tuple(city.get("known_limitations", ())) if city else (),
+        attribution=(
+            {
+                **city['attribution'],
+                'city': city['name'],
+                'city_slug': city['slug'],
+                'feed_licences': {
+                    feed: city['attribution']['feed_licences'][feed]
+                    for feed in REQUIRED_FEEDS
+                },
+            }
+            if city
+            else None
+        ),
+        city_limitations=tuple(city.get('known_limitations', ()))
+        if city
+        else (),
     )
 
-    shapes_by_key, route_info, shape_ids_by_key, static_paths = load_static_sources(args.static_source)
+    shapes_by_key, route_info, shape_ids_by_key, static_paths = (
+        load_static_sources(args.static_source)
+    )
     static_feed_names = [p.name for p in static_paths]
 
-    common = dict(min_samples=args.min_samples, shapes_by_key=shapes_by_key,
-                  route_info=route_info, shape_ids_by_key=shape_ids_by_key, **city_common)
+    common = dict(
+        min_samples=args.min_samples,
+        shapes_by_key=shapes_by_key,
+        route_info=route_info,
+        shape_ids_by_key=shape_ids_by_key,
+        **city_common,
+    )
 
     if args.day:
         # The day switcher exports one day's own median. A single day ran a
         # single timetable, so nothing here splits by schedule period.
-        segment_speeds_path = processed_dir / f"segment_speeds_{args.day}.jsonl"
+        segment_speeds_path = processed_dir / f'segment_speeds_{args.day}.jsonl'
         if not segment_speeds_path.exists():
-            print(f"{segment_speeds_path}: not found", file=sys.stderr)
+            print(f'{segment_speeds_path}: not found', file=sys.stderr)
             sys.exit(1)
         t0 = time.time()
         bins = aggregate_day_bins(segment_speeds_path)
-        print(f"  aggregated {segment_speeds_path.name}: {len(bins):,} bins ({time.time() - t0:.1f}s)")
+        print(
+            f'  aggregated {segment_speeds_path.name}: {len(bins):,} bins ({time.time() - t0:.1f}s)',
+        )
         write_export(
             out_dir=output_root / args.day,
             bins=bins,
             mode=args.day,
-            source={"segment_speeds_file": segment_speeds_path.name,
-                    "static_feeds_used": static_feed_names},
+            source={
+                'segment_speeds_file': segment_speeds_path.name,
+                'static_feeds_used': static_feed_names,
+            },
             days_processed=[args.day],
             days_in_median=[args.day],
             incomplete_days=incomplete_day_notes(args.data_dir, [args.day]),
@@ -1156,45 +1321,59 @@ def main():
         write_root_index(output_root)
         return
 
-    typical_path = processed_dir / "typical_weekday.json"
+    typical_path = processed_dir / 'typical_weekday.json'
     if not typical_path.exists():
-        print(f"{typical_path}: not found -- run segment_speeds.py first", file=sys.stderr)
+        print(
+            f'{typical_path}: not found -- run segment_speeds.py first',
+            file=sys.stderr,
+        )
         sys.exit(1)
     bins_by_period, typical_data = load_typical_weekday_bins(typical_path)
-    if "schedule_periods" not in typical_data:
-        print(f"{typical_path}: no schedule_periods -- it predates the schedule-period split, "
-              f"re-run segment_speeds.py", file=sys.stderr)
+    if 'schedule_periods' not in typical_data:
+        print(
+            f'{typical_path}: no schedule_periods -- it predates the schedule-period split, '
+            f're-run segment_speeds.py',
+            file=sys.stderr,
+        )
         sys.exit(1)
     # typical_weekday.json records a list of feeds (one per day it
     # potentially spans, see segment_speeds.py's day_breakdown) rather
     # than one scalar file -- warn only if this run's loaded feeds don't
     # cover everything segment_speeds.py actually used, since a
     # directory source naturally loads every snapshot anyway.
-    recorded_feeds = {f["file"] for f in typical_data.get("static_feeds", [])}
+    recorded_feeds = {f['file'] for f in typical_data.get('static_feeds', [])}
     missing_feeds = recorded_feeds - set(static_feed_names)
     if missing_feeds:
-        print(f"WARNING: typical_weekday.json was built using {sorted(missing_feeds)}, "
-              f"not loaded by this run ({static_feed_names}) -- some shape_ids may not resolve",
-              file=sys.stderr)
+        print(
+            f'WARNING: typical_weekday.json was built using {sorted(missing_feeds)}, '
+            f'not loaded by this run ({static_feed_names}) -- some shape_ids may not resolve',
+            file=sys.stderr,
+        )
 
     # One bundle per schedule period under typical_weekday/, plus an index
     # naming them. The whole tree is rebuilt so a period that has left the
     # archive cannot linger as a directory the index no longer mentions.
-    root = output_root / "typical_weekday"
+    root = output_root / 'typical_weekday'
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
 
-    periods = [p for p in typical_data["schedule_periods"] if p["period_key"] in bins_by_period]
+    periods = [
+        p
+        for p in typical_data['schedule_periods']
+        if p['period_key'] in bins_by_period
+    ]
     index_entries = []
     for period in periods:
-        period_key = period["period_key"]
-        days_in_median = period.get("days_in_median_mon_fri", [])
+        period_key = period['period_key']
+        days_in_median = period.get('days_in_median_mon_fri', [])
         manifest = write_export(
             out_dir=root / period_key,
             bins=bins_by_period[period_key],
-            mode="typical_weekday",
-            source={"typical_weekday_file": typical_path.name,
-                    "static_feeds_used": static_feed_names},
+            mode='typical_weekday',
+            source={
+                'typical_weekday_file': typical_path.name,
+                'static_feeds_used': static_feed_names,
+            },
             days_processed=days_in_median,
             days_in_median=days_in_median,
             incomplete_days=incomplete_day_notes(args.data_dir, days_in_median),
@@ -1202,32 +1381,44 @@ def main():
             **common,
         )
         index_entries.append({
-            "period_key": period_key,
-            "path": period_key,
-            "first_date": period["first_date"],
-            "last_date": period["last_date"],
-            "days_in_median": days_in_median,
-            "route_count": period["route_count"],
-            "trip_count": period["trip_count"],
-            "bins_total_before_threshold": manifest["web_export"]["bins_total_before_threshold"],
-            "bins_retained": manifest["web_export"]["bins_retained"],
-            "segments_retained": manifest["segment_count"],
-            "timeslot_count": manifest["timeslot_count"],
+            'period_key': period_key,
+            'path': period_key,
+            'first_date': period['first_date'],
+            'last_date': period['last_date'],
+            'days_in_median': days_in_median,
+            'route_count': period['route_count'],
+            'trip_count': period['trip_count'],
+            'bins_total_before_threshold': manifest['web_export'][
+                'bins_total_before_threshold'
+            ],
+            'bins_retained': manifest['web_export']['bins_retained'],
+            'segments_retained': manifest['segment_count'],
+            'timeslot_count': manifest['timeslot_count'],
         })
 
-    index = build_period_index(index_entries, current_period_key(periods),
-                               typical_data.get("days_excluded_from_median", []))
-    index_path = root / "manifest.json"
-    index_path.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    index = build_period_index(
+        index_entries,
+        current_period_key(periods),
+        typical_data.get('days_excluded_from_median', []),
+    )
+    index_path = root / 'manifest.json'
+    index_path.write_text(
+        json.dumps(index, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8',
+    )
 
-    print(f"\n{index_path}: {len(index_entries)} schedule period(s), "
-          f"current {index['current_period']}")
+    print(
+        f'\n{index_path}: {len(index_entries)} schedule period(s), '
+        f'current {index["current_period"]}',
+    )
     for e in index_entries:
-        print(f"  {e['period_key']}  {e['first_date']}..{e['last_date']}  "
-              f"{len(e['days_in_median'])} weekday day(s), {e['bins_retained']:,} bins retained")
+        print(
+            f'  {e["period_key"]}  {e["first_date"]}..{e["last_date"]}  '
+            f'{len(e["days_in_median"])} weekday day(s), {e["bins_retained"]:,} bins retained',
+        )
 
     write_root_index(output_root)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

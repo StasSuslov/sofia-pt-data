@@ -49,13 +49,13 @@ MS_TO_KMH = 3.6
 # Windows are named where the report names them. The peak windows are the ones
 # a Sofia timetable and a Sofia commuter would both call peak; the point of the
 # figure is what the data does inside them, so they are marked, not derived.
-MORNING_PEAK = "08:00"
-MIDDAY = "12:00"
-EVENING_PEAK = "17:15"     # the slowest slot of the whole day, see profile
-NIGHT_WINDOW = ("00:00", "03:45")
-DAY_WINDOW = ("07:00", "18:45")
-CORE_WINDOW = ("07:00", "19:00")
-PEAK_BANDS = [("07:30", "09:00"), ("16:30", "18:30")]
+MORNING_PEAK = '08:00'
+MIDDAY = '12:00'
+EVENING_PEAK = '17:15'  # the slowest slot of the whole day, see profile
+NIGHT_WINDOW = ('00:00', '03:45')
+DAY_WINDOW = ('07:00', '18:45')
+CORE_WINDOW = ('07:00', '19:00')
+PEAK_BANDS = [('07:30', '09:00'), ('16:30', '18:30')]
 
 # A slot observed on this many segments or more gets a solid line. Below it the
 # line goes thin and grey. Between 03:00 and 08:00 the population of the
@@ -66,28 +66,30 @@ SOLID_MIN_SEGMENTS = 1000
 
 
 def slots() -> list:
-    return [f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 15, 30, 45)]
+    return [f'{h:02d}:{m:02d}' for h in range(24) for m in (0, 15, 30, 45)]
 
 
 def load_period(path: Path, period_key: str | None) -> tuple:
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    key = period_key or current_period_key(doc["schedule_periods"])
+    doc = json.loads(path.read_text(encoding='utf-8'))
+    key = period_key or current_period_key(doc['schedule_periods'])
     if key is None:
-        raise SystemExit("no schedule period holds a weekday median")
-    period = next(p for p in doc["schedule_periods"] if p["period_key"] == key)
+        raise SystemExit('no schedule period holds a weekday median')
+    period = next(p for p in doc['schedule_periods'] if p['period_key'] == key)
     # {(shape_key, segment_index): {slot: kmh}} over bins that clear the sample
     # threshold, so the figure rests on the same bins the map publishes.
     by_segment = defaultdict(dict)
-    for bin_key, value in doc["segments"][key].items():
-        if value["n_samples"] < MIN_SAMPLES:
+    for bin_key, value in doc['segments'][key].items():
+        if value['n_samples'] < MIN_SAMPLES:
             continue
-        shape_key, seg_idx, slot = bin_key.rsplit("|", 2)
-        by_segment[(shape_key, seg_idx)][slot] = value["median_speed_ms"] * MS_TO_KMH
+        shape_key, seg_idx, slot = bin_key.rsplit('|', 2)
+        by_segment[shape_key, seg_idx][slot] = (
+            value['median_speed_ms'] * MS_TO_KMH
+        )
     return period, dict(by_segment)
 
 
 def profile(by_segment: dict) -> dict:
-    """slot -> (median km/h over segments observed in that slot, segment count).
+    """Slot -> (median km/h over segments observed in that slot, segment count).
 
     The count moves with the slot by a factor of sixteen between 03:00 and
     08:00, which is why the line alone is not the whole story and the report
@@ -126,8 +128,13 @@ def pairs(by_segment: dict, a, b, other: dict | None = None) -> tuple:
     terminus or a position that never updated, not the speed of a street. They
     are dropped and counted, never dropped in silence.
     """
+
     def value(speeds, spec):
-        return speeds.get(spec) if isinstance(spec, str) else window_median(speeds, spec)
+        return (
+            speeds.get(spec)
+            if isinstance(spec, str)
+            else window_median(speeds, spec)
+        )
 
     kept, zeroes = [], 0
     for key, speeds in by_segment.items():
@@ -148,14 +155,14 @@ def paired(by_segment: dict, a, b, other: dict | None = None) -> dict:
     """Per-segment difference a minus b, over segments carrying both."""
     kept, zeroes = pairs(by_segment, a, b, other)
     if not kept:
-        return {"n": 0, "zeroes": zeroes}
+        return {'n': 0, 'zeroes': zeroes}
     diffs = sorted(va - vb for va, vb in kept)
     return {
-        "n": len(diffs),
-        "zeroes": zeroes,
-        "median_diff": statistics.median(diffs),
-        "share_a_slower": sum(1 for d in diffs if d < 0) / len(diffs),
-        "iqr": (diffs[len(diffs) // 4], diffs[3 * len(diffs) // 4]),
+        'n': len(diffs),
+        'zeroes': zeroes,
+        'median_diff': statistics.median(diffs),
+        'share_a_slower': sum(1 for d in diffs if d < 0) / len(diffs),
+        'iqr': (diffs[len(diffs) // 4], diffs[3 * len(diffs) // 4]),
     }
 
 
@@ -172,9 +179,13 @@ def persistence(by_segment: dict, cut_kmh: float, a: str, b: str) -> dict:
     kept, zeroes = pairs(by_segment, a, b)
     slow_at_a = [(va, vb) for va, vb in kept if va < cut_kmh]
     still = sum(1 for _, vb in slow_at_a if vb < cut_kmh)
-    return {"population": len(kept), "zeroes": zeroes, "slow_at_a": len(slow_at_a),
-            "still_slow": still,
-            "share": still / len(slow_at_a) if slow_at_a else 0.0}
+    return {
+        'population': len(kept),
+        'zeroes': zeroes,
+        'slow_at_a': len(slow_at_a),
+        'still_slow': still,
+        'share': still / len(slow_at_a) if slow_at_a else 0.0,
+    }
 
 
 def svg(prof: dict, period: dict, out: Path) -> None:
@@ -184,8 +195,11 @@ def svg(prof: dict, period: dict, out: Path) -> None:
     pw, ph = w - left - right, h - top - bottom
     y_max = 30.0
 
-    def x(i):  return left + pw * i / (len(all_slots) - 1)
-    def y(kmh): return top + ph * (1 - kmh / y_max)
+    def x(i):
+        return left + pw * i / (len(all_slots) - 1)
+
+    def y(kmh):
+        return top + ph * (1 - kmh / y_max)
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" '
@@ -204,24 +218,35 @@ def svg(prof: dict, period: dict, out: Path) -> None:
     ]
     for lo, hi in PEAK_BANDS:
         x0, x1 = x(all_slots.index(lo)), x(all_slots.index(hi))
-        parts.append(f'<rect x="{x0:.1f}" y="{top}" width="{x1 - x0:.1f}" '
-                     f'height="{ph}" fill="#ffd9c7"/>')
+        parts.append(
+            f'<rect x="{x0:.1f}" y="{top}" width="{x1 - x0:.1f}" '
+            f'height="{ph}" fill="#ffd9c7"/>',
+        )
     for kmh in range(0, int(y_max) + 1, 5):
         yy = y(kmh)
-        parts.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{left + pw}" y2="{yy:.1f}" '
-                     f'stroke="#dcdcdc" stroke-width="1"/>')
-        parts.append(f'<text x="{left - 8}" y="{yy + 4:.1f}" font-size="11" '
-                     f'text-anchor="end" fill="#555">{kmh}</text>')
+        parts.append(
+            f'<line x1="{left}" y1="{yy:.1f}" x2="{left + pw}" y2="{yy:.1f}" '
+            f'stroke="#dcdcdc" stroke-width="1"/>',
+        )
+        parts.append(
+            f'<text x="{left - 8}" y="{yy + 4:.1f}" font-size="11" '
+            f'text-anchor="end" fill="#555">{kmh}</text>',
+        )
     for i, slot in enumerate(all_slots):
-        if slot.endswith(":00") and int(slot[:2]) % 3 == 0:
-            parts.append(f'<text x="{x(i):.1f}" y="{top + ph + 18:.1f}" font-size="11" '
-                         f'text-anchor="middle" fill="#555">{slot}</text>')
+        if slot.endswith(':00') and int(slot[:2]) % 3 == 0:
+            parts.append(
+                f'<text x="{x(i):.1f}" y="{top + ph + 18:.1f}" font-size="11" '
+                f'text-anchor="middle" fill="#555">{slot}</text>',
+            )
     # Weight belongs to the edge, not to the point. A piece of line joining a
     # well-observed slot to a thin one rests on the thin one, so it is drawn
     # thin. Weighting by the point drew the crossing edge solid going into the
     # night and dashed coming back out, which is one edge weighted two ways.
-    pts = [(x(i), y(prof[s][0]), prof[s][1] >= SOLID_MIN_SEGMENTS)
-           for i, s in enumerate(all_slots) if s in prof]
+    pts = [
+        (x(i), y(prof[s][0]), prof[s][1] >= SOLID_MIN_SEGMENTS)
+        for i, s in enumerate(all_slots)
+        if s in prof
+    ]
     runs = []
     for (x0, y0, s0), (x1, y1, s1) in zip(pts, pts[1:]):
         solid = s0 and s1
@@ -230,112 +255,171 @@ def svg(prof: dict, period: dict, out: Path) -> None:
         else:
             runs.append((solid, [(x0, y0), (x1, y1)]))
     for solid, points in runs:
-        style = ('stroke="#1a4f8a" stroke-width="2.5"' if solid
-                 else 'stroke="#9aa5b1" stroke-width="1.2" stroke-dasharray="4 3"')
-        coords = " ".join(f"{px:.1f},{py:.1f}" for px, py in points)
+        style = (
+            'stroke="#1a4f8a" stroke-width="2.5"'
+            if solid
+            else 'stroke="#9aa5b1" stroke-width="1.2" stroke-dasharray="4 3"'
+        )
+        coords = ' '.join(f'{px:.1f},{py:.1f}' for px, py in points)
         parts.append(f'<polyline points="{coords}" fill="none" {style}/>')
-    parts.append(f'<text x="{left - 46}" y="{top - 10}" font-size="11" fill="#555">km/h</text>')
+    parts.append(
+        f'<text x="{left - 46}" y="{top - 10}" font-size="11" fill="#555">km/h</text>',
+    )
     # The caption names the range of the line being drawn, not a remembered
     # one: the first figure's 1.8 km/h stayed in this string while the second
     # figure plotted 2.9, which is the report's own headline contradicted in
     # its own image.
-    core = [prof[s][0] for s in all_slots
-            if CORE_WINDOW[0] <= s <= CORE_WINDOW[1] and s in prof]
-    parts.append(f'<text x="{left}" y="{h - 20}" font-size="11" fill="#555">'
-                 'The y axis starts at zero on purpose: rescaled to the data, a '
-                 f'range of {max(core) - min(core):.1f} km/h would look like a '
-                 'rush hour.</text>')
-    parts.append("</svg>")
+    core = [
+        prof[s][0]
+        for s in all_slots
+        if CORE_WINDOW[0] <= s <= CORE_WINDOW[1] and s in prof
+    ]
+    parts.append(
+        f'<text x="{left}" y="{h - 20}" font-size="11" fill="#555">'
+        'The y axis starts at zero on purpose: rescaled to the data, a '
+        f'range of {max(core) - min(core):.1f} km/h would look like a '
+        'rush hour.</text>',
+    )
+    parts.append('</svg>')
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(parts) + "\n", encoding="utf-8")
+    out.write_text('\n'.join(parts) + '\n', encoding='utf-8')
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("aggregate", type=Path)
-    ap.add_argument("out_svg", type=Path)
-    ap.add_argument("--period", default=None)
-    ap.add_argument("--against", default=None, metavar="PERIOD_KEY",
-                    help="an earlier schedule period to difference against, "
-                         "segment by segment, at the same time of day")
+    ap.add_argument('aggregate', type=Path)
+    ap.add_argument('out_svg', type=Path)
+    ap.add_argument('--period', default=None)
+    ap.add_argument(
+        '--against',
+        default=None,
+        metavar='PERIOD_KEY',
+        help='an earlier schedule period to difference against, '
+        'segment by segment, at the same time of day',
+    )
     args = ap.parse_args()
 
     period, by_segment = load_period(args.aggregate, args.period)
     prof = profile(by_segment)
     svg(prof, period, args.out_svg)
 
-    print(f"period {period['period_key']} "
-          f"{period['first_date']}..{period['last_date']} "
-          f"({len(period['days_in_median_mon_fri'])} weekdays), "
-          f"{len(by_segment):,} segments with at least one bin at n>={MIN_SAMPLES}")
-    print(f"\nfigure: {args.out_svg}")
+    print(
+        f'period {period["period_key"]} '
+        f'{period["first_date"]}..{period["last_date"]} '
+        f'({len(period["days_in_median_mon_fri"])} weekdays), '
+        f'{len(by_segment):,} segments with at least one bin at n>={MIN_SAMPLES}',
+    )
+    print(f'\nfigure: {args.out_svg}')
 
-    print("\nslot   km/h  segments")
+    print('\nslot   km/h  segments')
     for s in slots():
         if s in prof:
-            print(f"{s}  {prof[s][0]:5.2f}  {prof[s][1]:8,}")
+            print(f'{s}  {prof[s][0]:5.2f}  {prof[s][1]:8,}')
 
-    core = [(s, prof[s][0]) for s in slots()
-            if s in prof and CORE_WINDOW[0] <= s <= CORE_WINDOW[1]]
+    core = [
+        (s, prof[s][0])
+        for s in slots()
+        if s in prof and CORE_WINDOW[0] <= s <= CORE_WINDOW[1]
+    ]
     lo = min(core, key=lambda kv: kv[1])
     hi = max(core, key=lambda kv: kv[1])
-    print(f"\ncore {CORE_WINDOW[0]}-{CORE_WINDOW[1]}: "
-          f"{lo[1]:.2f} km/h at {lo[0]} to {hi[1]:.2f} km/h at {hi[0]}, "
-          f"range {hi[1] - lo[1]:.2f}")
+    print(
+        f'\ncore {CORE_WINDOW[0]}-{CORE_WINDOW[1]}: '
+        f'{lo[1]:.2f} km/h at {lo[0]} to {hi[1]:.2f} km/h at {hi[0]}, '
+        f'range {hi[1] - lo[1]:.2f}',
+    )
 
     comparisons = [
-        (f"morning peak {MORNING_PEAK} vs midday {MIDDAY}", MORNING_PEAK, MIDDAY),
-        (f"evening peak {EVENING_PEAK} vs midday {MIDDAY}", EVENING_PEAK, MIDDAY),
-        (f"evening peak {EVENING_PEAK} vs morning peak {MORNING_PEAK}", EVENING_PEAK, MORNING_PEAK),
-        (f"night {NIGHT_WINDOW[0]}-{NIGHT_WINDOW[1]} vs day "
-         f"{DAY_WINDOW[0]}-{DAY_WINDOW[1]}", NIGHT_WINDOW, DAY_WINDOW),
+        (
+            f'morning peak {MORNING_PEAK} vs midday {MIDDAY}',
+            MORNING_PEAK,
+            MIDDAY,
+        ),
+        (
+            f'evening peak {EVENING_PEAK} vs midday {MIDDAY}',
+            EVENING_PEAK,
+            MIDDAY,
+        ),
+        (
+            f'evening peak {EVENING_PEAK} vs morning peak {MORNING_PEAK}',
+            EVENING_PEAK,
+            MORNING_PEAK,
+        ),
+        (
+            f'night {NIGHT_WINDOW[0]}-{NIGHT_WINDOW[1]} vs day '
+            f'{DAY_WINDOW[0]}-{DAY_WINDOW[1]}',
+            NIGHT_WINDOW,
+            DAY_WINDOW,
+        ),
     ]
-    print("\npaired same-segment comparisons")
+    print('\npaired same-segment comparisons')
     for label, a, b in comparisons:
         r = paired(by_segment, a, b)
-        print(f"  {label}")
-        print(f"    {r['n']:,} segments carry both "
-              f"({r['zeroes']:,} excluded for a median of exactly 0)")
-        print(f"    median difference {r['median_diff']:+.2f} km/h, "
-              f"IQR {r['iqr'][0]:+.2f} to {r['iqr'][1]:+.2f}")
-        print(f"    first side slower in {r['share_a_slower']:.1%} of them")
+        print(f'  {label}')
+        print(
+            f'    {r["n"]:,} segments carry both '
+            f'({r["zeroes"]:,} excluded for a median of exactly 0)',
+        )
+        print(
+            f'    median difference {r["median_diff"]:+.2f} km/h, '
+            f'IQR {r["iqr"][0]:+.2f} to {r["iqr"][1]:+.2f}',
+        )
+        print(f'    first side slower in {r["share_a_slower"]:.1%} of them')
 
-    print("\nis slow at peak the same street as slow at midday?")
+    print('\nis slow at peak the same street as slow at midday?')
     for cut in (10.0, 15.0, 20.0):
         r = persistence(by_segment, cut, MORNING_PEAK, MIDDAY)
-        print(f"  under {cut:g} km/h at {MORNING_PEAK}: {r['slow_at_a']:,} of "
-              f"{r['population']:,} segments, and {r['still_slow']:,} of them "
-              f"({r['share']:.1%}) are still under {cut:g} km/h at {MIDDAY}")
+        print(
+            f'  under {cut:g} km/h at {MORNING_PEAK}: {r["slow_at_a"]:,} of '
+            f'{r["population"]:,} segments, and {r["still_slow"]:,} of them '
+            f'({r["share"]:.1%}) are still under {cut:g} km/h at {MIDDAY}',
+        )
 
     if args.against:
         older, old_by_segment = load_period(args.aggregate, args.against)
         common = by_segment.keys() & old_by_segment.keys()
-        print(f"\nagainst period {older['period_key']} "
-              f"{older['first_date']}..{older['last_date']} "
-              f"({len(older['days_in_median_mon_fri'])} weekdays), "
-              f"{len(old_by_segment):,} segments, {len(common):,} in both")
-        print("same segment, same time of day, this period minus that one")
-        specs = [*(f"{h:02d}:00" for h in range(7, 20)),
-                 EVENING_PEAK, DAY_WINDOW, NIGHT_WINDOW]
+        print(
+            f'\nagainst period {older["period_key"]} '
+            f'{older["first_date"]}..{older["last_date"]} '
+            f'({len(older["days_in_median_mon_fri"])} weekdays), '
+            f'{len(old_by_segment):,} segments, {len(common):,} in both',
+        )
+        print('same segment, same time of day, this period minus that one')
+        specs = [
+            *(f'{h:02d}:00' for h in range(7, 20)),
+            EVENING_PEAK,
+            DAY_WINDOW,
+            NIGHT_WINDOW,
+        ]
         for spec in specs:
             r = paired(by_segment, spec, spec, other=old_by_segment)
-            label = spec if isinstance(spec, str) else f"{spec[0]}-{spec[1]}"
-            if not r["n"]:
-                print(f"  {label:>12}  no segment carries both")
+            label = spec if isinstance(spec, str) else f'{spec[0]}-{spec[1]}'
+            if not r['n']:
+                print(f'  {label:>12}  no segment carries both')
                 continue
-            print(f"  {label:>12}  n={r['n']:6,}  zero={r['zeroes']:4,}  "
-                  f"median {r['median_diff']:+.2f} km/h  "
-                  f"IQR {r['iqr'][0]:+.2f} to {r['iqr'][1]:+.2f}  "
-                  f"slower now in {r['share_a_slower']:.1%}")
+            print(
+                f'  {label:>12}  n={r["n"]:6,}  zero={r["zeroes"]:4,}  '
+                f'median {r["median_diff"]:+.2f} km/h  '
+                f'IQR {r["iqr"][0]:+.2f} to {r["iqr"][1]:+.2f}  '
+                f'slower now in {r["share_a_slower"]:.1%}',
+            )
 
-    day_pop = sum(1 for sp in by_segment.values()
-                  if window_median(sp, DAY_WINDOW) is not None)
-    night_pop = sum(1 for sp in by_segment.values()
-                    if window_median(sp, NIGHT_WINDOW) is not None)
-    print(f"\npopulations: {day_pop:,} segments observed in the day window, "
-          f"{night_pop:,} at night")
+    day_pop = sum(
+        1
+        for sp in by_segment.values()
+        if window_median(sp, DAY_WINDOW) is not None
+    )
+    night_pop = sum(
+        1
+        for sp in by_segment.values()
+        if window_median(sp, NIGHT_WINDOW) is not None
+    )
+    print(
+        f'\npopulations: {day_pop:,} segments observed in the day window, '
+        f'{night_pop:,} at night',
+    )
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

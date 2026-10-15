@@ -31,7 +31,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -39,11 +39,10 @@ from zoneinfo import ZoneInfo
 import requests
 from google.transit import gtfs_realtime_pb2
 
-from config import (  # noqa: E402
+from config import (
     DEFAULT_HOURS,
     CityProfileError,
     city_slugs,
-    load_city,
     load_city_for_path,
 )
 
@@ -58,18 +57,23 @@ from config import (  # noqa: E402
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def is_in_network_bbox(lat: float, lon: float, bbox: dict) -> bool:
     """Is this position inside the city's network, or is it teleportation?"""
     return (
-        bbox["lat_min"] <= lat <= bbox["lat_max"]
-        and bbox["lon_min"] <= lon <= bbox["lon_max"]
+        bbox['lat_min'] <= lat <= bbox['lat_max']
+        and bbox['lon_min'] <= lon <= bbox['lon_max']
     )
 
 
-def dated_output_path(output_dir: Path, tz: ZoneInfo, when: datetime | None = None) -> Path:
+def dated_output_path(
+    output_dir: Path,
+    tz: ZoneInfo,
+    when: datetime | None = None,
+) -> Path:
     """Path for the daily-rotated file covering `when`'s local calendar date in `tz`."""
     local_date = (when or datetime.now(tz)).astimezone(tz).date()
-    return output_dir / f"{local_date.isoformat()}.jsonl"
+    return output_dir / f'{local_date.isoformat()}.jsonl'
 
 
 def heartbeat_path_for(data_path: Path) -> Path:
@@ -83,26 +87,32 @@ def heartbeat_path_for(data_path: Path) -> Path:
     attempt (outcome and vehicle count) so completeness can be verified
     independently of the collector's own run-summary counters.
     """
-    return data_path.with_name(f"{data_path.stem}.polls.jsonl")
+    return data_path.with_name(f'{data_path.stem}.polls.jsonl')
 
 
 _VP = gtfs_realtime_pb2.VehiclePosition
 
 
 def _enum_name(message, field: str, enum) -> str | None:
-    return enum.Name(getattr(message, field)) if message.HasField(field) else None
+    return (
+        enum.Name(getattr(message, field)) if message.HasField(field) else None
+    )
 
 
 class PollResult(NamedTuple):
     records: list[dict]
     fetch_ok: bool
     poll_ts: int
-    entities_total: int            # feed entities that are vehicles at all
-    vehicles_with_position: int    # ...and report a position
-    dropped_out_of_bbox: int       # ...but fell outside NETWORK_BBOX
+    entities_total: int  # feed entities that are vehicles at all
+    vehicles_with_position: int  # ...and report a position
+    dropped_out_of_bbox: int  # ...but fell outside NETWORK_BBOX
 
 
-def fetch_vehicle_positions(url: str, session: requests.Session, bbox: dict) -> PollResult:
+def fetch_vehicle_positions(
+    url: str,
+    session: requests.Session,
+    bbox: dict,
+) -> PollResult:
     """
     Fetch and parse one GTFS-RT VehiclePositions snapshot.
 
@@ -117,20 +127,20 @@ def fetch_vehicle_positions(url: str, session: requests.Session, bbox: dict) -> 
     the bbox filter is discarding, poll by poll, instead of that being
     invisible.
     """
-    poll_ts = int(datetime.now(timezone.utc).timestamp())
+    poll_ts = int(datetime.now(UTC).timestamp())
 
     try:
         response = session.get(url, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
-        print(f"[WARN] Fetch failed: {e}", file=sys.stderr)
+        print(f'[WARN] Fetch failed: {e}', file=sys.stderr)
         return PollResult([], False, poll_ts, 0, 0, 0)
 
     feed = gtfs_realtime_pb2.FeedMessage()
     try:
         feed.ParseFromString(response.content)
     except Exception as e:
-        print(f"[WARN] Protobuf parse failed: {e}", file=sys.stderr)
+        print(f'[WARN] Protobuf parse failed: {e}', file=sys.stderr)
         return PollResult([], False, poll_ts, 0, 0, 0)
 
     records = []
@@ -139,12 +149,12 @@ def fetch_vehicle_positions(url: str, session: requests.Session, bbox: dict) -> 
     dropped_out_of_bbox = 0
 
     for entity in feed.entity:
-        if not entity.HasField("vehicle"):
+        if not entity.HasField('vehicle'):
             continue
         entities_total += 1
 
         v = entity.vehicle
-        if not v.HasField("position"):
+        if not v.HasField('position'):
             continue
         vehicles_with_position += 1
 
@@ -156,36 +166,65 @@ def fetch_vehicle_positions(url: str, session: requests.Session, bbox: dict) -> 
             continue
 
         record = {
-            "snapshot_ts": poll_ts,
-            "vehicle_id":  v.vehicle.id if v.HasField("vehicle") else None,
-            "route_id":    v.trip.route_id if v.HasField("trip") else None,
-            "trip_id":     v.trip.trip_id if v.HasField("trip") else None,
-            "lat":         round(lat, 6),
-            "lon":         round(lon, 6),
-            "bearing":     v.position.bearing if v.position.HasField("bearing") else None,  # type: ignore[attr-defined]
-            "speed_ms":    round(v.position.speed, 2) if v.position.HasField("speed") else None,  # type: ignore[attr-defined]
-            "vehicle_ts":  v.timestamp if v.HasField("timestamp") else None,
-            "stop_id":     v.stop_id if v.HasField("stop_id") else None,
+            'snapshot_ts': poll_ts,
+            'vehicle_id': v.vehicle.id if v.HasField('vehicle') else None,
+            'route_id': v.trip.route_id if v.HasField('trip') else None,
+            'trip_id': v.trip.trip_id if v.HasField('trip') else None,
+            'lat': round(lat, 6),
+            'lon': round(lon, 6),
+            'bearing': v.position.bearing
+            if v.position.HasField('bearing')
+            else None,  # type: ignore[attr-defined]
+            'speed_ms': round(v.position.speed, 2)
+            if v.position.HasField('speed')
+            else None,  # type: ignore[attr-defined]
+            'vehicle_ts': v.timestamp if v.HasField('timestamp') else None,
+            'stop_id': v.stop_id if v.HasField('stop_id') else None,
             # Enums go to disk by name, so the archive reads without the
             # .proto. HasField and not the bare attribute: proto2 returns the
             # default for an unset field, and IN_TRANSIT_TO and SCHEDULED are
             # both defaults and the values ЦГМ actually sends. An enum value
             # these bindings don't know also lands as None (proto2 enums are
             # closed: the parser moves it to unknown fields).
-            "current_status":   _enum_name(v, "current_status", _VP.VehicleStopStatus),
-            "occupancy_status": _enum_name(v, "occupancy_status", _VP.OccupancyStatus),
-            "congestion_level": _enum_name(v, "congestion_level", _VP.CongestionLevel),
-            "schedule_relationship": (
-                _enum_name(v.trip, "schedule_relationship", gtfs_realtime_pb2.TripDescriptor.ScheduleRelationship)
-                if v.HasField("trip") else None
+            'current_status': _enum_name(
+                v,
+                'current_status',
+                _VP.VehicleStopStatus,
+            ),
+            'occupancy_status': _enum_name(
+                v,
+                'occupancy_status',
+                _VP.OccupancyStatus,
+            ),
+            'congestion_level': _enum_name(
+                v,
+                'congestion_level',
+                _VP.CongestionLevel,
+            ),
+            'schedule_relationship': (
+                _enum_name(
+                    v.trip,
+                    'schedule_relationship',
+                    gtfs_realtime_pb2.TripDescriptor.ScheduleRelationship,
+                )
+                if v.HasField('trip')
+                else None
             ),
         }
         records.append(record)
 
-    return PollResult(records, True, poll_ts, entities_total, vehicles_with_position, dropped_out_of_bbox)
+    return PollResult(
+        records,
+        True,
+        poll_ts,
+        entities_total,
+        vehicles_with_position,
+        dropped_out_of_bbox,
+    )
 
 
 # ─── Discovery ────────────────────────────────────────────────────────────────
+
 
 def discover_endpoint(session: requests.Session, city: dict) -> None:
     """
@@ -202,8 +241,8 @@ def discover_endpoint(session: requests.Session, city: dict) -> None:
     print(f"Probing {city['name']}'s GTFS-RT feeds ({city['slug']})...\n")
 
     found = False
-    for name, url in city["feeds"].items():
-        if name == "static":
+    for name, url in city['feeds'].items():
+        if name == 'static':
             continue  # a zip, not protobuf: parsing it here would only ever fail
         r = None
         try:
@@ -214,25 +253,33 @@ def discover_endpoint(session: requests.Session, city: dict) -> None:
             feed = gtfs_realtime_pb2.FeedMessage()
             feed.ParseFromString(r.content)
 
-            vehicle_count = sum(1 for e in feed.entity if e.HasField("vehicle"))
-            print(f"  ✅  {name}: {url}")
-            print(f"      HTTP {status} | {len(feed.entity)} entities | {vehicle_count} vehicles")
-            print(f"      → collect with: --url {url}")
+            vehicle_count = sum(1 for e in feed.entity if e.HasField('vehicle'))
+            print(f'  ✅  {name}: {url}')
+            print(
+                f'      HTTP {status} | {len(feed.entity)} entities | {vehicle_count} vehicles',
+            )
+            print(f'      → collect with: --url {url}')
             found = True
 
         except requests.RequestException as e:
-            print(f"  ❌  {name}: {url}  →  {e}")
+            print(f'  ❌  {name}: {url}  →  {e}')
         except Exception:
-            status = r.status_code if r is not None else "???"
-            print(f"  ⚠️   {name}: {url}  →  HTTP {status}, not valid GTFS-RT protobuf")
+            status = r.status_code if r is not None else '???'
+            print(
+                f'  ⚠️   {name}: {url}  →  HTTP {status}, not valid GTFS-RT protobuf',
+            )
 
     if found:
-        print(f"\nThese are the URLs already in cities/{city['slug']}.json; collection uses "
-              "them by default, and --url overrides one for a single run.")
+        print(
+            f'\nThese are the URLs already in cities/{city["slug"]}.json; collection uses '
+            'them by default, and --url overrides one for a single run.',
+        )
     else:
-        print(f"\nNo feed in cities/{city['slug']}.json answered with GTFS-RT. Check the "
-              "agency's open-data portal for the current URLs, or watch what the operator's "
-              "own site requests, and update the profile with what you find.")
+        print(
+            f'\nNo feed in cities/{city["slug"]}.json answered with GTFS-RT. Check the '
+            "agency's open-data portal for the current URLs, or watch what the operator's "
+            'own site requests, and update the profile with what you find.',
+        )
 
 
 # ─── Collection loop ──────────────────────────────────────────────────────────
@@ -252,8 +299,8 @@ def ping_healthcheck(url: str) -> None:
     """
     try:
         requests.get(url, timeout=5)
-    except Exception as e:  # noqa: BLE001 - intentional, see docstring
-        print(f"[WARN] Healthcheck ping failed: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f'[WARN] Healthcheck ping failed: {e}', file=sys.stderr)
 
 
 def run_collection(
@@ -288,7 +335,7 @@ def run_collection(
     """
     rotating = output_dir is not None
     forever = hours <= 0
-    deadline = float("inf") if forever else time.time() + hours * 3600
+    deadline = float('inf') if forever else time.time() + hours * 3600
     total_records = 0
     poll_count = 0
     empty_snapshots = 0
@@ -298,14 +345,18 @@ def run_collection(
     # An Event rather than a flag because the loop idles inside it: see the
     # wait() at the bottom of the loop.
     stop = threading.Event()
+
     def _handler(sig, frame):
         stop.set()
-        print("\n[INFO] Interrupted — finishing current snapshot and closing file.")
+        print(
+            '\n[INFO] Interrupted — finishing current snapshot and closing file.',
+        )
+
     signal.signal(signal.SIGINT, _handler)
     signal.signal(signal.SIGTERM, _handler)
 
     session = requests.Session()
-    session.headers["User-Agent"] = user_agent
+    session.headers['User-Agent'] = user_agent
 
     if rotating:
         tz = ZoneInfo(tz_name)
@@ -316,17 +367,21 @@ def run_collection(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         current_path = output_path
 
-    f = current_path.open("a", encoding="utf-8")
-    hb_f = heartbeat_path_for(current_path).open("a", encoding="utf-8")
+    f = current_path.open('a', encoding='utf-8')
+    hb_f = heartbeat_path_for(current_path).open('a', encoding='utf-8')
 
-    mode_desc = f"daily rotation in {output_dir} ({tz_name})" if rotating else "single file"
-    print(f"Starting collection → {current_path}")
-    print(f"Endpoint : {url}")
-    print(
-        f"Interval : {interval}s  |  Duration: {'forever' if forever else f'{hours}h'}  |  "
-        f"Mode: {mode_desc}  |  Started: {datetime.now().isoformat()}"
+    mode_desc = (
+        f'daily rotation in {output_dir} ({tz_name})'
+        if rotating
+        else 'single file'
     )
-    print("Press Ctrl+C to stop early.\n")
+    print(f'Starting collection → {current_path}')
+    print(f'Endpoint : {url}')
+    print(
+        f'Interval : {interval}s  |  Duration: {"forever" if forever else f"{hours}h"}  |  '
+        f'Mode: {mode_desc}  |  Started: {datetime.now().isoformat()}',
+    )
+    print('Press Ctrl+C to stop early.\n')
 
     try:
         while time.time() < deadline and not stop.is_set():
@@ -338,9 +393,14 @@ def run_collection(
                     f.close()
                     hb_f.close()
                     current_path = fresh_path
-                    f = current_path.open("a", encoding="utf-8")
-                    hb_f = heartbeat_path_for(current_path).open("a", encoding="utf-8")
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] rotated → {current_path}")
+                    f = current_path.open('a', encoding='utf-8')
+                    hb_f = heartbeat_path_for(current_path).open(
+                        'a',
+                        encoding='utf-8',
+                    )
+                    print(
+                        f'[{datetime.now().strftime("%H:%M:%S")}] rotated → {current_path}',
+                    )
 
             poll = fetch_vehicle_positions(url, session, bbox)
             poll_count += 1
@@ -353,34 +413,48 @@ def run_collection(
             # exist than actually landed on disk.
             if poll.records:
                 for r in poll.records:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    f.write(json.dumps(r, ensure_ascii=False) + '\n')
                 f.flush()
                 total_records += len(poll.records)
 
-            hb_f.write(json.dumps({
-                "snapshot_ts": poll.poll_ts,
-                "fetch_ok": poll.fetch_ok,
-                "vehicle_count": len(poll.records),
-                "entities_total": poll.entities_total,
-                "vehicles_with_position": poll.vehicles_with_position,
-                "dropped_out_of_bbox": poll.dropped_out_of_bbox,
-            }, ensure_ascii=False) + "\n")
+            hb_f.write(
+                json.dumps(
+                    {
+                        'snapshot_ts': poll.poll_ts,
+                        'fetch_ok': poll.fetch_ok,
+                        'vehicle_count': len(poll.records),
+                        'entities_total': poll.entities_total,
+                        'vehicles_with_position': poll.vehicles_with_position,
+                        'dropped_out_of_bbox': poll.dropped_out_of_bbox,
+                    },
+                    ensure_ascii=False,
+                )
+                + '\n',
+            )
             hb_f.flush()
 
             if poll.records:
                 print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] "
-                    f"poll #{poll_count:>4} | {len(poll.records):>4} vehicles"
-                    f"{f' | {poll.dropped_out_of_bbox} dropped (bbox)' if poll.dropped_out_of_bbox else ''} | "
-                    f"total rows: {total_records:,}"
+                    f'[{datetime.now().strftime("%H:%M:%S")}] '
+                    f'poll #{poll_count:>4} | {len(poll.records):>4} vehicles'
+                    f'{f" | {poll.dropped_out_of_bbox} dropped (bbox)" if poll.dropped_out_of_bbox else ""} | '
+                    f'total rows: {total_records:,}',
                 )
             elif not poll.fetch_ok:
                 fetch_errors += 1
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] poll #{poll_count:>4} | fetch error (#{fetch_errors})")
+                print(
+                    f'[{datetime.now().strftime("%H:%M:%S")}] poll #{poll_count:>4} | fetch error (#{fetch_errors})',
+                )
             else:
                 empty_snapshots += 1
-                note = f" | {poll.dropped_out_of_bbox} dropped (bbox)" if poll.dropped_out_of_bbox else ""
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] poll #{poll_count:>4} | empty snapshot (#{empty_snapshots}){note}")
+                note = (
+                    f' | {poll.dropped_out_of_bbox} dropped (bbox)'
+                    if poll.dropped_out_of_bbox
+                    else ''
+                )
+                print(
+                    f'[{datetime.now().strftime("%H:%M:%S")}] poll #{poll_count:>4} | empty snapshot (#{empty_snapshots}){note}',
+                )
 
             # Event.wait, not time.sleep: an interrupted sleep resumes once
             # the handler returns (PEP 475), so a SIGTERM landing in the idle
@@ -394,46 +468,88 @@ def run_collection(
         hb_f.close()
         session.close()
 
-    print(f"\nDone. Polls: {poll_count} | Records: {total_records:,} | "
-          f"Empty snapshots: {empty_snapshots} | Fetch errors: {fetch_errors}")
-    print(f"Last output file: {current_path}")
+    print(
+        f'\nDone. Polls: {poll_count} | Records: {total_records:,} | '
+        f'Empty snapshots: {empty_snapshots} | Fetch errors: {fetch_errors}',
+    )
+    print(f'Last output file: {current_path}')
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description="GTFS-RT collector")
-    parser.add_argument("--city", type=str, default=None,
-                        help="City profile to collect (cities/<slug>.json; have: "
-                             f"{', '.join(city_slugs()) or 'none'}). Default: read from "
-                             "--output-dir, which is laid out as .../data/<city>/")
-    parser.add_argument("--discover", action="store_true",
-                        help="Probe the city's feed URLs and exit")
-    parser.add_argument("--url", type=str, default=None,
-                        help="GTFS-RT vehicle positions URL (default: the city profile's)")
-    parser.add_argument("--output", type=Path, default=None,
-                        help="Single output file, no rotation (default: data/snapshot.jsonl "
-                             "if --output-dir is not given)")
-    parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Directory for daily-rotated output files named <YYYY-MM-DD>.jsonl "
-                             "(mutually exclusive with --output)")
-    parser.add_argument("--timezone", type=str, default=None,
-                        help="Timezone for day-boundary rotation (default: the city profile's)")
-    parser.add_argument("--interval", type=int, default=None,
-                        help="Poll interval in seconds (default: the city profile's)")
-    parser.add_argument("--hours", type=float, default=DEFAULT_HOURS,
-                        help=f"Collection duration in hours (default: {DEFAULT_HOURS}). "
-                             "0 or negative means run indefinitely until stopped.")
-    parser.add_argument("--healthcheck-url", type=str, default=os.environ.get("HEALTHCHECK_URL"),
-                        help="Dead-man's-switch URL (e.g. a healthchecks.io check), pinged "
-                             "periodically to prove the loop is still running. Defaults to the "
-                             "HEALTHCHECK_URL env var; omit both to disable.")
-    parser.add_argument("--healthcheck-every", type=int, default=20,
-                        help="Ping the healthcheck URL every N polls (default: 20)")
+    parser = argparse.ArgumentParser(description='GTFS-RT collector')
+    parser.add_argument(
+        '--city',
+        type=str,
+        default=None,
+        help='City profile to collect (cities/<slug>.json; have: '
+        f'{", ".join(city_slugs()) or "none"}). Default: read from '
+        '--output-dir, which is laid out as .../data/<city>/',
+    )
+    parser.add_argument(
+        '--discover',
+        action='store_true',
+        help="Probe the city's feed URLs and exit",
+    )
+    parser.add_argument(
+        '--url',
+        type=str,
+        default=None,
+        help="GTFS-RT vehicle positions URL (default: the city profile's)",
+    )
+    parser.add_argument(
+        '--output',
+        type=Path,
+        default=None,
+        help='Single output file, no rotation (default: data/snapshot.jsonl '
+        'if --output-dir is not given)',
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=None,
+        help='Directory for daily-rotated output files named <YYYY-MM-DD>.jsonl '
+        '(mutually exclusive with --output)',
+    )
+    parser.add_argument(
+        '--timezone',
+        type=str,
+        default=None,
+        help="Timezone for day-boundary rotation (default: the city profile's)",
+    )
+    parser.add_argument(
+        '--interval',
+        type=int,
+        default=None,
+        help="Poll interval in seconds (default: the city profile's)",
+    )
+    parser.add_argument(
+        '--hours',
+        type=float,
+        default=DEFAULT_HOURS,
+        help=f'Collection duration in hours (default: {DEFAULT_HOURS}). '
+        '0 or negative means run indefinitely until stopped.',
+    )
+    parser.add_argument(
+        '--healthcheck-url',
+        type=str,
+        default=os.environ.get('HEALTHCHECK_URL'),
+        help="Dead-man's-switch URL (e.g. a healthchecks.io check), pinged "
+        'periodically to prove the loop is still running. Defaults to the '
+        'HEALTHCHECK_URL env var; omit both to disable.',
+    )
+    parser.add_argument(
+        '--healthcheck-every',
+        type=int,
+        default=20,
+        help='Ping the healthcheck URL every N polls (default: 20)',
+    )
     args = parser.parse_args()
 
     if args.output and args.output_dir:
-        parser.error("--output and --output-dir are mutually exclusive")
+        parser.error('--output and --output-dir are mutually exclusive')
 
     # Two passes over the city-dependent options, because they are their own
     # chicken and egg: the defaults live in the profile, and which profile to
@@ -442,35 +558,44 @@ def main():
     # explicit flag to win over the profile, as a flag should.
     try:
         if args.city or args.output_dir:
-            city = load_city_for_path(args.output_dir or Path("."), slug=args.city)
+            city = load_city_for_path(
+                args.output_dir or Path(),
+                slug=args.city,
+            )
         else:
-            parser.error("pass --city, or --output-dir laid out as .../data/<city>/")
+            parser.error(
+                'pass --city, or --output-dir laid out as .../data/<city>/',
+            )
     except CityProfileError as e:
         parser.error(str(e))
 
-    url = args.url or city["feeds"]["vehicle_positions"]
-    tz_name = args.timezone or city["timezone"]
-    interval = args.interval if args.interval is not None else city["poll_interval_sec"]
+    url = args.url or city['feeds']['vehicle_positions']
+    tz_name = args.timezone or city['timezone']
+    interval = (
+        args.interval
+        if args.interval is not None
+        else city['poll_interval_sec']
+    )
 
     if args.discover:
         session = requests.Session()
-        session.headers["User-Agent"] = city["user_agent"]
+        session.headers['User-Agent'] = city['user_agent']
         discover_endpoint(session, city)
         session.close()
         return
 
     if args.healthcheck_every < 1:
-        parser.error("--healthcheck-every must be at least 1")
+        parser.error('--healthcheck-every must be at least 1')
 
     if not args.output and not args.output_dir:
-        args.output = Path("data/snapshot.jsonl")
+        args.output = Path('data/snapshot.jsonl')
 
     run_collection(
         interval,
         args.hours,
         url,
-        bbox=city["bbox"],
-        user_agent=city["user_agent"],
+        bbox=city['bbox'],
+        user_agent=city['user_agent'],
         tz_name=tz_name,
         output_path=args.output,
         output_dir=args.output_dir,
@@ -479,5 +604,5 @@ def main():
     )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

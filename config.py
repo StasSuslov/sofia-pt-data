@@ -29,19 +29,19 @@ from pathlib import Path
 
 DEFAULT_HOURS = 24
 
-CITIES_DIR = Path(__file__).resolve().parent / "cities"
+CITIES_DIR = Path(__file__).resolve().parent / 'cities'
 
 # A feed a city cannot be collected without. Everything else in "feeds"
 # (trip_updates, alerts) is optional: section 3 of CLAUDE.md records that
 # only the congestion layer strictly needs realtime, so a static-only city
 # is a real configuration, but one with no static feed is not.
-REQUIRED_FEEDS = ("vehicle_positions", "static")
+REQUIRED_FEEDS = ('vehicle_positions', 'static')
 
 # What the feed's speed field actually carries, regardless of what GTFS-RT
 # says it should or what the raw archive named it. Sofia's is "kmh" (see
 # cities/sofia.json). Reading a spec-compliant feed as if it were Sofia's,
 # or the reverse, is a factor-of-3.6 error in a published number.
-SPEED_FIELD_UNITS = ("kmh", "ms")
+SPEED_FIELD_UNITS = ('kmh', 'ms')
 
 # Bounding box of the configured city's network (currently Sofia). Coordinates
 # outside it are discarded at collection time (known GTFS-RT teleportation bug
@@ -55,10 +55,10 @@ SPEED_FIELD_UNITS = ("kmh", "ms")
 # peripheral settlements (e.g. Kurilo, Zhelyava, Yana, Klisura) as if they
 # were teleportation artifacts, see METHODOLOGY.md.
 NETWORK_BBOX = {
-    "lat_min": 42.45,
-    "lat_max": 42.90,
-    "lon_min": 23.03,
-    "lon_max": 23.66,
+    'lat_min': 42.45,
+    'lat_max': 42.90,
+    'lon_min': 23.03,
+    'lon_max': 23.66,
 }
 
 
@@ -68,7 +68,7 @@ class CityProfileError(ValueError):
 
 def city_slugs() -> list[str]:
     """Every city this checkout has a profile for."""
-    return sorted(p.stem for p in CITIES_DIR.glob("*.json"))
+    return sorted(p.stem for p in CITIES_DIR.glob('*.json'))
 
 
 def load_city(slug: str) -> dict:
@@ -82,64 +82,71 @@ def load_city(slug: str) -> dict:
     user_agent is derived from the slug rather than stored, so the string an
     agency reads in its logs cannot drift from the city it names.
     """
-    path = CITIES_DIR / f"{slug}.json"
+    path = CITIES_DIR / f'{slug}.json'
     if not path.exists():
         raise CityProfileError(
-            f"no city profile at {path} (have: {', '.join(city_slugs()) or 'none'})"
+            f'no city profile at {path} (have: {", ".join(city_slugs()) or "none"})',
         )
     try:
-        profile = json.loads(path.read_text(encoding="utf-8"))
+        profile = json.loads(path.read_text(encoding='utf-8'))
     except json.JSONDecodeError as e:
-        raise CityProfileError(f"{path} is not valid JSON: {e}") from e
+        raise CityProfileError(f'{path} is not valid JSON: {e}') from e
 
-    if profile.get("slug") != slug:
+    if profile.get('slug') != slug:
         raise CityProfileError(
-            f"{path} declares slug {profile.get('slug')!r}, but the file is named {slug!r}"
+            f'{path} declares slug {profile.get("slug")!r}, but the file is named {slug!r}',
         )
-    for key in ("name", "timezone", "poll_interval_sec", "bbox", "feeds", "attribution"):
+    for key in (
+        'name',
+        'timezone',
+        'poll_interval_sec',
+        'bbox',
+        'feeds',
+        'attribution',
+    ):
         if key not in profile:
-            raise CityProfileError(f"{path} is missing required key {key!r}")
-    for edge in ("lat_min", "lat_max", "lon_min", "lon_max"):
-        if edge not in profile["bbox"]:
-            raise CityProfileError(f"{path} bbox is missing {edge!r}")
-    if profile["bbox"]["lat_min"] >= profile["bbox"]["lat_max"] or \
-            profile["bbox"]["lon_min"] >= profile["bbox"]["lon_max"]:
-        raise CityProfileError(f"{path} bbox has a min at or above its max")
+            raise CityProfileError(f'{path} is missing required key {key!r}')
+    for edge in ('lat_min', 'lat_max', 'lon_min', 'lon_max'):
+        if edge not in profile['bbox']:
+            raise CityProfileError(f'{path} bbox is missing {edge!r}')
+    if (
+        profile['bbox']['lat_min'] >= profile['bbox']['lat_max']
+        or profile['bbox']['lon_min'] >= profile['bbox']['lon_max']
+    ):
+        raise CityProfileError(f'{path} bbox has a min at or above its max')
     for feed in REQUIRED_FEEDS:
-        if not profile["feeds"].get(feed):
-            raise CityProfileError(f"{path} has no {feed!r} feed URL")
-    unit = profile.get("speed_field_unit")
+        if not profile['feeds'].get(feed):
+            raise CityProfileError(f'{path} has no {feed!r} feed URL')
+    unit = profile.get('speed_field_unit')
     if unit not in SPEED_FIELD_UNITS:
         raise CityProfileError(
-            f"{path} has speed_field_unit {unit!r}, expected one of {SPEED_FIELD_UNITS}"
+            f'{path} has speed_field_unit {unit!r}, expected one of {SPEED_FIELD_UNITS}',
         )
-    for key in ("source_name", "licence"):
-        if not profile["attribution"].get(key):
-            raise CityProfileError(f"{path} attribution is missing {key!r}")
+    for key in ('source_name', 'licence'):
+        if not profile['attribution'].get(key):
+            raise CityProfileError(f'{path} attribution is missing {key!r}')
     # One licence per feed, stated, never inherited. A portal's default terms
     # are a claim about the portal: Sofia's realtime feed takes that default
     # (CC BY 4.0) while its static feed overrides it with share-alike, and a
     # single "licence" field hid that difference for four weeks. Same D12
     # mechanic as bbox and speed unit — no default means the second city
     # cannot silently publish under the first city's terms.
-    feed_licences = profile["attribution"].get("feed_licences")
+    feed_licences = profile['attribution'].get('feed_licences')
     if not isinstance(feed_licences, dict):
-        raise CityProfileError(
-            f"{path} attribution has no 'feed_licences' map"
-        )
+        raise CityProfileError(f"{path} attribution has no 'feed_licences' map")
     for feed in REQUIRED_FEEDS:
         if not feed_licences.get(feed):
             raise CityProfileError(
-                f"{path} feed_licences states no licence for {feed!r}"
+                f'{path} feed_licences states no licence for {feed!r}',
             )
-    auth = profile.get("auth")
-    if auth is not None and not auth.get("key_env"):
+    auth = profile.get('auth')
+    if auth is not None and not auth.get('key_env'):
         raise CityProfileError(
-            f"{path} has an auth block with no key_env: a profile names the environment "
-            f"variable holding the key, never the key itself"
+            f'{path} has an auth block with no key_env: a profile names the environment '
+            f'variable holding the key, never the key itself',
         )
 
-    profile["user_agent"] = f"{slug}-transport-research/1.0"
+    profile['user_agent'] = f'{slug}-transport-research/1.0'
     return profile
 
 
@@ -174,8 +181,8 @@ def load_city_for_path(path: Path, slug: str | None = None) -> dict:
     found = city_from_path(path)
     if found is None:
         raise CityProfileError(
-            f"no city profile matches any component of {path} "
-            f"(have: {', '.join(city_slugs()) or 'none'}); pass --city explicitly"
+            f'no city profile matches any component of {path} '
+            f'(have: {", ".join(city_slugs()) or "none"}); pass --city explicitly',
         )
     return load_city(found)
 
@@ -189,9 +196,8 @@ def date_from_path(path: Path) -> str:
     before the first remaining dot.
     """
     name = path.name
-    if name.endswith(".gz"):
-        name = name[: -len(".gz")]
-    return name.split(".", 1)[0]
+    name = name.removesuffix('.gz')
+    return name.split('.', 1)[0]
 
 
 def resolve_day_file(data_dir: Path, date_str: str, suffix: str) -> Path:
@@ -206,10 +212,10 @@ def resolve_day_file(data_dir: Path, date_str: str, suffix: str) -> Path:
     Returns the uncompressed path even when neither exists, so callers can
     still call .exists() on the result and get a sane "not found".
     """
-    plain = data_dir / f"{date_str}{suffix}"
+    plain = data_dir / f'{date_str}{suffix}'
     if plain.exists():
         return plain
-    gz = data_dir / f"{date_str}{suffix}.gz"
+    gz = data_dir / f'{date_str}{suffix}.gz'
     return gz if gz.exists() else plain
 
 
@@ -220,16 +226,16 @@ def find_day_files(data_dir: Path) -> list[Path]:
     resolve_day_file()'s uncompressed-first preference wins, so callers never
     have to think about compression twice.
     """
-    dates = {date_from_path(p) for p in data_dir.glob("????-??-??.jsonl")}
-    dates |= {date_from_path(p) for p in data_dir.glob("????-??-??.jsonl.gz")}
-    return [resolve_day_file(data_dir, d, ".jsonl") for d in sorted(dates)]
+    dates = {date_from_path(p) for p in data_dir.glob('????-??-??.jsonl')}
+    dates |= {date_from_path(p) for p in data_dir.glob('????-??-??.jsonl.gz')}
+    return [resolve_day_file(data_dir, d, '.jsonl') for d in sorted(dates)]
 
 
-def open_maybe_gzip(path: Path, mode: str = "rb", encoding: str | None = None):
+def open_maybe_gzip(path: Path, mode: str = 'rb', encoding: str | None = None):
     """
     Open a day file (or heartbeat log) transparently whether it's gzipped on
     disk or not. Text-mode callers pass mode="rt", encoding="utf-8"; binary
     callers (sha256 hashing) use the defaults.
     """
-    opener = gzip.open if path.suffix == ".gz" else open
+    opener = gzip.open if path.suffix == '.gz' else open
     return opener(path, mode, encoding=encoding)

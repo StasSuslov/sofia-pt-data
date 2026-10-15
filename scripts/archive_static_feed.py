@@ -54,7 +54,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -65,23 +65,24 @@ from zoneinfo import ZoneInfo
 # kind of reuse, and never from another scripts/*.py file that could grow a
 # dependency later without anyone thinking of this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import CityProfileError, city_slugs, load_city_for_path  # noqa: E402
+from config import CityProfileError, city_slugs, load_city_for_path
 
 # The files segment_speeds.py's load_static()/load_feed_info() and
 # export_web.py's load_route_info() actually read. Absence of any one of
 # these means a truncated download or an HTML error page served with a 200
 # status, not a usable snapshot.
-REQUIRED_MEMBERS = ("trips.txt", "shapes.txt", "stops.txt", "routes.txt")
+REQUIRED_MEMBERS = ('trips.txt', 'shapes.txt', 'stops.txt', 'routes.txt')
 
 # Same full-match pattern as find_static_snapshots() in segment_speeds.py,
 # kept as a short local copy rather than an import for the reason given
 # above. A prefix or glob match would also catch the unpacked
 # gtfs_2026-08-27/ sibling directory or a stray .DS_Store that already sit
 # next to the zips in data/sofia/static/ today.
-SNAPSHOT_NAME_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})(?:T\d{4})?\.zip$")
+SNAPSHOT_NAME_RE = re.compile(r'^gtfs_(\d{4}-\d{2}-\d{2})(?:T\d{4})?\.zip$')
 
 
 # ─── Content hashing ────────────────────────────────────────────────────────
+
 
 def _member_hashes(zip_path: Path) -> list:
     """
@@ -100,8 +101,8 @@ def _member_hashes(zip_path: Path) -> list:
 
 
 def _digest_of(member_hashes: list) -> str:
-    joined = "\n".join(f"{name}:{digest}" for name, digest in member_hashes)
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+    joined = '\n'.join(f'{name}:{digest}' for name, digest in member_hashes)
+    return hashlib.sha256(joined.encode('utf-8')).hexdigest()
 
 
 def content_hash(zip_path: Path) -> str:
@@ -124,15 +125,21 @@ def sha256_of_file(path: Path) -> str:
     like a real change.
     """
     h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
             h.update(chunk)
     return h.hexdigest()
 
 
 # ─── Download and validation ────────────────────────────────────────────────
 
-def download_to_temp(url: str, dest_dir: Path, user_agent: str, timeout: int = 60) -> Path:
+
+def download_to_temp(
+    url: str,
+    dest_dir: Path,
+    user_agent: str,
+    timeout: int = 60,
+) -> Path:
     """
     Download `url` into a hidden temp file inside dest_dir and return its
     path. The temp name starts with "." and doesn't match SNAPSHOT_NAME_RE,
@@ -147,11 +154,18 @@ def download_to_temp(url: str, dest_dir: Path, user_agent: str, timeout: int = 6
     to clean up after it.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=".gtfs_static_download_", suffix=".zip.part", dir=dest_dir)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix='.gtfs_static_download_',
+        suffix='.zip.part',
+        dir=dest_dir,
+    )
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(fd, "wb") as out:
-            req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        with os.fdopen(fd, 'wb') as out:
+            req = urllib.request.Request(
+                url,
+                headers={'User-Agent': user_agent},
+            )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 shutil.copyfileobj(resp, out)
     except BaseException:
@@ -172,11 +186,11 @@ def validate_feed_zip(path: Path) -> None:
         with zipfile.ZipFile(path) as z:
             names = set(z.namelist())
     except zipfile.BadZipFile as e:
-        raise ValueError(f"not a valid zip file ({e})") from e
+        raise ValueError(f'not a valid zip file ({e})') from e
 
     missing = [m for m in REQUIRED_MEMBERS if m not in names]
     if missing:
-        raise ValueError(f"missing required file(s): {', '.join(missing)}")
+        raise ValueError(f'missing required file(s): {", ".join(missing)}')
 
 
 def load_feed_info(zip_path: Path) -> dict:
@@ -187,13 +201,17 @@ def load_feed_info(zip_path: Path) -> dict:
     """
     try:
         with zipfile.ZipFile(zip_path) as z:
-            with z.open("feed_info.txt") as f:
-                return next(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")), {})
+            with z.open('feed_info.txt') as f:
+                return next(
+                    csv.DictReader(io.TextIOWrapper(f, encoding='utf-8')),
+                    {},
+                )
     except (KeyError, zipfile.BadZipFile, StopIteration):
         return {}
 
 
 # ─── Snapshot comparison and save ───────────────────────────────────────────
+
 
 def latest_snapshot(output_dir: Path):
     """
@@ -220,31 +238,43 @@ def latest_snapshot(output_dir: Path):
     return max(snapshots, key=lambda pair: pair[1].name)
 
 
-def build_manifest(target_path: Path, source_url: str, downloaded_at: datetime,
-                    zip_sha256: str, content_hash_value: str, size_bytes: int,
-                    member_count: int, feed_info: dict) -> dict:
+def build_manifest(
+    target_path: Path,
+    source_url: str,
+    downloaded_at: datetime,
+    zip_sha256: str,
+    content_hash_value: str,
+    size_bytes: int,
+    member_count: int,
+    feed_info: dict,
+) -> dict:
     """
     Mirrors scripts/generate_manifest.py's naming conventions (a
     <name>_sha256 field, byte size, a plain "file" name) so the two kinds of
     manifest read the same way even though they describe different things.
     """
     return {
-        "file": target_path.name,
-        "source_url": source_url,
-        "downloaded_at": downloaded_at.astimezone(timezone.utc).isoformat(),
-        "zip_sha256": zip_sha256,
-        "content_hash": content_hash_value,
-        "size_bytes": size_bytes,
-        "member_count": member_count,
-        "feed_version": feed_info.get("feed_version"),
-        "feed_start_date": feed_info.get("feed_start_date"),
-        "feed_end_date": feed_info.get("feed_end_date"),
-        "feed_publisher_name": feed_info.get("feed_publisher_name"),
+        'file': target_path.name,
+        'source_url': source_url,
+        'downloaded_at': downloaded_at.astimezone(UTC).isoformat(),
+        'zip_sha256': zip_sha256,
+        'content_hash': content_hash_value,
+        'size_bytes': size_bytes,
+        'member_count': member_count,
+        'feed_version': feed_info.get('feed_version'),
+        'feed_start_date': feed_info.get('feed_start_date'),
+        'feed_end_date': feed_info.get('feed_end_date'),
+        'feed_publisher_name': feed_info.get('feed_publisher_name'),
     }
 
 
-def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo,
-                  now: datetime | None = None) -> int:
+def archive_feed(
+    output_dir: Path,
+    tmp_path: Path,
+    source_url: str,
+    tz: ZoneInfo,
+    now: datetime | None = None,
+) -> int:
     """
     Decide whether the already-downloaded, already-validated candidate at
     tmp_path is new content and, if so, save it as today's snapshot (local
@@ -258,7 +288,7 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
 
     Returns the process exit code the caller should use.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     today_str = now.astimezone(tz).date().isoformat()
 
     member_pairs = _member_hashes(tmp_path)
@@ -269,11 +299,13 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
         existing_date, existing_path = existing
         if content_hash(existing_path) == new_hash:
             tmp_path.unlink()
-            print(f"No change: content hash matches {existing_path.name} "
-                  f"({new_hash[:12]}...). Discarding this download.")
+            print(
+                f'No change: content hash matches {existing_path.name} '
+                f'({new_hash[:12]}...). Discarding this download.',
+            )
             return 0
 
-    target_path = output_dir / f"gtfs_{today_str}.zip"
+    target_path = output_dir / f'gtfs_{today_str}.zip'
     if target_path.exists():
         # A second change inside one local day. Overwriting the morning
         # capture would destroy the only evidence of what the agency served
@@ -283,20 +315,22 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
         # local capture time, so it sorts after the plain name for the same
         # date and pick_snapshot_for_day() in segment_speeds.py picks it up
         # as the newer snapshot for that day.
-        target_path = output_dir / f"gtfs_{today_str}T{now.astimezone(tz):%H%M}.zip"
+        target_path = (
+            output_dir / f'gtfs_{today_str}T{now.astimezone(tz):%H%M}.zip'
+        )
 
     zip_sha256 = sha256_of_file(tmp_path)
     size_bytes = tmp_path.stat().st_size
     feed_info = load_feed_info(tmp_path)
 
-    os.replace(tmp_path, target_path)
+    Path(tmp_path).replace(target_path)
     # mkstemp() creates at 0600 and os.replace() carries that mode over, which
     # would leave the snapshot the one file under data/ that only its writer
     # can read. Day files land at the umask default.
-    os.chmod(target_path, 0o644)
+    Path(target_path).chmod(0o644)
 
-    declared = (feed_info.get("feed_start_date") or "").strip()
-    if declared and declared != today_str.replace("-", ""):
+    declared = (feed_info.get('feed_start_date') or '').strip()
+    if declared and declared != today_str.replace('-', ''):
         # The name records when this archive observed the feed, deliberately,
         # rather than trusting the publisher's own date (see METHODOLOGY.md).
         # The two agree only while the capture runs after the agency's daily
@@ -304,40 +338,84 @@ def archive_feed(output_dir: Path, tmp_path: Path, source_url: str, tz: ZoneInfo
         # snapshot from here on holds the previous day's feed under today's
         # name. Not fatal: the file is still a real snapshot worth keeping,
         # and refusing it would lose data over a scheduling problem.
-        print(f"Warning: {target_path.name} declares feed_start_date={declared}. "
-              "This capture ran before the agency's daily build; check the "
-              "schedule in deploy/sofia-static-archive.timer against the member "
-              "timestamps inside the zip.", file=sys.stderr)
+        print(
+            f'Warning: {target_path.name} declares feed_start_date={declared}. '
+            "This capture ran before the agency's daily build; check the "
+            'schedule in deploy/sofia-static-archive.timer against the member '
+            'timestamps inside the zip.',
+            file=sys.stderr,
+        )
 
-    manifest = build_manifest(target_path, source_url, now, zip_sha256, new_hash,
-                               size_bytes, len(member_pairs), feed_info)
-    manifest_path = target_path.with_suffix(".manifest.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    manifest = build_manifest(
+        target_path,
+        source_url,
+        now,
+        zip_sha256,
+        new_hash,
+        size_bytes,
+        len(member_pairs),
+        feed_info,
+    )
+    manifest_path = target_path.with_suffix('.manifest.json')
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8',
+    )
 
-    reason = "no prior snapshot on disk" if existing is None else f"changed from {existing_path.name}"
-    print(f"Saved new snapshot {target_path.name} ({reason}). "
-          f"content_hash={new_hash[:12]}... zip_sha256={zip_sha256[:12]}...")
+    reason = (
+        'no prior snapshot on disk'
+        if existing is None
+        else f'changed from {existing_path.name}'
+    )
+    print(
+        f'Saved new snapshot {target_path.name} ({reason}). '
+        f'content_hash={new_hash[:12]}... zip_sha256={zip_sha256[:12]}...',
+    )
     return 0
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("output_dir", type=Path,
-                         help="Directory to store gtfs_<YYYY-MM-DD>.zip snapshots and their "
-                              "manifests (e.g. data/sofia/static)")
-    parser.add_argument("--city", type=str, default=None,
-                         help="City profile supplying the feed URL and timezone "
-                              f"(cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
-                              "Default: read from output_dir, laid out as .../data/<city>/static")
-    parser.add_argument("--url", type=str, default=None,
-                         help="GTFS Static feed URL (default: the city profile's)")
-    parser.add_argument("--timezone", type=str, default=None,
-                         help="Timezone for the snapshot's calendar date (default: the city "
-                              "profile's, the same value collect.py rotates the RT archive on, so "
-                              "a snapshot files under the same local day)")
-    parser.add_argument("--timeout", type=int, default=60, help="Download timeout in seconds (default: 60)")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'output_dir',
+        type=Path,
+        help='Directory to store gtfs_<YYYY-MM-DD>.zip snapshots and their '
+        'manifests (e.g. data/sofia/static)',
+    )
+    parser.add_argument(
+        '--city',
+        type=str,
+        default=None,
+        help='City profile supplying the feed URL and timezone '
+        f'(cities/<slug>.json; have: {", ".join(city_slugs()) or "none"}). '
+        'Default: read from output_dir, laid out as .../data/<city>/static',
+    )
+    parser.add_argument(
+        '--url',
+        type=str,
+        default=None,
+        help="GTFS Static feed URL (default: the city profile's)",
+    )
+    parser.add_argument(
+        '--timezone',
+        type=str,
+        default=None,
+        help="Timezone for the snapshot's calendar date (default: the city "
+        "profile's, the same value collect.py rotates the RT archive on, so "
+        'a snapshot files under the same local day)',
+    )
+    parser.add_argument(
+        '--timeout',
+        type=int,
+        default=60,
+        help='Download timeout in seconds (default: 60)',
+    )
     args = parser.parse_args()
 
     try:
@@ -345,25 +423,30 @@ def main():
     except CityProfileError as e:
         parser.error(str(e))
 
-    url = args.url or city["feeds"]["static"]
-    tz = ZoneInfo(args.timezone or city["timezone"])
+    url = args.url or city['feeds']['static']
+    tz = ZoneInfo(args.timezone or city['timezone'])
 
-    print(f"Downloading {url} ...")
+    print(f'Downloading {url} ...')
     try:
-        tmp_path = download_to_temp(url, args.output_dir, city["user_agent"], timeout=args.timeout)
+        tmp_path = download_to_temp(
+            url,
+            args.output_dir,
+            city['user_agent'],
+            timeout=args.timeout,
+        )
     except (urllib.error.URLError, OSError) as e:
-        print(f"Download failed: {e}", file=sys.stderr)
+        print(f'Download failed: {e}', file=sys.stderr)
         sys.exit(1)
 
     try:
         validate_feed_zip(tmp_path)
     except ValueError as e:
         tmp_path.unlink(missing_ok=True)
-        print(f"Rejected download: {e}", file=sys.stderr)
+        print(f'Rejected download: {e}', file=sys.stderr)
         sys.exit(1)
 
     sys.exit(archive_feed(args.output_dir, tmp_path, url, tz))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -52,17 +52,17 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
 from google.transit import gtfs_realtime_pb2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import CityProfileError, city_slugs, load_city_for_path  # noqa: E402
+from config import CityProfileError, city_slugs, load_city_for_path
 
-SAVED_NAME_RE = re.compile(r"^alerts_\d{4}-\d{2}-\d{2}T\d{6}Z\.pb\.gz$")
-RUN_LOG = "runs.ndjson"
+SAVED_NAME_RE = re.compile(r'^alerts_\d{4}-\d{2}-\d{2}T\d{6}Z\.pb\.gz$')
+RUN_LOG = 'runs.ndjson'
 
 
 class FeedRejected(ValueError):
@@ -74,9 +74,9 @@ def parse_feed(content: bytes):
     try:
         feed.ParseFromString(content)
     except Exception as e:
-        raise FeedRejected(f"not a GTFS-RT FeedMessage ({e})") from e
-    if not feed.HasField("header"):
-        raise FeedRejected("no FeedMessage header (empty or truncated body)")
+        raise FeedRejected(f'not a GTFS-RT FeedMessage ({e})') from e
+    if not feed.HasField('header'):
+        raise FeedRejected('no FeedMessage header (empty or truncated body)')
     return feed
 
 
@@ -84,22 +84,29 @@ def alerts_digest(feed) -> tuple[str, int]:
     """(content hash, number of alerts). See the module docstring."""
     digests = sorted(
         hashlib.sha256(e.alert.SerializeToString()).hexdigest()
-        for e in feed.entity if e.HasField("alert")
+        for e in feed.entity
+        if e.HasField('alert')
     )
-    return hashlib.sha256("\n".join(digests).encode("utf-8")).hexdigest(), len(digests)
+    return hashlib.sha256('\n'.join(digests).encode('utf-8')).hexdigest(), len(
+        digests,
+    )
 
 
 def latest_saved(output_dir: Path) -> Path | None:
     if not output_dir.exists():
         return None
-    saved = [p for p in output_dir.iterdir() if p.is_file() and SAVED_NAME_RE.match(p.name)]
+    saved = [
+        p
+        for p in output_dir.iterdir()
+        if p.is_file() and SAVED_NAME_RE.match(p.name)
+    ]
     return max(saved, key=lambda p: p.name, default=None)
 
 
 def last_run(output_dir: Path) -> dict | None:
     """The newest runs.ndjson entry, read off the file's tail."""
     try:
-        with (output_dir / RUN_LOG).open("rb") as f:
+        with (output_dir / RUN_LOG).open('rb') as f:
             size = f.seek(0, os.SEEK_END)
             f.seek(max(0, size - 4096))
             lines = f.read().splitlines()
@@ -110,8 +117,8 @@ def last_run(output_dir: Path) -> dict | None:
 
 def log_run(output_dir: Path, now: datetime, **fields) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    with (output_dir / RUN_LOG).open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": int(now.timestamp()), **fields}) + "\n")
+    with (output_dir / RUN_LOG).open('a', encoding='utf-8') as f:
+        f.write(json.dumps({'ts': int(now.timestamp()), **fields}) + '\n')
 
 
 def save_response(output_dir: Path, content: bytes, now: datetime) -> Path:
@@ -120,64 +127,104 @@ def save_response(output_dir: Path, content: bytes, now: datetime) -> Path:
     name would become the newest file, fail to decompress on every later
     run, and stop the archive until someone deleted it by hand.
     """
-    target = output_dir / f"alerts_{now.astimezone(timezone.utc):%Y-%m-%dT%H%M%SZ}.pb.gz"
-    fd, tmp_name = tempfile.mkstemp(prefix=".alerts_", suffix=".part", dir=output_dir)
+    target = output_dir / f'alerts_{now.astimezone(UTC):%Y-%m-%dT%H%M%SZ}.pb.gz'
+    fd, tmp_name = tempfile.mkstemp(
+        prefix='.alerts_',
+        suffix='.part',
+        dir=output_dir,
+    )
     try:
-        with os.fdopen(fd, "wb") as out:
+        with os.fdopen(fd, 'wb') as out:
             out.write(gzip.compress(content))
-        os.replace(tmp_name, target)
+        Path(tmp_name).replace(target)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
-    os.chmod(target, 0o644)  # mkstemp's 0600 survives os.replace
+    Path(target).chmod(0o644)  # mkstemp's 0600 survives os.replace
     return target
 
 
-def archive_alerts(output_dir: Path, content: bytes, now: datetime | None = None) -> int:
+def archive_alerts(
+    output_dir: Path,
+    content: bytes,
+    now: datetime | None = None,
+) -> int:
     """
     Decide whether one fetched response is new content, save it if so, and
     log the run either way. Split out from main() so tests drive it with
     bytes they built, no network involved. Returns the exit code.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     try:
         feed = parse_feed(content)
     except FeedRejected as e:
         log_run(output_dir, now, ok=False, error=str(e))
-        print(f"Rejected response: {e}", file=sys.stderr)
+        print(f'Rejected response: {e}', file=sys.stderr)
         return 1
 
     digest, count = alerts_digest(feed)
     previous = latest_saved(output_dir)
-    previous_digest = alerts_digest(parse_feed(gzip.decompress(previous.read_bytes())))[0] if previous else None
+    previous_digest = (
+        alerts_digest(parse_feed(gzip.decompress(previous.read_bytes())))[0]
+        if previous
+        else None
+    )
     saved = None
     if digest == previous_digest:
-        print(f"No change: {count} alerts match {previous.name} ({digest[:12]}...).")
-    elif count == 0 and (last_run(output_dir) or {}).get("entities") != 0:
-        print("No alerts in the response; saving only if the next run agrees.")
+        print(
+            f'No change: {count} alerts match {previous.name} ({digest[:12]}...).',
+        )
+    elif count == 0 and (last_run(output_dir) or {}).get('entities') != 0:
+        print('No alerts in the response; saving only if the next run agrees.')
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
         saved = save_response(output_dir, content, now)
-        print(f"Saved {saved.name}: {count} alerts ({digest[:12]}...).")
+        print(f'Saved {saved.name}: {count} alerts ({digest[:12]}...).')
 
     # After the file, as collect.py writes data before its heartbeat line: the
     # log never names a file that didn't land.
-    log_run(output_dir, now, ok=True, entities=count, hash=digest, saved=saved.name if saved else None)
+    log_run(
+        output_dir,
+        now,
+        ok=True,
+        entities=count,
+        hash=digest,
+        saved=saved.name if saved else None,
+    )
     return 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("output_dir", type=Path,
-                        help="Directory for alerts_<UTC>.pb.gz files and runs.ndjson "
-                             "(e.g. data/sofia/alerts)")
-    parser.add_argument("--city", type=str, default=None,
-                        help="City profile supplying the feed URL "
-                             f"(cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
-                             "Default: read from output_dir, laid out as .../data/<city>/alerts")
-    parser.add_argument("--url", type=str, default=None,
-                        help="GTFS-RT alerts feed URL (default: the city profile's)")
-    parser.add_argument("--timeout", type=int, default=30, help="Request timeout in seconds (default: 30)")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'output_dir',
+        type=Path,
+        help='Directory for alerts_<UTC>.pb.gz files and runs.ndjson '
+        '(e.g. data/sofia/alerts)',
+    )
+    parser.add_argument(
+        '--city',
+        type=str,
+        default=None,
+        help='City profile supplying the feed URL '
+        f'(cities/<slug>.json; have: {", ".join(city_slugs()) or "none"}). '
+        'Default: read from output_dir, laid out as .../data/<city>/alerts',
+    )
+    parser.add_argument(
+        '--url',
+        type=str,
+        default=None,
+        help="GTFS-RT alerts feed URL (default: the city profile's)",
+    )
+    parser.add_argument(
+        '--timeout',
+        type=int,
+        default=30,
+        help='Request timeout in seconds (default: 30)',
+    )
     args = parser.parse_args()
 
     try:
@@ -187,21 +234,27 @@ def main():
 
     # alerts is optional in a profile (config.REQUIRED_FEEDS), so a city
     # without one is a configuration to name, not a traceback every 5 minutes.
-    url = args.url or city["feeds"].get("alerts")
+    url = args.url or city['feeds'].get('alerts')
     if not url:
-        parser.error(f"cities/{city['slug']}.json has no feeds.alerts; add it or pass --url")
+        parser.error(
+            f'cities/{city["slug"]}.json has no feeds.alerts; add it or pass --url',
+        )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     try:
-        response = requests.get(url, timeout=args.timeout, headers={"User-Agent": city["user_agent"]})
+        response = requests.get(
+            url,
+            timeout=args.timeout,
+            headers={'User-Agent': city['user_agent']},
+        )
         response.raise_for_status()
     except requests.RequestException as e:
-        log_run(args.output_dir, now, ok=False, error=f"fetch failed: {e}")
-        print(f"Fetch failed: {e}", file=sys.stderr)
+        log_run(args.output_dir, now, ok=False, error=f'fetch failed: {e}')
+        print(f'Fetch failed: {e}', file=sys.stderr)
         sys.exit(1)
 
     sys.exit(archive_alerts(args.output_dir, response.content, now))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

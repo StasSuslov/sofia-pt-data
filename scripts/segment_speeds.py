@@ -125,9 +125,9 @@ import time
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 # config.py at the repo root loads the city profile, which is the single
@@ -138,7 +138,7 @@ from zoneinfo import ZoneInfo
 # generate_manifest.py uses, so a <date>.jsonl.gz produced by
 # deploy/sofia-compress.service is read transparently here too.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import (  # noqa: E402
+from config import (
     CityProfileError,
     city_slugs,
     date_from_path,
@@ -150,8 +150,8 @@ from config import (  # noqa: E402
 
 # ─── Constants: segmentation & aggregation (task spec) ─────────────────────
 
-SEGMENT_LENGTH_M = 200.0   # fixed-length bin along a shape's polyline
-TIMESLOT_MINUTES = 15      # local-time bin width
+SEGMENT_LENGTH_M = 200.0  # fixed-length bin along a shape's polyline
+TIMESLOT_MINUTES = 15  # local-time bin width
 EARTH_RADIUS_M = 6371000.0
 
 # ─── Constants: rejection thresholds ────────────────────────────────────────
@@ -257,26 +257,31 @@ PERIOD_TOLERANCE_PCT = 0.5
 REDUCED_SERVICE_PCT = 80.0
 
 REJECT_REASONS = (
-    "trip_not_in_static",       # trip_id from the RT feed has no trips.txt row (~0.7% per CLAUDE.md)
-    "shape_not_found",          # trip resolved, but its shape_id has <2 usable points in shapes.txt
-    "non_positive_time_delta",  # duplicate/out-of-order snapshot_ts within a (vehicle, trip) group
-    "gap_too_large",            # dt > MAX_TIME_GAP_SEC
-    "moved_backward",           # along-shape distance dropped by more than BACKWARD_TOLERANCE_M
-    "speed_too_high",           # derived speed > MAX_SPEED_MS
+    'trip_not_in_static',  # trip_id from the RT feed has no trips.txt row (~0.7% per CLAUDE.md)
+    'shape_not_found',  # trip resolved, but its shape_id has <2 usable points in shapes.txt
+    'non_positive_time_delta',  # duplicate/out-of-order snapshot_ts within a (vehicle, trip) group
+    'gap_too_large',  # dt > MAX_TIME_GAP_SEC
+    'moved_backward',  # along-shape distance dropped by more than BACKWARD_TOLERANCE_M
+    'speed_too_high',  # derived speed > MAX_SPEED_MS
 )
 
 
 # ─── Geometry ────────────────────────────────────────────────────────────────
 
+
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in meters — used for cumulative along-shape
     distance (task step 1 asks for haversine explicitly). Segment
     *projection* below uses a flat local-plane approximation instead; see
-    Shape's docstring for why that's a different job."""
+    Shape's docstring for why that's a different job.
+    """
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    )
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
@@ -295,6 +300,7 @@ class Shape(NamedTuple):
     A single city's extent (tens of km) makes the flat-plane distortion
     (~1% at the far edges of a shape) irrelevant for that one job.
     """
+
     xs: list
     ys: list
     cum_dist: list
@@ -310,19 +316,29 @@ def build_shape(points: list) -> Shape:
     ref_lat_rad = math.radians(ref_lat_deg)
     ref_lon = lons[0]
 
-    xs = [math.radians(lon - ref_lon) * math.cos(ref_lat_rad) * EARTH_RADIUS_M for lon in lons]
+    xs = [
+        math.radians(lon - ref_lon) * math.cos(ref_lat_rad) * EARTH_RADIUS_M
+        for lon in lons
+    ]
     ys = [math.radians(lat - ref_lat_deg) * EARTH_RADIUS_M for lat in lats]
 
     cum_dist = [0.0]
     for i in range(1, len(lats)):
-        cum_dist.append(cum_dist[-1] + haversine_m(lats[i - 1], lons[i - 1], lats[i], lons[i]))
+        cum_dist.append(
+            cum_dist[-1]
+            + haversine_m(lats[i - 1], lons[i - 1], lats[i], lons[i]),
+        )
 
     return Shape(xs, ys, cum_dist, ref_lat_deg, ref_lon)
 
 
 def to_local_xy(shape: Shape, lat: float, lon: float) -> tuple:
     ref_lat_rad = math.radians(shape.ref_lat_deg)
-    x = math.radians(lon - shape.ref_lon) * math.cos(ref_lat_rad) * EARTH_RADIUS_M
+    x = (
+        math.radians(lon - shape.ref_lon)
+        * math.cos(ref_lat_rad)
+        * EARTH_RADIUS_M
+    )
     y = math.radians(lat - shape.ref_lat_deg) * EARTH_RADIUS_M
     return x, y
 
@@ -335,12 +351,18 @@ def _project_onto_segment(px, py, ax, ay, bx, by) -> tuple:
         t = 0.0
     else:
         t = ((px - ax) * dx + (py - ay) * dy) / seg_len_sq
-        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+        t = 0.0 if t < 0.0 else min(t, 1.0)
     cx, cy = ax + t * dx, ay + t * dy
     return t, math.hypot(px - cx, py - cy)
 
 
-def project_point(shape: Shape, lat: float, lon: float, lo_idx: int, hi_idx: int) -> tuple:
+def project_point(
+    shape: Shape,
+    lat: float,
+    lon: float,
+    lo_idx: int,
+    hi_idx: int,
+) -> tuple:
     """
     Closest-segment projection of (lat, lon) onto shape segments
     [lo_idx..hi_idx] inclusive (segment i runs from vertex i to vertex i+1).
@@ -350,9 +372,16 @@ def project_point(shape: Shape, lat: float, lon: float, lo_idx: int, hi_idx: int
     window_bounds()'s narrower range for the sliding-window search.
     """
     px, py = to_local_xy(shape, lat, lon)
-    best_i, best_t, best_dist = lo_idx, 0.0, float("inf")
+    best_i, best_t, best_dist = lo_idx, 0.0, float('inf')
     for i in range(lo_idx, hi_idx + 1):
-        t, dist = _project_onto_segment(px, py, shape.xs[i], shape.ys[i], shape.xs[i + 1], shape.ys[i + 1])
+        t, dist = _project_onto_segment(
+            px,
+            py,
+            shape.xs[i],
+            shape.ys[i],
+            shape.xs[i + 1],
+            shape.ys[i + 1],
+        )
         if dist < best_dist:
             best_i, best_t, best_dist = i, t, dist
     seg_start, seg_end = shape.cum_dist[best_i], shape.cum_dist[best_i + 1]
@@ -376,13 +405,16 @@ def window_bounds(shape: Shape, last_dist: float, max_travel_m: float) -> tuple:
     lo_dist = last_dist - BACKWARD_TOLERANCE_M - SEARCH_MARGIN_M
     hi_dist = last_dist + max_travel_m + SEARCH_MARGIN_M
     lo_idx = max(0, bisect.bisect_left(shape.cum_dist, lo_dist) - 1)
-    hi_idx = min(len(shape.cum_dist) - 2, bisect.bisect_right(shape.cum_dist, hi_dist))
-    if hi_idx < lo_idx:
-        hi_idx = lo_idx
+    hi_idx = min(
+        len(shape.cum_dist) - 2,
+        bisect.bisect_right(shape.cum_dist, hi_dist),
+    )
+    hi_idx = max(hi_idx, lo_idx)
     return lo_idx, hi_idx
 
 
 # ─── Static feed loading ────────────────────────────────────────────────────
+
 
 def build_shape_key(points: list) -> str:
     """
@@ -416,7 +448,7 @@ def build_shape_key(points: list) -> str:
     actual change either.
     """
     digest = hashlib.sha256(
-        ";".join(f"{lat:.6f},{lon:.6f}" for lat, lon in points).encode("utf-8")
+        ';'.join(f'{lat:.6f},{lon:.6f}' for lat, lon in points).encode('utf-8'),
     ).hexdigest()
     return digest[:16]
 
@@ -439,13 +471,17 @@ def load_static(gtfs_zip_path: Path) -> tuple:
     shape_points = defaultdict(list)
 
     with zipfile.ZipFile(gtfs_zip_path) as z:
-        with z.open("trips.txt") as f:
-            trip_rows = list(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")))
-        with z.open("shapes.txt") as f:
-            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")):
-                shape_points[row["shape_id"]].append(
-                    (int(row["shape_pt_sequence"]), float(row["shape_pt_lat"]), float(row["shape_pt_lon"]))
-                )
+        with z.open('trips.txt') as f:
+            trip_rows = list(
+                csv.DictReader(io.TextIOWrapper(f, encoding='utf-8')),
+            )
+        with z.open('shapes.txt') as f:
+            for row in csv.DictReader(io.TextIOWrapper(f, encoding='utf-8')):
+                shape_points[row['shape_id']].append((
+                    int(row['shape_pt_sequence']),
+                    float(row['shape_pt_lat']),
+                    float(row['shape_pt_lon']),
+                ))
 
     # Every shape_id referenced anywhere gets a key, even one with <2 points
     # or one missing from shapes.txt entirely (empty coords) — both cases
@@ -466,7 +502,7 @@ def load_static(gtfs_zip_path: Path) -> tuple:
 
     trip_map = {}
     for row in trip_rows:
-        shape_id = row["shape_id"]
+        shape_id = row['shape_id']
         if shape_id:
             if shape_id not in key_by_shape_id:
                 # A shape_id referenced by a trip but absent from shapes.txt.
@@ -476,23 +512,32 @@ def load_static(gtfs_zip_path: Path) -> tuple:
                 # different counter — the pre-existing behaviour.
                 key_by_shape_id[shape_id] = build_shape_key([])
                 shape_ids_by_key[key_by_shape_id[shape_id]].add(shape_id)
-            trip_map[row["trip_id"]] = (row["route_id"], shape_id, key_by_shape_id[shape_id])
+            trip_map[row['trip_id']] = (
+                row['route_id'],
+                shape_id,
+                key_by_shape_id[shape_id],
+            )
 
     return trip_map, shapes_by_key, dict(shape_ids_by_key)
 
 
 def load_feed_info(gtfs_zip_path: Path) -> dict:
     """Best-effort feed_info.txt row, for stamping run metadata — absent in
-    some GTFS feeds, so this must not be load-bearing for anything else."""
+    some GTFS feeds, so this must not be load-bearing for anything else.
+    """
     try:
         with zipfile.ZipFile(gtfs_zip_path) as z:
-            with z.open("feed_info.txt") as f:
-                return next(csv.DictReader(io.TextIOWrapper(f, encoding="utf-8")), {})
+            with z.open('feed_info.txt') as f:
+                return next(
+                    csv.DictReader(io.TextIOWrapper(f, encoding='utf-8')),
+                    {},
+                )
     except (KeyError, zipfile.BadZipFile, StopIteration):
         return {}
 
 
 # ─── Schedule periods (which timetable a day ran) ───────────────────────────
+
 
 def load_schedule_calendar(gtfs_zip_path: Path) -> tuple:
     """
@@ -510,19 +555,27 @@ def load_schedule_calendar(gtfs_zip_path: Path) -> tuple:
     """
     services_by_date = defaultdict(set)
     with zipfile.ZipFile(gtfs_zip_path) as z:
-        with z.open("calendar_dates.txt") as f:
-            for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig")):
-                if row["exception_type"] == "1":
-                    services_by_date[row["date"]].add(row["service_id"])
-        with z.open("trips.txt") as f:
+        with z.open('calendar_dates.txt') as f:
+            for row in csv.DictReader(
+                io.TextIOWrapper(f, encoding='utf-8-sig'),
+            ):
+                if row['exception_type'] == '1':
+                    services_by_date[row['date']].add(row['service_id'])
+        with z.open('trips.txt') as f:
             trip_services = [
-                (row["service_id"], row["route_id"])
-                for row in csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+                (row['service_id'], row['route_id'])
+                for row in csv.DictReader(
+                    io.TextIOWrapper(f, encoding='utf-8-sig'),
+                )
             ]
     return dict(services_by_date), trip_services
 
 
-def schedule_signature(services_by_date: dict, trip_services: list, date_str: str) -> tuple:
+def schedule_signature(
+    services_by_date: dict,
+    trip_services: list,
+    date_str: str,
+) -> tuple:
     """
     (signature_key, counts) for one calendar date read out of one static
     snapshot — the day's own snapshot (pick_snapshot_for_day), never the
@@ -552,11 +605,15 @@ def schedule_signature(services_by_date: dict, trip_services: list, date_str: st
     change is actually observed; it is named as a limitation in
     METHODOLOGY.md instead.
     """
-    active = services_by_date.get(date_str.replace("-", ""), frozenset())
-    counts = Counter(route_id for service_id, route_id in trip_services if service_id in active)
+    active = services_by_date.get(date_str.replace('-', ''), frozenset())
+    counts = Counter(
+        route_id
+        for service_id, route_id in trip_services
+        if service_id in active
+    )
     pairs = sorted(counts.items())
     key = hashlib.sha256(
-        ";".join(f"{route_id},{n}" for route_id, n in pairs).encode("utf-8")
+        ';'.join(f'{route_id},{n}' for route_id, n in pairs).encode('utf-8'),
     ).hexdigest()[:16]
     return key, dict(pairs)
 
@@ -565,14 +622,19 @@ def schedule_churn(counts: dict, ref_counts: dict) -> int:
     """Trips separating two days' timetables: per route, the absolute
     difference in scheduled trips, summed over every route either day runs.
     A route that appears or vanishes contributes its whole trip count, so
-    dropping a route is never free."""
-    return sum(abs(counts.get(r, 0) - ref_counts.get(r, 0))
-               for r in set(counts) | set(ref_counts))
+    dropping a route is never free.
+    """
+    return sum(
+        abs(counts.get(r, 0) - ref_counts.get(r, 0))
+        for r in set(counts) | set(ref_counts)
+    )
 
 
-def assign_schedule_periods(days: list,
-                            tolerance_pct: float = PERIOD_TOLERANCE_PCT,
-                            reduced_service_pct: float = REDUCED_SERVICE_PCT) -> list:
+def assign_schedule_periods(
+    days: list,
+    tolerance_pct: float = PERIOD_TOLERANCE_PCT,
+    reduced_service_pct: float = REDUCED_SERVICE_PCT,
+) -> list:
     """Give every day in `days` a "period_key" and an "excluded_from_median"
     reason, in place, and return the list. Each day is a dict carrying
     "date", "is_weekday", "signature_key" and "counts"; `days` is in date
@@ -614,49 +676,54 @@ def assign_schedule_periods(days: list,
     # reduced-service test below silently stops firing for every day. A gap
     # in the static snapshots is exactly the failure this archive has already
     # lived through once (2026-08-28/29/30), so it must not disarm the rule.
-    weekday_totals = sorted(t for t in (sum(d["counts"].values())
-                                        for d in days if d["is_weekday"]) if t)
+    weekday_totals = sorted(
+        t
+        for t in (sum(d['counts'].values()) for d in days if d['is_weekday'])
+        if t
+    )
     level = statistics.median(weekday_totals) if weekday_totals else 0
 
     def within(churn, r):
-        return churn <= sum(r["counts"].values()) * tolerance_pct / 100
+        return churn <= sum(r['counts'].values()) * tolerance_pct / 100
 
-    refs = []   # every period's reference day, in the order the periods opened
+    refs = []  # every period's reference day, in the order the periods opened
     ref = None
     for d in days:
-        total = sum(d["counts"].values())
-        if not d["is_weekday"]:
-            d["excluded_from_median"] = "weekend"
+        total = sum(d['counts'].values())
+        if not d['is_weekday']:
+            d['excluded_from_median'] = 'weekend'
         elif not total:
             # Not a holiday: the snapshot this day was read against carries
             # no calendar rows for the date at all. Keeping the two apart
             # matters — one is the city running fewer buses, the other is a
             # hole in the archive.
-            d["excluded_from_median"] = "no_calendar_rows"
+            d['excluded_from_median'] = 'no_calendar_rows'
         elif level and total < level * reduced_service_pct / 100:
-            d["excluded_from_median"] = "reduced_service"
+            d['excluded_from_median'] = 'reduced_service'
         else:
-            d["excluded_from_median"] = None
+            d['excluded_from_median'] = None
 
-        if d["excluded_from_median"]:
-            d["period_key"] = None
+        if d['excluded_from_median']:
+            d['period_key'] = None
             continue
 
-        churn = schedule_churn(d["counts"], ref["counts"]) if ref else 0
+        churn = schedule_churn(d['counts'], ref['counts']) if ref else 0
         if ref is not None and not within(churn, ref):
             ref = None
-            for r in refs:  # opening order, so `<=` hands a tie to the later period
-                c = schedule_churn(d["counts"], r["counts"])
+            for (
+                r
+            ) in refs:  # opening order, so `<=` hands a tie to the later period
+                c = schedule_churn(d['counts'], r['counts'])
                 if within(c, r) and (ref is None or c <= churn):
                     ref, churn = r, c
         if ref is None:
             ref, churn = d, 0
             refs.append(d)
-            d["period_key"] = d["signature_key"]
+            d['period_key'] = d['signature_key']
         else:
-            d["period_key"] = ref["period_key"]
-        d["churn_vs_reference"] = churn
-        d["period_reference_date"] = ref["date"]
+            d['period_key'] = ref['period_key']
+        d['churn_vs_reference'] = churn
+        d['period_reference_date'] = ref['date']
     return days
 
 
@@ -684,45 +751,51 @@ def build_schedule_periods(days: list, bin_counts: dict) -> list:
     """
     by_key = {}
     for d in days:
-        key = d.get("period_key")
+        key = d.get('period_key')
         if key is None:
             continue
         entry = by_key.get(key)
         if entry is None:
             entry = by_key[key] = {
-                "period_key": key,
-                "reference_date": d.get("period_reference_date", d["date"]),
-                "days_in_median_mon_fri": [],
-                "first_date": d["date"],
-                "last_date": d["date"],
-                "route_count": len(d["counts"]),
-                "trip_count": sum(d["counts"].values()),
-                "max_churn_vs_reference": 0,
-                "bin_count": bin_counts.get(key, 0),
+                'period_key': key,
+                'reference_date': d.get('period_reference_date', d['date']),
+                'days_in_median_mon_fri': [],
+                'first_date': d['date'],
+                'last_date': d['date'],
+                'route_count': len(d['counts']),
+                'trip_count': sum(d['counts'].values()),
+                'max_churn_vs_reference': 0,
+                'bin_count': bin_counts.get(key, 0),
             }
-        entry["days_in_median_mon_fri"].append(d["date"])
-        entry["first_date"] = min(entry["first_date"], d["date"])
-        entry["last_date"] = max(entry["last_date"], d["date"])
-        entry["max_churn_vs_reference"] = max(entry["max_churn_vs_reference"],
-                                              d.get("churn_vs_reference", 0))
-    return sorted(by_key.values(), key=lambda e: (e["first_date"], e["period_key"]))
+        entry['days_in_median_mon_fri'].append(d['date'])
+        entry['first_date'] = min(entry['first_date'], d['date'])
+        entry['last_date'] = max(entry['last_date'], d['date'])
+        entry['max_churn_vs_reference'] = max(
+            entry['max_churn_vs_reference'],
+            d.get('churn_vs_reference', 0),
+        )
+    return sorted(
+        by_key.values(),
+        key=lambda e: (e['first_date'], e['period_key']),
+    )
 
 
 def sha256_of_file(path: Path) -> str:
     """Plain sha256 of a static feed zip. Not generate_manifest.py's
     sha256_of(): that one exists to hash a day file transparently through
     optional gzip compression (deploy/sofia-compress.service); a static zip
-    is never stored gzipped, so that indirection has nothing to do here."""
+    is never stored gzipped, so that indirection has nothing to do here.
+    """
     h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
             h.update(chunk)
     return h.hexdigest()
 
 
 # ─── Static snapshot selection (per-processed-day feed matching) ───────────
 
-SNAPSHOT_NAME_RE = re.compile(r"^gtfs_(\d{4}-\d{2}-\d{2})(?:T\d{4})?\.zip$")
+SNAPSHOT_NAME_RE = re.compile(r'^gtfs_(\d{4}-\d{2}-\d{2})(?:T\d{4})?\.zip$')
 
 
 def find_static_snapshots(static_dir: Path) -> list:
@@ -738,7 +811,8 @@ def find_static_snapshots(static_dir: Path) -> list:
     2026-09-02 and the daily-only archive missed it for 21 hours. Sorting by
     filename rather than by the parsed date is what orders those correctly:
     "." (0x2E) sorts before "T" (0x54), so the plain morning snapshot always
-    precedes that day's intra-day ones."""
+    precedes that day's intra-day ones.
+    """
     snapshots = []
     for p in static_dir.iterdir():
         if not p.is_file():
@@ -780,7 +854,9 @@ def pick_snapshot_for_day(snapshots: list, date_str: str) -> tuple:
     if candidates:
         latest_date = candidates[-1][0]
         same_date = [s for s in candidates if s[0] == latest_date]
-        snap_date, path = same_date[0] if latest_date == date_str else same_date[-1]
+        snap_date, path = (
+            same_date[0] if latest_date == date_str else same_date[-1]
+        )
         return snap_date, path, False
     snap_date, path = snapshots[0]
     return snap_date, path, True
@@ -800,7 +876,8 @@ def next_snapshot_after(snapshots: list, path: Path):
     in the next morning's capture. process_day() resolves against this
     second feed only for trip_ids the day's own feed does not know, so the
     day is still scored against the feed it was actually collected under
-    wherever that feed has an answer."""
+    wherever that feed has an answer.
+    """
     for i, (_, p) in enumerate(snapshots):
         if p == path:
             return snapshots[i + 1][1] if i + 1 < len(snapshots) else None
@@ -813,7 +890,8 @@ def count_multi_geometry_shape_ids(shape_ids_by_key: dict) -> int:
     produced the 2026-08-31 finding — 32 shape_ids reused across a
     republished feed with different geometry underneath them — and it
     belongs in typical_weekday.json permanently, not only in a one-off
-    investigation."""
+    investigation.
+    """
     keys_by_shape_id = defaultdict(set)
     for key, shape_ids in shape_ids_by_key.items():
         for shape_id in shape_ids:
@@ -828,20 +906,25 @@ def count_multi_id_geometries(shape_ids_by_key: dict) -> int:
     A1192/A3949/A1221/A2710 with the originals left in the feed — and it is
     exactly what the shape_id in the old aggregation key turned into a
     permanent split. Zero here means the publisher's ids and its geometries
-    agree; a rising number means it is churning identifiers again."""
-    return sum(1 for shape_ids in shape_ids_by_key.values() if len(shape_ids) > 1)
+    agree; a rising number means it is churning identifiers again.
+    """
+    return sum(
+        1 for shape_ids in shape_ids_by_key.values() if len(shape_ids) > 1
+    )
 
 
 # ─── Time helpers ───────────────────────────────────────────────────────────
+
 
 def timeslot_for(snapshot_ts: int, tz: ZoneInfo) -> str:
     """15-minute local-time bin, formatted HH:MM (bin start)."""
     local = datetime.fromtimestamp(snapshot_ts, tz)
     bin_minute = (local.minute // TIMESLOT_MINUTES) * TIMESLOT_MINUTES
-    return f"{local.hour:02d}:{bin_minute:02d}"
+    return f'{local.hour:02d}:{bin_minute:02d}'
 
 
 # ─── Per-day processing ─────────────────────────────────────────────────────
+
 
 @dataclass
 class DayStats:
@@ -869,7 +952,7 @@ def process_group(
     trip_id: str,
     tz: ZoneInfo,
     out_f,
-    agg: Optional[dict],
+    agg: dict | None,
     diff_kmh_all: list,
     stats: DayStats,
     date_str: str,
@@ -883,7 +966,8 @@ def process_group(
     carries and comes from the city profile; it has no default because the
     two readings differ by a factor of 3.6 and both look plausible. The raw
     archive keeps the field under the name the feed gave it (`speed_ms`);
-    everything written from here on is km/h."""
+    everything written from here on is km/h.
+    """
     prev_ts = None
     last_dist = None
     full_range = (0, len(shape.xs) - 2)
@@ -891,8 +975,14 @@ def process_group(
     for ts, lat, lon, feed_speed in recs:
         # The feed's number in km/h whatever unit it arrived in, so the
         # comparison below and the emitted field mean one thing per city.
-        feed_speed_kmh = None if feed_speed is None else (
-            feed_speed if feed_speed_unit == "kmh" else round(feed_speed * 3.6, 3)
+        feed_speed_kmh = (
+            None
+            if feed_speed is None
+            else (
+                feed_speed
+                if feed_speed_unit == 'kmh'
+                else round(feed_speed * 3.6, 3)
+            )
         )
         if prev_ts is None:
             # First point for this trip instance: no prior match to window
@@ -904,51 +994,61 @@ def process_group(
             stats.total_pairs += 1
 
             if dt <= 0:
-                stats.reject_counts["non_positive_time_delta"] += 1
+                stats.reject_counts['non_positive_time_delta'] += 1
                 _, dist, _ = project_point(shape, lat, lon, *full_range)
             elif dt > MAX_TIME_GAP_SEC:
-                stats.reject_counts["gap_too_large"] += 1
+                stats.reject_counts['gap_too_large'] += 1
                 # Position may have moved anywhere in the elapsed time — a
                 # window built from MAX_SPEED_MS * dt would be enormous
                 # anyway, so re-bootstrap with a full search instead.
                 _, dist, _ = project_point(shape, lat, lon, *full_range)
             else:
-                lo_idx, hi_idx = window_bounds(shape, last_dist, MAX_SPEED_MS * dt)
+                lo_idx, hi_idx = window_bounds(
+                    shape,
+                    last_dist,
+                    MAX_SPEED_MS * dt,
+                )
                 _, dist, _ = project_point(shape, lat, lon, lo_idx, hi_idx)
                 delta = dist - last_dist
 
                 if delta < -BACKWARD_TOLERANCE_M:
-                    stats.reject_counts["moved_backward"] += 1
+                    stats.reject_counts['moved_backward'] += 1
                 else:
                     speed = delta / dt
                     if speed > MAX_SPEED_MS:
-                        stats.reject_counts["speed_too_high"] += 1
+                        stats.reject_counts['speed_too_high'] += 1
                     else:
                         segment_index = int(dist // SEGMENT_LENGTH_M)
                         slot = timeslot_for(ts, tz)
-                        out_f.write(json.dumps({
-                            "date": date_str,
-                            "route_id": route_id,
-                            "trip_id": trip_id,
-                            "vehicle_id": vehicle_id,
-                            # Bare shape_id: a human reading the raw archive
-                            # shouldn't have to strip a geometry hash to
-                            # recognize a shape. shape_key is the same value
-                            # the aggregation below actually groups on.
-                            "shape_id": shape_id,
-                            "shape_key": shape_key,
-                            "segment_index": segment_index,
-                            "timeslot": slot,
-                            "speed_ms": round(speed, 3),
-                            "dist_m": round(delta, 1),
-                            "dt_sec": dt,
-                            "feed_speed_kmh": feed_speed_kmh,
-                            "from_ts": prev_ts,
-                            "to_ts": ts,
-                        }, ensure_ascii=False) + "\n")
+                        out_f.write(
+                            json.dumps(
+                                {
+                                    'date': date_str,
+                                    'route_id': route_id,
+                                    'trip_id': trip_id,
+                                    'vehicle_id': vehicle_id,
+                                    # Bare shape_id: a human reading the raw archive
+                                    # shouldn't have to strip a geometry hash to
+                                    # recognize a shape. shape_key is the same value
+                                    # the aggregation below actually groups on.
+                                    'shape_id': shape_id,
+                                    'shape_key': shape_key,
+                                    'segment_index': segment_index,
+                                    'timeslot': slot,
+                                    'speed_ms': round(speed, 3),
+                                    'dist_m': round(delta, 1),
+                                    'dt_sec': dt,
+                                    'feed_speed_kmh': feed_speed_kmh,
+                                    'from_ts': prev_ts,
+                                    'to_ts': ts,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + '\n',
+                        )
                         stats.samples_emitted += 1
                         if agg is not None:
-                            agg[(shape_key, segment_index, slot)].append(speed)
+                            agg[shape_key, segment_index, slot].append(speed)
                         if feed_speed_kmh is not None:
                             # Both sides in km/h. Sofia's feed field is `speed`
                             # in GTFS-RT and lands in the raw archive as
@@ -961,7 +1061,9 @@ def process_group(
                             # median disagreement where the real one is 9. Which
                             # of the two a city's feed does is recorded in its
                             # profile, not assumed here.
-                            diff_kmh_all.append(abs(speed * 3.6 - feed_speed_kmh))
+                            diff_kmh_all.append(
+                                abs(speed * 3.6 - feed_speed_kmh),
+                            )
 
         last_dist = dist
         prev_ts = ts
@@ -973,9 +1075,9 @@ def process_day(
     trip_map: dict,
     shapes_by_key: dict,
     tz: ZoneInfo,
-    agg: Optional[dict],
+    agg: dict | None,
     diff_kmh_all: list,
-    next_trip_map: Optional[dict] = None,
+    next_trip_map: dict | None = None,
     *,
     feed_speed_unit: str,
 ) -> DayStats:
@@ -986,7 +1088,7 @@ def process_day(
     # makes the lookup below a no-op rather than a special case.
     next_trip_map = next_trip_map or {}
 
-    with open_maybe_gzip(day_path, "rt", encoding="utf-8") as f:
+    with open_maybe_gzip(day_path, 'rt', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -997,8 +1099,8 @@ def process_day(
                 continue  # torn line from a mid-write rsync pull — same tolerance as generate_manifest.py
 
             stats.total_records += 1
-            trip_id = rec.get("trip_id")
-            vehicle_id = rec.get("vehicle_id")
+            trip_id = rec.get('trip_id')
+            vehicle_id = rec.get('vehicle_id')
             route_shape = trip_map.get(trip_id) if trip_id else None
             if route_shape is None and trip_id:
                 route_shape = next_trip_map.get(trip_id)
@@ -1007,30 +1109,49 @@ def process_day(
                     stats.trips_from_next_feed.add(trip_id)
 
             if route_shape is None or not vehicle_id:
-                stats.reject_counts["trip_not_in_static"] += 1
+                stats.reject_counts['trip_not_in_static'] += 1
                 continue
 
-            groups[(vehicle_id, trip_id)].append(
-                (rec["snapshot_ts"], rec["lat"], rec["lon"], rec.get("speed_ms"))
-            )
+            groups[vehicle_id, trip_id].append((
+                rec['snapshot_ts'],
+                rec['lat'],
+                rec['lon'],
+                rec.get('speed_ms'),
+            ))
 
     date_str = date_from_path(day_path)
-    with out_path.open("w", encoding="utf-8") as out_f:
+    with out_path.open('w', encoding='utf-8') as out_f:
         for (vehicle_id, trip_id), recs in groups.items():
-            route_id, shape_id, shape_key = trip_map.get(trip_id) or next_trip_map[trip_id]
+            route_id, shape_id, shape_key = (
+                trip_map.get(trip_id) or next_trip_map[trip_id]
+            )
             shape = shapes_by_key.get(shape_key)
             if shape is None:
-                stats.reject_counts["shape_not_found"] += len(recs)
+                stats.reject_counts['shape_not_found'] += len(recs)
                 continue
             recs.sort(key=lambda r: r[0])
-            process_group(recs, shape, route_id, shape_id, shape_key, vehicle_id, trip_id, tz,
-                          out_f, agg, diff_kmh_all, stats, date_str,
-                          feed_speed_unit=feed_speed_unit)
+            process_group(
+                recs,
+                shape,
+                route_id,
+                shape_id,
+                shape_key,
+                vehicle_id,
+                trip_id,
+                tz,
+                out_f,
+                agg,
+                diff_kmh_all,
+                stats,
+                date_str,
+                feed_speed_unit=feed_speed_unit,
+            )
 
     return stats
 
 
 # ─── Aggregation (D4) ────────────────────────────────────────────────────────
+
 
 def build_typical_weekday(
     agg_by_period: dict,
@@ -1059,92 +1180,122 @@ def build_typical_weekday(
             # key.split("|") and that call site keeps working untouched.
             # shape_key is 16 hex chars (see build_shape_key) and so contains no
             # "|", which is what keeps this from silently becoming a 4-field key.
-            period_segments[f"{shape_key}|{segment_index}|{slot}"] = {
-                "median_speed_ms": round(statistics.median(speeds), 3),
-                "n_samples": len(speeds),
+            period_segments[f'{shape_key}|{segment_index}|{slot}'] = {
+                'median_speed_ms': round(statistics.median(speeds), 3),
+                'n_samples': len(speeds),
             }
         segments[period_key] = period_segments
 
     return {
-        "generated_at": datetime.now(dt_timezone.utc).isoformat(),
+        'generated_at': datetime.now(UTC).isoformat(),
         # Replaces the old scalar static_feed_file/version/valid fields: with
         # more than one static feed potentially in play across the days
         # processed, a single scalar can't describe them, and a run that
         # only ever loads one feed still gets a (one-element) list here
         # rather than two different shapes depending on how many were used.
-        "static_feeds": static_feeds,
-        "days_processed": processed_days,
-        "days_in_median_mon_fri": weekday_days,
+        'static_feeds': static_feeds,
+        'days_processed': processed_days,
+        'days_in_median_mon_fri': weekday_days,
         # Days processed but deliberately kept out of the median, each with
         # its reason (see assign_schedule_periods). Weekends are the routine
         # case; a weekday here means a holiday timetable, or a date its own
         # snapshot has no calendar rows for.
-        "days_excluded_from_median": [
-            {"date": e["date"], "reason": e.get("excluded_from_median")}
-            for e in day_breakdown if e.get("excluded_from_median")
+        'days_excluded_from_median': [
+            {'date': e['date'], 'reason': e.get('excluded_from_median')}
+            for e in day_breakdown
+            if e.get('excluded_from_median')
         ],
         # One entry per timetable observed across the days processed, each
         # naming the days that ran it and how many bins its median holds.
         # "segments" is keyed by the same period_key.
-        "schedule_periods": schedule_periods,
+        'schedule_periods': schedule_periods,
         # Per-day breakdown, because a grand total hides exactly the signal
         # that matters here: a snapshot going stale shows up as *one day's*
         # trip_not_in_static climbing, which reject_counts_total below
         # averages away across every other day.
-        "day_breakdown": day_breakdown,
-        "thresholds": {
-            "segment_length_m": SEGMENT_LENGTH_M,
-            "timeslot_minutes": TIMESLOT_MINUTES,
-            "max_time_gap_sec": MAX_TIME_GAP_SEC,
-            "max_speed_kmh": MAX_SPEED_KMH,
-            "backward_tolerance_m": BACKWARD_TOLERANCE_M,
-            "search_margin_m": SEARCH_MARGIN_M,
-            "validation_diff_threshold_kmh": VALIDATION_DIFF_THRESHOLD_KMH,
-            "schedule_period_tolerance_pct": PERIOD_TOLERANCE_PCT,
-            "reduced_service_threshold_pct": REDUCED_SERVICE_PCT,
+        'day_breakdown': day_breakdown,
+        'thresholds': {
+            'segment_length_m': SEGMENT_LENGTH_M,
+            'timeslot_minutes': TIMESLOT_MINUTES,
+            'max_time_gap_sec': MAX_TIME_GAP_SEC,
+            'max_speed_kmh': MAX_SPEED_KMH,
+            'backward_tolerance_m': BACKWARD_TOLERANCE_M,
+            'search_margin_m': SEARCH_MARGIN_M,
+            'validation_diff_threshold_kmh': VALIDATION_DIFF_THRESHOLD_KMH,
+            'schedule_period_tolerance_pct': PERIOD_TOLERANCE_PCT,
+            'reduced_service_threshold_pct': REDUCED_SERVICE_PCT,
         },
-        "reject_counts_total": dict(reject_totals),
-        "validation_vs_feed_speed_ms": validation_summary,
+        'reject_counts_total': dict(reject_totals),
+        'validation_vs_feed_speed_ms': validation_summary,
         # How many shape_ids carried more than one distinct geometry hash
         # across the feeds loaded this run — the number that surfaced the
         # 2026-08-31 republished-feed finding (see CLAUDE.md). Kept in the
         # output permanently rather than left as a one-off chat finding.
-        "multi_geometry_shape_id_count": multi_geometry_shape_id_count,
+        'multi_geometry_shape_id_count': multi_geometry_shape_id_count,
         # The mirror image, and the 2026-09-02 finding: how many geometries
         # the agency published under more than one shape_id. Under the old
         # f"{shape_id}@{geom_hash}" key each of those was a permanent split
         # between two series describing one piece of road.
-        "multi_id_geometry_count": multi_id_geometry_count,
+        'multi_id_geometry_count': multi_id_geometry_count,
         # Bins summed across periods: a bin observed under two timetables
         # counts twice here, because that is two medians, not one. Both
         # numbers are published because either alone reads as "how much data
         # is in this file" and they answer different questions — how many
         # medians it holds, and how much of the network it covers.
-        "segment_count": sum(len(s) for s in segments.values()),
-        "distinct_segment_count": len(set().union(*segments.values())) if segments else 0,
-        "segments": segments,
+        'segment_count': sum(len(s) for s in segments.values()),
+        'distinct_segment_count': len(set().union(*segments.values()))
+        if segments
+        else 0,
+        'segments': segments,
     }
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("static_source", type=Path,
-                        help="GTFS static zip (one feed for every day processed), or a directory of "
-                             "gtfs_<YYYY-MM-DD>.zip snapshots to pick from per day (see pick_snapshot_for_day)")
-    parser.add_argument("data_dir", type=Path, help="Directory containing <YYYY-MM-DD>.jsonl RT snapshot files")
-    parser.add_argument("dates", nargs="*", help="Specific YYYY-MM-DD days to process (default: every "
-                                                   "<YYYY-MM-DD>.jsonl file found in data_dir)")
-    parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Where to write outputs (default: <data_dir>/processed)")
-    parser.add_argument("--city", type=str, default=None,
-                        help="City profile supplying the timezone and the feed's speed unit "
-                             f"(cities/<slug>.json; have: {', '.join(city_slugs()) or 'none'}). "
-                             "Default: read from data_dir, laid out as .../data/<city>/")
-    parser.add_argument("--timezone", type=str, default=None,
-                        help="Timezone for timeslot bins and weekday classification "
-                             "(default: the city profile's)")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'static_source',
+        type=Path,
+        help='GTFS static zip (one feed for every day processed), or a directory of '
+        'gtfs_<YYYY-MM-DD>.zip snapshots to pick from per day (see pick_snapshot_for_day)',
+    )
+    parser.add_argument(
+        'data_dir',
+        type=Path,
+        help='Directory containing <YYYY-MM-DD>.jsonl RT snapshot files',
+    )
+    parser.add_argument(
+        'dates',
+        nargs='*',
+        help='Specific YYYY-MM-DD days to process (default: every '
+        '<YYYY-MM-DD>.jsonl file found in data_dir)',
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=None,
+        help='Where to write outputs (default: <data_dir>/processed)',
+    )
+    parser.add_argument(
+        '--city',
+        type=str,
+        default=None,
+        help="City profile supplying the timezone and the feed's speed unit "
+        f'(cities/<slug>.json; have: {", ".join(city_slugs()) or "none"}). '
+        'Default: read from data_dir, laid out as .../data/<city>/',
+    )
+    parser.add_argument(
+        '--timezone',
+        type=str,
+        default=None,
+        help='Timezone for timeslot bins and weekday classification '
+        "(default: the city profile's)",
+    )
     args = parser.parse_args()
 
     try:
@@ -1152,16 +1303,19 @@ def main():
     except CityProfileError as e:
         parser.error(str(e))
 
-    output_dir = args.output_dir or (args.data_dir / "processed")
+    output_dir = args.output_dir or (args.data_dir / 'processed')
     output_dir.mkdir(parents=True, exist_ok=True)
-    tz = ZoneInfo(args.timezone or city["timezone"])
+    tz = ZoneInfo(args.timezone or city['timezone'])
 
     # None (single zip, same feed for every day -- unchanged prior behaviour)
     # or a date-sorted [(snapshot_date, path), ...] to pick from per day.
     if args.static_source.is_dir():
         snapshots = find_static_snapshots(args.static_source)
         if not snapshots:
-            print(f"No gtfs_<YYYY-MM-DD>.zip snapshots found in {args.static_source}", file=sys.stderr)
+            print(
+                f'No gtfs_<YYYY-MM-DD>.zip snapshots found in {args.static_source}',
+                file=sys.stderr,
+            )
             sys.exit(1)
     else:
         snapshots = None
@@ -1171,18 +1325,20 @@ def main():
     # into one dict is safe and self-deduplicating -- two feeds sharing 98.3%
     # of their geometry (the observed 2026-08-27/2026-08-31 case) cost barely
     # more to hold in memory than one.
-    loaded_feeds = {}         # path -> (trip_map, shapes_by_key, feed_info)
-    loaded_calendars = {}     # path -> (services_by_date, trip_services)
-    all_shapes_by_key = {}    # union across every feed loaded this run
+    loaded_feeds = {}  # path -> (trip_map, shapes_by_key, feed_info)
+    loaded_calendars = {}  # path -> (services_by_date, trip_services)
+    all_shapes_by_key = {}  # union across every feed loaded this run
     all_shape_ids_by_key = defaultdict(set)
 
     def load_feed(path: Path) -> tuple:
         if path not in loaded_feeds:
-            print(f"Loading static feed {path} ...")
+            print(f'Loading static feed {path} ...')
             t0 = time.time()
             trip_map, shapes_by_key, shape_ids_by_key = load_static(path)
             feed_info = load_feed_info(path)
-            print(f"  {len(trip_map):,} trips, {len(shapes_by_key):,} shapes ({time.time() - t0:.1f}s)")
+            print(
+                f'  {len(trip_map):,} trips, {len(shapes_by_key):,} shapes ({time.time() - t0:.1f}s)',
+            )
             loaded_feeds[path] = (trip_map, shapes_by_key, feed_info)
             all_shapes_by_key.update(shapes_by_key)
             for key, shape_ids in shape_ids_by_key.items():
@@ -1202,9 +1358,14 @@ def main():
         # below does for the no-explicit-dates case. Sorted here too, to
         # match find_day_files()'s ordering -- a day_breakdown or a snapshot
         # cache shouldn't depend on the order dates were typed on the CLI.
-        day_files = [resolve_day_file(args.data_dir, d, ".jsonl") for d in sorted(args.dates)]
+        day_files = [
+            resolve_day_file(args.data_dir, d, '.jsonl')
+            for d in sorted(args.dates)
+        ]
     else:
-        day_files = find_day_files(args.data_dir)  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date, sorted
+        day_files = find_day_files(
+            args.data_dir,
+        )  # <date>.jsonl or <date>.jsonl.gz, deduplicated by date, sorted
         # Today's file is still being written and its local copy only reaches
         # the last rsync, so folding it into the median produces an aggregate
         # that changes under a reader who re-runs this an hour later. The
@@ -1215,10 +1376,13 @@ def main():
         skipped = [p for p in day_files if date_from_path(p) >= today]
         day_files = [p for p in day_files if date_from_path(p) < today]
         for p in skipped:
-            print(f"{p.name}: skipped, the day is still in progress "
-                  f"(pass {date_from_path(p)} explicitly to include it)", file=sys.stderr)
+            print(
+                f'{p.name}: skipped, the day is still in progress '
+                f'(pass {date_from_path(p)} explicitly to include it)',
+                file=sys.stderr,
+            )
     if not day_files:
-        print(f"No day files found in {args.data_dir}", file=sys.stderr)
+        print(f'No day files found in {args.data_dir}', file=sys.stderr)
         sys.exit(1)
 
     # Which timetable a day ran is a fact about the archive, not about this
@@ -1230,11 +1394,16 @@ def main():
     # 2026-09-01` makes 09-01 the reference of its own period and hands the
     # same timetable a different key than the full run does.
     requested = {date_from_path(p) for p in day_files}
-    plan_files = sorted(set(day_files) | set(find_day_files(args.data_dir)),
-                        key=date_from_path)
+    plan_files = sorted(
+        set(day_files) | set(find_day_files(args.data_dir)),
+        key=date_from_path,
+    )
     today = datetime.now(tz).date().isoformat()
-    plan_files = [p for p in plan_files
-                  if date_from_path(p) < today or date_from_path(p) in requested]
+    plan_files = [
+        p
+        for p in plan_files
+        if date_from_path(p) < today or date_from_path(p) in requested
+    ]
 
     # period_key -> {(shape_key, segment_index, timeslot): [speed, ...]}. One
     # aggregate per timetable, so days running different schedules never
@@ -1245,7 +1414,7 @@ def main():
     processed_days = []
     weekday_days = []
     day_breakdown = []
-    day_plan = []                       # one dict per day, filled by the pre-pass below
+    day_plan = []  # one dict per day, filled by the pre-pass below
     feed_days_used = defaultdict(list)  # path -> [date_str, ...]
 
     # Which timetable each day ran is settled before any day is processed:
@@ -1255,46 +1424,67 @@ def main():
     # snapshot and several days usually share one.
     for day_path in plan_files:
         if not day_path.exists():
-            print(f"{day_path.name}: not found, skipping", file=sys.stderr)
+            print(f'{day_path.name}: not found, skipping', file=sys.stderr)
             continue
 
         date_str = date_from_path(day_path)
 
         if snapshots is None:
-            static_path, is_fallback, next_path = args.static_source, False, None
+            static_path, is_fallback, next_path = (
+                args.static_source,
+                False,
+                None,
+            )
         else:
-            _, static_path, is_fallback = pick_snapshot_for_day(snapshots, date_str)
+            _, static_path, is_fallback = pick_snapshot_for_day(
+                snapshots,
+                date_str,
+            )
             if is_fallback:
-                print(f"{date_str}: precedes every static snapshot on record, "
-                      f"falling back to the earliest one ({static_path.name})", file=sys.stderr)
+                print(
+                    f'{date_str}: precedes every static snapshot on record, '
+                    f'falling back to the earliest one ({static_path.name})',
+                    file=sys.stderr,
+                )
             next_path = next_snapshot_after(snapshots, static_path)
 
         # The day's own snapshot, never next_path: which timetable the day
         # ran is a fact about the feed it started under.
-        signature_key, counts = schedule_signature(*load_calendar(static_path), date_str)
+        signature_key, counts = schedule_signature(
+            *load_calendar(static_path),
+            date_str,
+        )
         day_plan.append({
-            "date": date_str,
-            "day_path": day_path,
-            "static_path": static_path,
-            "is_fallback": is_fallback,
-            "next_path": next_path,
-            "is_weekday": date.fromisoformat(date_str).weekday() < 5,  # Mon-Fri, per D4
-            "signature_key": signature_key,
-            "counts": counts,
-            "processed": date_str in requested,
+            'date': date_str,
+            'day_path': day_path,
+            'static_path': static_path,
+            'is_fallback': is_fallback,
+            'next_path': next_path,
+            'is_weekday': date.fromisoformat(date_str).weekday()
+            < 5,  # Mon-Fri, per D4
+            'signature_key': signature_key,
+            'counts': counts,
+            'processed': date_str in requested,
         })
 
     assign_schedule_periods(day_plan)
     for d in day_plan:
-        if d["excluded_from_median"] and d["is_weekday"]:
-            print(f"{d['date']}: weekday scheduling {sum(d['counts'].values()):,} trips "
-                  f"({d['excluded_from_median']}), kept out of the median", file=sys.stderr)
+        if d['excluded_from_median'] and d['is_weekday']:
+            print(
+                f'{d["date"]}: weekday scheduling {sum(d["counts"].values()):,} trips '
+                f'({d["excluded_from_median"]}), kept out of the median',
+                file=sys.stderr,
+            )
 
     for d in day_plan:
-        if not d["processed"]:
+        if not d['processed']:
             continue
-        date_str, static_path, next_path = d["date"], d["static_path"], d["next_path"]
-        period_key = d["period_key"]
+        date_str, static_path, next_path = (
+            d['date'],
+            d['static_path'],
+            d['next_path'],
+        )
+        period_key = d['period_key']
 
         trip_map, shapes_by_key, _ = load_feed(static_path)
         next_trip_map = {}
@@ -1305,12 +1495,20 @@ def main():
             # content-addressed so the union can't collide (build_shape_key).
             shapes_by_key = {**next_shapes, **shapes_by_key}
 
-        out_path = output_dir / f"segment_speeds_{date_str}.jsonl"
+        out_path = output_dir / f'segment_speeds_{date_str}.jsonl'
 
         t0 = time.time()
-        stats = process_day(d["day_path"], out_path, trip_map, shapes_by_key, tz,
-                            agg_by_period[period_key] if period_key else None, diff_kmh_all,
-                            next_trip_map, feed_speed_unit=city["speed_field_unit"])
+        stats = process_day(
+            d['day_path'],
+            out_path,
+            trip_map,
+            shapes_by_key,
+            tz,
+            agg_by_period[period_key] if period_key else None,
+            diff_kmh_all,
+            next_trip_map,
+            feed_speed_unit=city['speed_field_unit'],
+        )
         elapsed = time.time() - t0
 
         processed_days.append(date_str)
@@ -1319,41 +1517,43 @@ def main():
         reject_totals.update(stats.reject_counts)
         feed_days_used[static_path].append(date_str)
         day_breakdown.append({
-            "date": date_str,
-            "static_feed_file": static_path.name,
-            "static_feed_is_fallback": d["is_fallback"],
+            'date': date_str,
+            'static_feed_file': static_path.name,
+            'static_feed_is_fallback': d['is_fallback'],
             # The feed captured after this day's own, consulted only for
             # trips the day's feed doesn't know (next_snapshot_after). Both
             # counts are reported even when zero, so "the agency didn't
             # republish mid-day" and "this run never had a later feed to
             # ask" stay distinguishable in the output.
-            "next_static_feed_file": next_path.name if next_path else None,
+            'next_static_feed_file': next_path.name if next_path else None,
             # Two different facts, both recorded for every day including
             # the ones the median skips. schedule_signature_key is the raw
             # observation: exactly which routes ran how many trips that
             # date, hashed. schedule_period_key is the median it was pooled
             # into, null for a day left out — see excluded_from_median.
-            "schedule_signature_key": d["signature_key"],
-            "schedule_period_key": period_key,
-            "excluded_from_median": d["excluded_from_median"],
-            "scheduled_trip_count": sum(d["counts"].values()),
-            "trips_resolved_from_next_feed": len(stats.trips_from_next_feed),
-            "records_resolved_from_next_feed": stats.records_from_next_feed,
-            "records": stats.total_records,
-            "samples_emitted": stats.samples_emitted,
-            "reject_counts": dict(stats.reject_counts),
+            'schedule_signature_key': d['signature_key'],
+            'schedule_period_key': period_key,
+            'excluded_from_median': d['excluded_from_median'],
+            'scheduled_trip_count': sum(d['counts'].values()),
+            'trips_resolved_from_next_feed': len(stats.trips_from_next_feed),
+            'records_resolved_from_next_feed': stats.records_from_next_feed,
+            'records': stats.total_records,
+            'samples_emitted': stats.samples_emitted,
+            'reject_counts': dict(stats.reject_counts),
         })
 
         rejected = sum(stats.reject_counts.values())
         if stats.records_from_next_feed:
-            print(f"{date_str}: {stats.records_from_next_feed:,} records on "
-                  f"{len(stats.trips_from_next_feed)} trip(s) unknown to {static_path.name}, "
-                  f"resolved from {next_path.name} (feed republished during the day)")
+            print(
+                f'{date_str}: {stats.records_from_next_feed:,} records on '
+                f'{len(stats.trips_from_next_feed)} trip(s) unknown to {static_path.name}, '
+                f'resolved from {next_path.name} (feed republished during the day)',
+            )
         print(
-            f"{date_str} ({'weekday' if d['is_weekday'] else 'weekend'}, static={static_path.name}): "
-            f"{stats.total_records:,} records | {stats.total_pairs:,} pairs | "
-            f"{stats.samples_emitted:,} samples emitted | {rejected:,} rejected | "
-            f"{elapsed:.1f}s"
+            f'{date_str} ({"weekday" if d["is_weekday"] else "weekend"}, static={static_path.name}): '
+            f'{stats.total_records:,} records | {stats.total_pairs:,} pairs | '
+            f'{stats.samples_emitted:,} samples emitted | {rejected:,} rejected | '
+            f'{elapsed:.1f}s',
         )
 
     validation_summary = {
@@ -1361,58 +1561,87 @@ def main():
         # comparison was originally computed with — see METHODOLOGY.md. Both
         # the unit and why it is believed come from the city profile, because
         # "this feed violates the spec" is a claim about one city's feed.
-        "comparison_unit": "km/h",
-        "feed_speed_field_unit": city["speed_field_unit"],
-        "feed_speed_field_provenance": city.get("speed_field_provenance"),
-        "n_compared": len(diff_kmh_all),
-        "median_abs_diff_kmh": round(statistics.median(diff_kmh_all), 3) if diff_kmh_all else None,
-        "pct_over_threshold": (
-            round(100 * sum(1 for d in diff_kmh_all if d > VALIDATION_DIFF_THRESHOLD_KMH) / len(diff_kmh_all), 3)
-            if diff_kmh_all else None
+        'comparison_unit': 'km/h',
+        'feed_speed_field_unit': city['speed_field_unit'],
+        'feed_speed_field_provenance': city.get('speed_field_provenance'),
+        'n_compared': len(diff_kmh_all),
+        'median_abs_diff_kmh': round(statistics.median(diff_kmh_all), 3)
+        if diff_kmh_all
+        else None,
+        'pct_over_threshold': (
+            round(
+                100
+                * sum(
+                    1 for d in diff_kmh_all if d > VALIDATION_DIFF_THRESHOLD_KMH
+                )
+                / len(diff_kmh_all),
+                3,
+            )
+            if diff_kmh_all
+            else None
         ),
     }
 
     static_feeds_meta = []
     for path, (_, _, feed_info) in loaded_feeds.items():
         static_feeds_meta.append({
-            "file": path.name,
-            "sha256": sha256_of_file(path),
-            "feed_version": feed_info.get("feed_version"),
-            "feed_start_date": feed_info.get("feed_start_date"),
-            "feed_end_date": feed_info.get("feed_end_date"),
-            "days_processed": feed_days_used[path],
+            'file': path.name,
+            'sha256': sha256_of_file(path),
+            'feed_version': feed_info.get('feed_version'),
+            'feed_start_date': feed_info.get('feed_start_date'),
+            'feed_end_date': feed_info.get('feed_end_date'),
+            'days_processed': feed_days_used[path],
         })
 
-    multi_geometry_shape_id_count = count_multi_geometry_shape_ids(all_shape_ids_by_key)
+    multi_geometry_shape_id_count = count_multi_geometry_shape_ids(
+        all_shape_ids_by_key,
+    )
     multi_id_geometry_count = count_multi_id_geometries(all_shape_ids_by_key)
 
     schedule_periods = build_schedule_periods(
-        [d for d in day_plan if d["processed"]],
+        [d for d in day_plan if d['processed']],
         {k: len(a) for k, a in agg_by_period.items()},
     )
 
     typical = build_typical_weekday(
-        agg_by_period, processed_days, weekday_days, static_feeds_meta, day_breakdown,
-        reject_totals, validation_summary, multi_geometry_shape_id_count,
-        multi_id_geometry_count, schedule_periods,
+        agg_by_period,
+        processed_days,
+        weekday_days,
+        static_feeds_meta,
+        day_breakdown,
+        reject_totals,
+        validation_summary,
+        multi_geometry_shape_id_count,
+        multi_id_geometry_count,
+        schedule_periods,
     )
-    typical_path = output_dir / "typical_weekday.json"
-    typical_path.write_text(json.dumps(typical, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    typical_path = output_dir / 'typical_weekday.json'
+    typical_path.write_text(
+        json.dumps(typical, indent=2, ensure_ascii=False) + '\n',
+        encoding='utf-8',
+    )
 
-    print(f"\n{typical_path}: {typical['distinct_segment_count']:,} distinct (segment, timeslot) "
-          f"bins, {typical['segment_count']:,} counted per period, "
-          f"from {len(weekday_days)} weekday day(s) in {len(schedule_periods)} schedule period(s)")
+    print(
+        f'\n{typical_path}: {typical["distinct_segment_count"]:,} distinct (segment, timeslot) '
+        f'bins, {typical["segment_count"]:,} counted per period, '
+        f'from {len(weekday_days)} weekday day(s) in {len(schedule_periods)} schedule period(s)',
+    )
     for p in schedule_periods:
-        print(f"  {p['period_key']}  {p['first_date']}..{p['last_date']}  "
-              f"{p['route_count']} routes / {p['trip_count']:,} trips  "
-              f"{len(p['days_in_median_mon_fri'])} weekday day(s), {p['bin_count']:,} bins  "
-              f"max churn {p['max_churn_vs_reference']:,} trips  "
-              f"[{', '.join(p['days_in_median_mon_fri'])}]")
-    print(f"Validation vs feed speed_ms: {validation_summary}")
+        print(
+            f'  {p["period_key"]}  {p["first_date"]}..{p["last_date"]}  '
+            f'{p["route_count"]} routes / {p["trip_count"]:,} trips  '
+            f'{len(p["days_in_median_mon_fri"])} weekday day(s), {p["bin_count"]:,} bins  '
+            f'max churn {p["max_churn_vs_reference"]:,} trips  '
+            f'[{", ".join(p["days_in_median_mon_fri"])}]',
+        )
+    print(f'Validation vs feed speed_ms: {validation_summary}')
     if multi_geometry_shape_id_count:
-        print(f"WARNING: {multi_geometry_shape_id_count} shape_id(s) carried more than one distinct "
-              f"geometry across the {len(loaded_feeds)} static feed(s) loaded this run", file=sys.stderr)
+        print(
+            f'WARNING: {multi_geometry_shape_id_count} shape_id(s) carried more than one distinct '
+            f'geometry across the {len(loaded_feeds)} static feed(s) loaded this run',
+            file=sys.stderr,
+        )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
