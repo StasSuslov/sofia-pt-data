@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
-"""
-Scheduled capture of the GTFS-RT service alerts feed, saving the response
-under data/<city>/alerts/ only when the alerts themselves changed.
+"""Scheduled capture of the GTFS-RT service alerts feed.
+
+Saves the response under data/<city>/alerts/ only when the alerts themselves
+changed.
 
 What "changed" means here: ЦГМ gives every entity a fresh random UUID on
 every response (17 of 17 changed between two requests 20 s apart on
@@ -44,143 +44,90 @@ Usage:
     python scripts/archive_alerts.py data/sofia/alerts
 """
 
-import argparse
+import datetime as dt
 import gzip
-import hashlib
-import json
-import os
-import re
 import sys
-import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
-from google.transit import gtfs_realtime_pb2
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from alertsarchive.cli import build_parser
+from alertsarchive.feed import (
+    FeedRejectedError,
+    alerts_digest,
+    message,
+    parse_feed,
+)
+from alertsarchive.fetch import fetch
+from alertsarchive.files import (
+    latest_saved,
+    save_response,
+)
+from alertsarchive.runlog import last_entities, log_run
+
 from config import CityProfileError, city_slugs, load_city_for_path
 
-SAVED_NAME_RE = re.compile(r'^alerts_\d{4}-\d{2}-\d{2}T\d{6}Z\.pb\.gz$')
-RUN_LOG = 'runs.ndjson'
 
-
-class FeedRejected(ValueError):
-    pass
-
-
-def parse_feed(content: bytes):
-    feed = gtfs_realtime_pb2.FeedMessage()
-    try:
-        feed.ParseFromString(content)
-    except Exception as e:
-        raise FeedRejected(f'not a GTFS-RT FeedMessage ({e})') from e
-    if not feed.HasField('header'):
-        raise FeedRejected('no FeedMessage header (empty or truncated body)')
-    return feed
-
-
-def alerts_digest(feed) -> tuple[str, int]:
-    """(content hash, number of alerts). See the module docstring."""
-    digests = sorted(
-        hashlib.sha256(e.alert.SerializeToString()).hexdigest()
-        for e in feed.entity
-        if e.HasField('alert')
-    )
-    return hashlib.sha256('\n'.join(digests).encode('utf-8')).hexdigest(), len(
-        digests,
-    )
-
-
-def latest_saved(output_dir: Path) -> Path | None:
-    if not output_dir.exists():
+def _previous_digest(previous: Path | None) -> str | None:
+    if not previous:
         return None
-    saved = [
-        p
-        for p in output_dir.iterdir()
-        if p.is_file() and SAVED_NAME_RE.match(p.name)
-    ]
-    return max(saved, key=lambda p: p.name, default=None)
+    feed = parse_feed(gzip.decompress(previous.read_bytes()))
+    return alerts_digest(feed)[0]
 
 
-def last_run(output_dir: Path) -> dict | None:
-    """The newest runs.ndjson entry, read off the file's tail."""
-    try:
-        with (output_dir / RUN_LOG).open('rb') as f:
-            size = f.seek(0, os.SEEK_END)
-            f.seek(max(0, size - 4096))
-            lines = f.read().splitlines()
-        return json.loads(lines[-1]) if lines else None
-    except (FileNotFoundError, ValueError):
+def _skip_message(output_dir: Path, digest: str, count: int) -> str | None:
+    """Return why a parsed response is not saved, or None if it is new."""
+    previous = latest_saved(output_dir)
+    if digest == _previous_digest(previous):
+        return message('No change', count, previous.name, digest)
+    if count == 0 and last_entities(output_dir) != 0:
+        return 'No alerts in the response; saving only if the next run agrees.'
+    return None
+
+
+def _save_if_new(output_dir: Path, body: bytes, now, feed):
+    """Print the verdict on a parsed response and save it if it is new."""
+    digest, count = alerts_digest(feed)
+    skipped = _skip_message(output_dir, digest, count)
+    if skipped:
+        sys.stdout.write(f'{skipped}\n')
         return None
-
-
-def log_run(output_dir: Path, now: datetime, **fields) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    with (output_dir / RUN_LOG).open('a', encoding='utf-8') as f:
-        f.write(json.dumps({'ts': int(now.timestamp()), **fields}) + '\n')
-
-
-def save_response(output_dir: Path, content: bytes, now: datetime) -> Path:
-    """
-    Through a temp file and os.replace(): a truncated .pb.gz under a real
-    name would become the newest file, fail to decompress on every later
-    run, and stop the archive until someone deleted it by hand.
-    """
-    target = output_dir / f'alerts_{now.astimezone(UTC):%Y-%m-%dT%H%M%SZ}.pb.gz'
-    fd, tmp_name = tempfile.mkstemp(
-        prefix='.alerts_',
-        suffix='.part',
-        dir=output_dir,
-    )
-    try:
-        with os.fdopen(fd, 'wb') as out:
-            out.write(gzip.compress(content))
-        Path(tmp_name).replace(target)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-    Path(target).chmod(0o644)  # mkstemp's 0600 survives os.replace
-    return target
+    saved = save_response(output_dir, body, now)
+    line = message('Saved', count, saved.name, digest)
+    sys.stdout.write(f'{line}\n')
+    return saved
 
 
 def archive_alerts(
     output_dir: Path,
-    content: bytes,
-    now: datetime | None = None,
+    body: bytes,
+    now: dt.datetime | None = None,
 ) -> int:
+    """Decide whether one fetched response is new content and log the run.
+
+    Saves the response if it is new, and logs the run either way. Split out
+    from main() so tests drive it with bytes they built, no network involved.
+
+    Args:
+        output_dir: Directory for saved responses and runs.ndjson.
+        body: The response bytes as served.
+        now: Capture time, default the current time.
+
+    Returns:
+        The exit code.
     """
-    Decide whether one fetched response is new content, save it if so, and
-    log the run either way. Split out from main() so tests drive it with
-    bytes they built, no network involved. Returns the exit code.
-    """
-    now = now or datetime.now(UTC)
+    now = now or dt.datetime.now(dt.UTC)
     try:
-        feed = parse_feed(content)
-    except FeedRejected as e:
-        log_run(output_dir, now, ok=False, error=str(e))
-        print(f'Rejected response: {e}', file=sys.stderr)
+        feed = parse_feed(body)
+    except FeedRejectedError as rejected:
+        log_run(output_dir, now, ok=False, error=str(rejected))
+        sys.stderr.write(f'Rejected response: {rejected}\n')
         return 1
 
+    saved = _save_if_new(output_dir, body, now, feed)
     digest, count = alerts_digest(feed)
-    previous = latest_saved(output_dir)
-    previous_digest = (
-        alerts_digest(parse_feed(gzip.decompress(previous.read_bytes())))[0]
-        if previous
-        else None
-    )
-    saved = None
-    if digest == previous_digest:
-        print(
-            f'No change: {count} alerts match {previous.name} ({digest[:12]}...).',
-        )
-    elif count == 0 and (last_run(output_dir) or {}).get('entities') != 0:
-        print('No alerts in the response; saving only if the next run agrees.')
-    else:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        saved = save_response(output_dir, content, now)
-        print(f'Saved {saved.name}: {count} alerts ({digest[:12]}...).')
-
     # After the file, as collect.py writes data before its heartbeat line: the
     # log never names a file that didn't land.
     log_run(
@@ -194,66 +141,43 @@ def archive_alerts(
     return 0
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        'output_dir',
-        type=Path,
-        help='Directory for alerts_<UTC>.pb.gz files and runs.ndjson '
-        '(e.g. data/sofia/alerts)',
-    )
-    parser.add_argument(
-        '--city',
-        type=str,
-        default=None,
-        help='City profile supplying the feed URL '
-        f'(cities/<slug>.json; have: {", ".join(city_slugs()) or "none"}). '
-        'Default: read from output_dir, laid out as .../data/<city>/alerts',
-    )
-    parser.add_argument(
-        '--url',
-        type=str,
-        default=None,
-        help="GTFS-RT alerts feed URL (default: the city profile's)",
-    )
-    parser.add_argument(
-        '--timeout',
-        type=int,
-        default=30,
-        help='Request timeout in seconds (default: 30)',
-    )
-    args = parser.parse_args()
-
+def _alerts_url(parser, args) -> tuple[str, str]:
     try:
         city = load_city_for_path(args.output_dir, slug=args.city)
-    except CityProfileError as e:
-        parser.error(str(e))
+    except CityProfileError as profile_error:
+        parser.error(str(profile_error))
 
     # alerts is optional in a profile (config.REQUIRED_FEEDS), so a city
     # without one is a configuration to name, not a traceback every 5 minutes.
     url = args.url or city['feeds'].get('alerts')
     if not url:
         parser.error(
-            f'cities/{city["slug"]}.json has no feeds.alerts; add it or pass --url',
+            f'cities/{city["slug"]}.json has no feeds.alerts; '
+            'add it or pass --url',
         )
+    return url, city['user_agent']
 
-    now = datetime.now(UTC)
+
+def _fetch_or_exit(args, target: tuple[str, str], now: dt.datetime) -> bytes:
+    url, user_agent = target
     try:
-        response = requests.get(
-            url,
-            timeout=args.timeout,
-            headers={'User-Agent': city['user_agent']},
-        )
-        response.raise_for_status()
-    except requests.RequestException as e:
-        log_run(args.output_dir, now, ok=False, error=f'fetch failed: {e}')
-        print(f'Fetch failed: {e}', file=sys.stderr)
+        return fetch(url, user_agent, args.timeout)
+    except requests.RequestException as fetch_error:
+        message = f'fetch failed: {fetch_error}'
+        log_run(args.output_dir, now, ok=False, error=message)
+        sys.stderr.write(f'Fetch failed: {fetch_error}\n')
         sys.exit(1)
 
-    sys.exit(archive_alerts(args.output_dir, response.content, now))
+
+def main() -> None:
+    """Fetch the alerts feed once and archive it."""
+    parser = build_parser(__doc__, city_slugs())
+    args = parser.parse_args()
+    target = _alerts_url(parser, args)
+
+    now = dt.datetime.now(dt.UTC)
+    body = _fetch_or_exit(args, target, now)
+    sys.exit(archive_alerts(args.output_dir, body, now))
 
 
 if __name__ == '__main__':

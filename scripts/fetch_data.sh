@@ -93,9 +93,10 @@ bash "$REPO_ROOT/scripts/drop_superseded_plain.sh" "$LOCAL_DIR"
 # bytes to git's 871, and those 56 bytes are exactly the length of a
 # `https://hc-ping.com/<uuid>` ping URL. The other six sofia-* units hash
 # identical to deploy/, so nothing is being hidden by leaving units out.
-# ponytail: three globs are the directories holding deployed code today (`ls
-# /opt/sofia-pt`); a brand-new deployed directory would need a fourth. data/
-# and venv/ stay out — neither is code from this repo.
+# ponytail: the globs cover the root, every first-level directory (scripts/
+# and the packages collect.py and config.py import) and the packages under
+# scripts/, two levels deep at most. A deeper package would need another glob.
+# data/ and venv/ hold no .py at depth one (`ls /opt/sofia-pt`, 2026-10-16).
 REMOTE_ROOT="$(dirname "${REMOTE_DIR%/}")"
 drift=""
 checked=0
@@ -108,7 +109,7 @@ checked=0
 # verify_remote_checksums.py's RemoteUnreachable swallows ssh stderr for
 # exactly this reason; the branch below still says the check didn't run.
 remote_hashes=$(ssh -i "$VPS_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$VPS_HOST" \
-    "sha256sum ${REMOTE_ROOT}/*.py ${REMOTE_ROOT}/scripts/*.py ${REMOTE_ROOT}/cities/*.json 2>/dev/null" 2>/dev/null || true)
+    "sha256sum ${REMOTE_ROOT}/*.py ${REMOTE_ROOT}/*/*.py ${REMOTE_ROOT}/scripts/*/*.py ${REMOTE_ROOT}/cities/*.json 2>/dev/null" 2>/dev/null || true)
 while read -r remote_sha remote_path; do
     [[ -n "$remote_sha" ]] || continue
     rel="${remote_path#"$REMOTE_ROOT"/}"
