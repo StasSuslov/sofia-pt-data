@@ -1,190 +1,257 @@
+"""Tests of export_web.py: bundles, indexes, geometry and the manifest."""
+
+import itertools
 import json
 import sys
+import zipfile
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from export_web import (
-    COORD_DECIMALS,
-    SIMPLIFY_TOLERANCE_M,
-    SLOWDOWN_ABS_MIN_KMH,
-    SLOWDOWN_RATIO_MAX,
-    TYPICAL_MIN_SLOTS,
-    aggregate_day_bins,
-    apply_threshold,
-    build_geometry,
-    build_manifest,
-    build_period_index,
-    build_timeslot_files,
-    build_typical_kmh,
-    current_period_key,
-    load_route_info,
-    load_typical_weekday_bins,
-    main,
-    point_along_shape,
-    segment_pairs,
-    simplify_rdp,
-)
+import export_web as web
 from segment_speeds import build_shape, load_static, project_onto_segment
+from webexport.model import ManifestInputs
 
 SHAPE_ID = 'S1'
 ROUTE_ID = 'R_BUS'
+UTF8 = 'utf-8'
+BUS_ROUTE_TYPE = 3
+LAT_STEP = 0.001
+LINE_POINTS = 11
+ZERO = float(0)
+MS_TO_KMH = 3.6
+PAST_END_M = 10_000
+SEGMENT_END_M = 200.0
+SLOT_MIDNIGHT = '00:00'
+SLOT_MORNING = '08:00'
+SUMMER = 'summer00000000'
+AUTUMN = 'autumn00000000'
+GTFS_NAME = 'gtfs_2026-09-03.zip'
+DAY = '2026-09-08'
+BINS_DROPPED_PCT = 40.0
+SEGMENTS_DROPPED_PCT = 25.0
+SUMMER_ROUTES = 135
+SUMMER_TRIPS = 14907
+AUTUMN_ROUTES = 138
+AUTUMN_TRIPS = 15600
+SUMMER_KMH = 36
+AUTUMN_KMH = 14
+
+# Same fixture idea as test_segment_speeds.py: a straight north-south line,
+# so "distance along the shape increases" trivially means "latitude increases".
+STRAIGHT_LINE = tuple((LAT_STEP * step, ZERO) for step in range(LINE_POINTS))
+
+# Bins of one segment, one thin, one at the cutoff and one well above it.
+BIN_THIN = (SHAPE_ID, 0, SLOT_MIDNIGHT)
+BIN_AT_CUTOFF = (SHAPE_ID, 1, SLOT_MIDNIGHT)
+BIN_THICK = (SHAPE_ID, 2, SLOT_MIDNIGHT)
+
+# 100 m of straight run whose vertices wander under a metre off the line,
+# then a right-angle turn.
+WANDERING_RUN = (
+    (ZERO, ZERO),
+    (25.0, 0.4),
+    (50.0, -0.6),
+    (75.0, 0.9),
+    (100.0, ZERO),
+    (100.0, 50.0),
+    (100.0, 100.0),
+)
+RUN_CORNERS = ((ZERO, ZERO), (100.0, ZERO), (100.0, 100.0))
+
+# Segment 0 gets 15 slots (the gate exactly) of 10,11,...,24 km/h, with one
+# outlier added so that the median and the mean disagree.
+SPEEDS_WITH_OUTLIER = (*range(10, 24), 90)
+OUTLIER_MEDIAN = 17
+FLAT_KMH = 20
+SECOND_SEGMENT_KMH = 30
+SPEED_MS_AT_SLOT = 5.0
 
 
-def _write_static_zip(tmp_path: Path, extra_route: tuple | None = None) -> Path:
-    """Minimal GTFS zip: one shape, one bus route, optionally a second route
-    on the same shape so a mixed route_type can be exercised.
-    """
-    import zipfile
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding=UTF8))
 
-    routes = [('route_id,route_short_name,route_type'), f'{ROUTE_ID},9,3']
+
+def _route_rows(extra_route: tuple | None) -> tuple:
+    routes = ['route_id,route_short_name,route_type', f'{ROUTE_ID},9,3']
     trips = [
         'trip_id,route_id,service_id,shape_id',
         f'T1,{ROUTE_ID},SVC,{SHAPE_ID}',
     ]
     if extra_route:
-        rid, rtype = extra_route
-        routes.append(f'{rid},11,{rtype}')
-        trips.append(f'T2,{rid},SVC,{SHAPE_ID}')
+        route_id, route_type = extra_route
+        routes.append(f'{route_id},11,{route_type}')
+        trips.append(f'T2,{route_id},SVC,{SHAPE_ID}')
+    return routes, trips
 
-    shapes = ['shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence']
-    shapes += [
-        f'{SHAPE_ID},{lat},{lon},{i}'
-        for i, (lat, lon) in enumerate(STRAIGHT_LINE)
+
+def _shape_rows() -> list:
+    header = 'shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence'
+    points = enumerate(STRAIGHT_LINE)
+    return [header] + [
+        f'{SHAPE_ID},{lat},{lon},{seq}' for seq, (lat, lon) in points
     ]
 
+
+def _gtfs_tables(extra_route: tuple | None) -> dict:
+    routes, trips = _route_rows(extra_route)
+    return {
+        'routes.txt': routes,
+        'trips.txt': trips,
+        'shapes.txt': _shape_rows(),
+    }
+
+
+def _write_static_zip(tmp_path: Path, extra_route: tuple | None = None) -> Path:
+    """Write a minimal GTFS zip: one shape, one bus route.
+
+    A second route on the same shape is added when `extra_route` is given, so
+    a mixed route_type can be exercised.
+    """
     path = tmp_path / 'gtfs.zip'
-    with zipfile.ZipFile(path, 'w') as z:
-        z.writestr('routes.txt', '\n'.join(routes) + '\n')
-        z.writestr('trips.txt', '\n'.join(trips) + '\n')
-        z.writestr('shapes.txt', '\n'.join(shapes) + '\n')
+    with zipfile.ZipFile(path, 'w') as archive:
+        for name, lines in _gtfs_tables(extra_route).items():
+            archive.writestr(name, '\n'.join([*lines, '']))
     return path
 
 
-# Same fixture idea as test_segment_speeds.py: a straight north-south line,
-# so "distance along the shape increases" trivially means "latitude increases".
-STRAIGHT_LINE = [(0.000 + 0.001 * i, 0.0) for i in range(11)]
+def _line() -> list:
+    return list(STRAIGHT_LINE)
 
 
-def test_point_along_shape_rounding_preserves_point_order():
-    shape = build_shape(STRAIGHT_LINE)
-    start = point_along_shape(shape, 0.0)
-    end = point_along_shape(shape, 200.0)
+def test_rounding_keeps_point_order():
+    """Rounding to COORD_DECIMALS never flips the order of two endpoints."""
+    shape = build_shape(_line())
+    start = web.point_along_shape(shape, ZERO)
+    end = web.point_along_shape(shape, SEGMENT_END_M)
     # 5 decimals (~1.1m) is far finer than a 200m segment -- rounding must
     # never flip which endpoint comes first along a straight line.
     assert end[0] > start[0]
-    assert start[0] == round(start[0], COORD_DECIMALS)
-    assert start[1] == round(start[1], COORD_DECIMALS)
+    assert start[0] == round(start[0], web.COORD_DECIMALS)
+    assert start[1] == round(start[1], web.COORD_DECIMALS)
 
 
-def test_point_along_shape_clamps_past_shape_end():
-    shape = build_shape(STRAIGHT_LINE)
-    far_past_end = point_along_shape(shape, shape.cum_dist[-1] + 10_000)
-    at_end = point_along_shape(shape, shape.cum_dist[-1])
+def test_point_along_shape_clamps_past_end():
+    """A distance beyond the shape's end resolves to the end point."""
+    shape = build_shape(_line())
+    far_past_end = web.point_along_shape(shape, shape.cum_dist[-1] + PAST_END_M)
+    at_end = web.point_along_shape(shape, shape.cum_dist[-1])
     assert far_past_end == at_end
 
 
-def test_simplify_drops_near_collinear_points_but_keeps_a_real_corner():
-    """Metres in the local plane build_geometry simplifies in: 100 m of
+def test_simplify_keeps_a_real_corner():
+    """Near-collinear points drop, a right-angle corner stays.
+
+    Metres in the local plane build_geometry simplifies in: 100 m of
     straight run whose vertices wander under a metre off the line, then a
     right-angle turn. The wander is what a 200 m bin is full of and what
     format_version 1 was right to drop; the corner is what it was wrong to.
     """
-    points = [
-        (0.0, 0.0),
-        (25.0, 0.4),
-        (50.0, -0.6),
-        (75.0, 0.9),
-        (100.0, 0.0),
-        (100.0, 50.0),
-        (100.0, 100.0),
-    ]
-    simplified = simplify_rdp(points, SIMPLIFY_TOLERANCE_M)
-    assert simplified == [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)]
+    simplified = web.simplify_rdp(WANDERING_RUN, web.SIMPLIFY_TOLERANCE_M)
+    assert simplified == list(RUN_CORNERS)
 
+
+def _gap_to_polyline(point: tuple, polyline: list) -> float:
+    return min(
+        project_onto_segment(*point, *start, *end)[1]
+        for start, end in itertools.pairwise(polyline)
+    )
+
+
+def test_simplify_never_drifts_beyond_tolerance():
+    """No dropped vertex ends up further than the tolerance from the line."""
+    simplified = web.simplify_rdp(WANDERING_RUN, web.SIMPLIFY_TOLERANCE_M)
     # The guarantee the manifest states: no dropped vertex ends up further
     # than the tolerance from the line drawn in its place.
-    for px, py in points:
-        assert (
-            min(
-                project_onto_segment(
-                    px,
-                    py,
-                    *simplified[i],
-                    *simplified[i + 1],
-                )[1]
-                for i in range(len(simplified) - 1)
-            )
-            <= SIMPLIFY_TOLERANCE_M
-        )
+    for point in WANDERING_RUN:
+        assert _gap_to_polyline(point, simplified) <= web.SIMPLIFY_TOLERANCE_M
 
 
-def test_threshold_drops_only_bins_below_cutoff_and_counts_correctly():
-    bins = {
-        ('S1', 0, '00:00'): (5.0, 1),
-        ('S1', 1, '00:00'): (5.0, 2),
-        ('S1', 2, '00:00'): (5.0, 5),
-    }
-    retained, n_before, n_after = apply_threshold(bins, min_samples=2)
-    assert n_before == 3
-    assert n_after == 2
-    assert ('S1', 0, '00:00') not in retained
-    assert ('S1', 1, '00:00') in retained
-    assert ('S1', 2, '00:00') in retained
+def _bin(count: int) -> tuple:
+    return (5.0, count)
+
+
+def test_threshold_drops_bins_below_cutoff():
+    """Only the bin under the cutoff goes, and the counts say so."""
+    bins = {BIN_THIN: _bin(1), BIN_AT_CUTOFF: _bin(2)}
+    bins[BIN_THICK] = _bin(5)
+    retained, n_before, n_after = web.apply_threshold(bins, min_samples=2)
+    assert n_before == len(bins)
+    assert n_after == len(bins) - 1
+    assert BIN_THIN not in retained
+    assert BIN_AT_CUTOFF in retained
+    assert BIN_THICK in retained
 
 
 def test_segment_pairs_dedupes_across_timeslots():
+    """A segment seen in two slots is one pair."""
     bins = {
-        ('S1', 0, '00:00'): (5.0, 2),
-        ('S1', 0, '00:15'): (6.0, 2),
-        ('S2', 3, '00:00'): (2.0, 2),
+        (SHAPE_ID, 0, SLOT_MIDNIGHT): (5.0, 2),
+        (SHAPE_ID, 0, '00:15'): (6.0, 2),
+        ('S2', 3, SLOT_MIDNIGHT): (2.0, 2),
     }
-    assert segment_pairs(bins) == {('S1', 0), ('S2', 3)}
+    assert web.segment_pairs(bins) == {(SHAPE_ID, 0), ('S2', 3)}
 
 
-def test_timeslot_segment_index_resolves_back_to_same_shape_and_segment():
-    shape = build_shape(STRAIGHT_LINE)
-    shapes_by_id = {'S1': shape}
+def _two_bins() -> tuple:
     bins = {
-        ('S1', 0, '00:00'): (5.0, 3),
-        ('S1', 3, '00:15'): (2.0, 4),
+        (SHAPE_ID, 0, SLOT_MIDNIGHT): (5.0, 3),
+        (SHAPE_ID, 3, '00:15'): (2.0, 4),
     }
-    pairs = segment_pairs(bins)
-    geometry, index_of, missing = build_geometry(pairs, shapes_by_id)
+    geometry, index_of, missing = web.build_geometry(
+        web.segment_pairs(bins),
+        {SHAPE_ID: build_shape(_line())},
+    )
     assert missing == 0
+    return bins, geometry, index_of
+
+
+def test_geometry_is_csr_with_two_points_each():
+    """Every segment's slice of the CSR arrays holds the two bin endpoints."""
+    _, geometry, _ = _two_bins()
+    offsets = geometry['point_offset']
     # format_version 2 CSR: one offset per segment plus a closing one, and
     # every segment's slice holds at least the two bin endpoints.
-    assert len(geometry['point_offset']) == len(geometry['segment_index']) + 1
-    assert (
-        geometry['point_offset'][-1]
-        == len(geometry['lat'])
-        == len(geometry['lon'])
-    )
-    assert all(
-        b - a >= 2
-        for a, b in zip(geometry['point_offset'], geometry['point_offset'][1:])
-    )
-
-    timeslot_files = build_timeslot_files(bins, index_of)
-    assert set(timeslot_files) == {'00:00', '00:15'}
-
-    for slot, payload in timeslot_files.items():
-        assert payload['timeslot'] == slot
-        for pos, speed_kmh, n in zip(
-            payload['segment_idx'],
-            payload['speed_kmh'],
-            payload['n_samples'],
-        ):
-            shape_key = geometry['shape_keys'][geometry['shape_idx'][pos]]
-            seg_idx = geometry['segment_index'][pos]
-            key = (shape_key, seg_idx, slot)
-            assert key in bins
-            assert bins[key][1] == n
-            assert speed_kmh == round(bins[key][0] * 3.6)
+    assert len(offsets) == len(geometry['segment_index']) + 1
+    assert offsets[-1] == len(geometry['lat'])
+    assert len(geometry['lat']) == len(geometry['lon'])
+    widths = [end - start for start, end in itertools.pairwise(offsets)]
+    assert all(width >= 2 for width in widths)
 
 
-def test_build_geometry_counts_missing_shapes_instead_of_crashing():
-    geometry, index_of, missing = build_geometry(
+def _bin_key(geometry: dict, pos: int, slot: str) -> tuple:
+    shape_key = geometry['shape_keys'][geometry['shape_idx'][pos]]
+    return (shape_key, geometry['segment_index'][pos], slot)
+
+
+def _assert_slot_resolves(slot: str, payload: dict, bins: dict, geometry: dict):
+    assert payload['timeslot'] == slot
+    for pos, speed_kmh, count in zip(
+        payload['segment_idx'],
+        payload['speed_kmh'],
+        payload['n_samples'],
+        strict=True,
+    ):
+        key = _bin_key(geometry, pos, slot)
+        assert key in bins
+        assert bins[key][1] == count
+        assert speed_kmh == round(bins[key][0] * MS_TO_KMH)
+
+
+def test_timeslot_index_resolves_to_segment():
+    """A timeslot's segment index resolves back to its shape and segment."""
+    bins, geometry, index_of = _two_bins()
+    timeslot_files = web.build_timeslot_files(bins, index_of)
+    assert set(timeslot_files) == {SLOT_MIDNIGHT, '00:15'}
+    for slot_and_payload in timeslot_files.items():
+        _assert_slot_resolves(*slot_and_payload, bins, geometry)
+
+
+def test_build_geometry_counts_missing_shapes():
+    """A shape absent from the feed is counted, not a crash."""
+    geometry, index_of, missing = web.build_geometry(
         {('GHOST', 0)},
         shapes_by_key={},
     )
@@ -193,221 +260,248 @@ def test_build_geometry_counts_missing_shapes_instead_of_crashing():
     assert index_of == {}
 
 
-def test_build_timeslot_files_skips_bins_geometry_could_not_resolve():
+def test_timeslot_files_skip_unresolved_bins():
+    """A bin geometry could not resolve is dropped, not referenced."""
     # index_of has nothing for ("S1", 0) -- as if its shape were missing from
     # the static feed passed to build_geometry -- so the bin must be dropped,
     # not crash or reference a nonexistent index.
-    bins = {('S1', 0, '00:00'): (5.0, 3)}
-    timeslot_files = build_timeslot_files(bins, index_of={})
+    bins = {(SHAPE_ID, 0, SLOT_MIDNIGHT): (5.0, 3)}
+    timeslot_files = web.build_timeslot_files(bins, index_of={})
     assert timeslot_files == {}
 
 
-def test_manifest_has_required_fields_and_correct_derived_counts():
-    manifest = build_manifest(
+def _manifest(**changes: object) -> dict:
+    """Build a manifest from the usual inputs with `changes` applied."""
+    inputs = {
+        'mode': DAY,
+        'min_samples': 2,
+        'bins_before': 10,
+        'bins_after': 6,
+        'pairs_before': 4,
+        'pairs_after': 3,
+        'missing_shapes': 0,
+        'timeslot_labels': [SLOT_MORNING],
+        'source': {},
+        'days_processed': [],
+        'days_in_median': [],
+        'incomplete_days': {},
+        'shapes_observed': 3,
+        'shapes_written': 3,
+        'total_static_shapes': 10,
+        'multi_route_shapes': 1,
+    }
+    return web.build_manifest(ManifestInputs(**{**inputs, **changes}))
+
+
+def _counting_manifest() -> dict:
+    return _manifest(
         mode='typical_weekday',
-        min_samples=2,
-        bins_before=10,
-        bins_after=6,
-        pairs_before=4,
-        pairs_after=3,
-        missing_shapes=0,
-        timeslot_labels=['00:15', '00:00'],
+        timeslot_labels=['00:15', SLOT_MIDNIGHT],
         source={'typical_weekday_file': 'typical_weekday.json'},
         days_processed=['2026-08-27'],
         days_in_median=['2026-08-27'],
         incomplete_days={
             '2026-08-27': 'only 52.45% coverage of the calendar day',
         },
-        shapes_observed=3,
-        shapes_written=3,
-        total_static_shapes=10,
-        multi_route_shapes=1,
     )
-    for key in (
-        'format_version',
-        'generated_at',
-        'mode',
-        'source',
-        'days_processed',
-        'days_in_median',
-        'incomplete_days',
-        'preprocessing_thresholds',
-        'web_export',
-        'segment_count',
-        'timeslot_count',
-        'timeslots',
-        'known_limitations',
-    ):
-        assert key in manifest, f'missing required manifest field: {key}'
 
+
+REQUIRED_MANIFEST_FIELDS = (
+    'format_version',
+    'generated_at',
+    'mode',
+    'source',
+    'days_processed',
+    'days_in_median',
+    'incomplete_days',
+    'preprocessing_thresholds',
+    'web_export',
+    'segment_count',
+    'timeslot_count',
+    'timeslots',
+    'known_limitations',
+)
+
+
+@pytest.mark.parametrize('key', REQUIRED_MANIFEST_FIELDS)
+def test_manifest_has_required_field(key):
+    """Every field the page reads is present in the manifest."""
+    assert key in _counting_manifest(), (
+        f'missing required manifest field: {key}'
+    )
+
+
+def test_manifest_derived_counts():
+    """Counts derived from the inputs are right."""
+    manifest = _counting_manifest()
     assert manifest['web_export']['min_samples_threshold'] == 2
     assert manifest['web_export']['bins_dropped'] == 4
-    assert manifest['web_export']['bins_dropped_pct'] == 40.0
-    assert manifest['web_export']['segments_dropped_pct'] == 25.0
     assert manifest['segment_count'] == 3
     assert manifest['timeslots'] == [
-        '00:00',
+        SLOT_MIDNIGHT,
         '00:15',
     ]  # sorted, regardless of input order
 
 
-def test_aggregate_day_bins_computes_median_and_count(tmp_path):
-    path = tmp_path / 'segment_speeds_2026-08-28.jsonl'
-    rows = [
-        {
-            'shape_id': 'S1',
-            'shape_key': 'S1@abc12345',
-            'segment_index': 0,
-            'timeslot': '00:00',
-            'speed_ms': 1.0,
-        },
-        {
-            'shape_id': 'S1',
-            'shape_key': 'S1@abc12345',
-            'segment_index': 0,
-            'timeslot': '00:00',
-            'speed_ms': 3.0,
-        },
-    ]
-    path.write_text(
-        '\n'.join(json.dumps(r) for r in rows) + '\n',
-        encoding='utf-8',
+def test_manifest_dropped_percentages():
+    """Dropped bins and segments are reported as exact percentages."""
+    web_export = _counting_manifest()['web_export']
+    assert web_export['bins_dropped_pct'] == pytest.approx(
+        BINS_DROPPED_PCT,
+        abs=0,
     )
-    bins = aggregate_day_bins(path)
-    assert bins == {('S1@abc12345', 0, '00:00'): (2.0, 2)}
+    assert web_export['segments_dropped_pct'] == pytest.approx(
+        SEGMENTS_DROPPED_PCT,
+        abs=0,
+    )
 
 
-def test_aggregate_day_bins_tolerates_torn_trailing_line(tmp_path):
-    path = tmp_path / 'segment_speeds_2026-08-28.jsonl'
-    good = json.dumps({
-        'shape_id': 'S1',
+def _bin_row(speed_ms: float) -> dict:
+    return {
+        'shape_id': SHAPE_ID,
         'shape_key': 'S1@abc12345',
         'segment_index': 0,
-        'timeslot': '00:00',
-        'speed_ms': 4.0,
-    })
-    path.write_text(
-        good + '\n' + '{"shape_id": "S1", "segment_index"',
-        encoding='utf-8',
+        'timeslot': SLOT_MIDNIGHT,
+        'speed_ms': speed_ms,
+    }
+
+
+PAIR_SPEEDS = (1.0, 3.0)
+SINGLE_SPEED = 4.0
+
+
+def _jsonl_rows(*speeds: float) -> str:
+    return ''.join(f'{json.dumps(_bin_row(speed))}\n' for speed in speeds)
+
+
+def test_aggregate_day_bins_median_and_count(tmp_path):
+    """A bin's speed is the median of its rows, with the row count."""
+    path = tmp_path / 'segment_speeds_2026-08-28.jsonl'
+    path.write_text(_jsonl_rows(*PAIR_SPEEDS), encoding=UTF8)
+    bins = web.aggregate_day_bins(path)
+    assert bins == {('S1@abc12345', 0, SLOT_MIDNIGHT): (2.0, 2)}
+
+
+def test_aggregate_day_bins_tolerates_torn_line(tmp_path):
+    """A half-written trailing line is skipped."""
+    path = tmp_path / 'segment_speeds_2026-08-28.jsonl'
+    good = json.dumps(_bin_row(SINGLE_SPEED))
+    torn = '{"shape_id": "S1", "segment_index"'
+    path.write_text(f'{good}\n{torn}', encoding=UTF8)
+    bins = web.aggregate_day_bins(path)
+    assert bins == {('S1@abc12345', 0, SLOT_MIDNIGHT): (SINGLE_SPEED, 1)}
+
+
+def _route_geometry(tmp_path: Path) -> tuple:
+    static_zip = _write_static_zip(tmp_path)
+    _, shapes_by_key, shape_ids_by_key = load_static(static_zip)
+    shape_key = next(iter(shapes_by_key))  # only one shape in this fixture
+    built = web.build_geometry(
+        {(shape_key, 0), (shape_key, 1)},
+        shapes_by_key,
+        web.load_route_info(static_zip),
+        shape_ids_by_key,
     )
-    bins = aggregate_day_bins(path)
-    assert bins == {('S1@abc12345', 0, '00:00'): (4.0, 1)}
+    assert built[2] == 0
+    return built[0], shape_key
 
 
-def test_geometry_carries_route_metadata_per_shape(tmp_path: Path):
-    """
+def test_geometry_carries_route_metadata(tmp_path: Path):
+    """Route metadata rides once per shape, aligned with shape_ids.
+
     Feature 3 (transport-type filter) needs to know a tram from a bus, and
     shape_id alone cannot say. Metadata rides once per shape, aligned with
     geometry["shape_ids"], so a filter is one hop through shape_idx.
     """
-    static_zip = _write_static_zip(tmp_path)
-    route_info = load_route_info(static_zip)
-    _, shapes_by_key, shape_ids_by_key = load_static(static_zip)
-    shape_key = next(iter(shapes_by_key))  # only one shape in this fixture
-    pairs = {(shape_key, 0), (shape_key, 1)}
-
-    geometry, index_of, missing = build_geometry(
-        pairs,
-        shapes_by_key,
-        route_info,
-        shape_ids_by_key,
-    )
-
-    assert missing == 0
+    geometry, shape_key = _route_geometry(tmp_path)
     pos = geometry['shape_keys'].index(shape_key)
     assert geometry['shape_ids'][pos] == [SHAPE_ID]
     assert geometry['shape_route_ids'][pos] == [ROUTE_ID]
-    assert geometry['shape_route_type'][pos] == 3  # bus, from routes.txt
+    assert geometry['shape_route_type'][pos] == BUS_ROUTE_TYPE  # routes.txt
     assert len(geometry['shape_route_type']) == len(geometry['shape_ids'])
 
 
-def test_route_type_left_unset_when_a_shape_mixes_types(tmp_path: Path):
-    """
+def test_route_type_unset_for_mixed_types(tmp_path: Path):
+    """A shape served by a tram and a bus route has a null route type.
+
     A shape served by both a tram and a bus route cannot answer a type filter,
     so the field is null rather than resolved by picking whichever route came
     first — a filter that quietly guesses is worse than one that shows nothing.
     """
     static_zip = _write_static_zip(tmp_path, extra_route=('R_TRAM', '0'))
-    info = load_route_info(static_zip)
-    assert info[SHAPE_ID]['route_type'] is None
-    assert info[SHAPE_ID]['route_ids'] == sorted([ROUTE_ID, 'R_TRAM'])
+    route_info = web.load_route_info(static_zip)
+    assert route_info[SHAPE_ID]['route_type'] is None
+    assert route_info[SHAPE_ID]['route_ids'] == sorted([ROUTE_ID, 'R_TRAM'])
 
 
 # ─── Schedule periods: one bundle each, plus an index over them ────────────
 
 
+def _period(key: str, day: str, routes: int, trips: int) -> dict:
+    return {
+        'period_key': key,
+        'days': [day],
+        'days_in_median_mon_fri': [day],
+        'first_date': day,
+        'last_date': day,
+        'route_count': routes,
+        'trip_count': trips,
+        'bin_count': 2,
+    }
+
+
+SUMMER_BINS = ((10.0, 5), (9.0, 5))
+AUTUMN_BINS = ((4.0, 3), (5.0, 3))
+
+
+def _bin_stats(speed_ms: float, count: int) -> dict:
+    return {'median_speed_ms': speed_ms, 'n_samples': count}
+
+
 def _write_typical_weekday(path: Path, shape_key: str) -> None:
-    """Two schedule periods over the same segment: the summer timetable and
-    the autumn one that replaced it. Both cover the same (segment, timeslot)
-    bins, which is exactly the case a single pooled median would blur.
+    """Write two schedule periods over the same segment.
+
+    The summer timetable and the autumn one that replaced it. Both cover the
+    same (segment, timeslot) bins, which is exactly the case a single pooled
+    median would blur.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({
-            'days_processed': ['2026-09-03', '2026-09-08'],
-            'days_in_median_mon_fri': ['2026-09-03', '2026-09-08'],
-            'static_feeds': [],
-            'schedule_periods': [
-                {
-                    'period_key': 'summer00000000',
-                    'days': ['2026-09-03'],
-                    'days_in_median_mon_fri': ['2026-09-03'],
-                    'first_date': '2026-09-03',
-                    'last_date': '2026-09-03',
-                    'route_count': 135,
-                    'trip_count': 14907,
-                    'bin_count': 2,
-                },
-                {
-                    'period_key': 'autumn00000000',
-                    'days': ['2026-09-08'],
-                    'days_in_median_mon_fri': ['2026-09-08'],
-                    'first_date': '2026-09-08',
-                    'last_date': '2026-09-08',
-                    'route_count': 138,
-                    'trip_count': 15600,
-                    'bin_count': 2,
-                },
-            ],
-            'segments': {
-                'summer00000000': {
-                    f'{shape_key}|0|08:00': {
-                        'median_speed_ms': 10.0,
-                        'n_samples': 5,
-                    },
-                    f'{shape_key}|1|08:00': {
-                        'median_speed_ms': 9.0,
-                        'n_samples': 5,
-                    },
-                },
-                'autumn00000000': {
-                    f'{shape_key}|0|08:00': {
-                        'median_speed_ms': 4.0,
-                        'n_samples': 3,
-                    },
-                    f'{shape_key}|0|08:15': {
-                        'median_speed_ms': 5.0,
-                        'n_samples': 3,
-                    },
-                },
+    document = {
+        'days_processed': ['2026-09-03', DAY],
+        'days_in_median_mon_fri': ['2026-09-03', DAY],
+        'static_feeds': [],
+        'schedule_periods': [
+            _period(SUMMER, '2026-09-03', SUMMER_ROUTES, SUMMER_TRIPS),
+            _period(AUTUMN, DAY, AUTUMN_ROUTES, AUTUMN_TRIPS),
+        ],
+        'segments': {
+            SUMMER: {
+                f'{shape_key}|0|{SLOT_MORNING}': _bin_stats(*SUMMER_BINS[0]),
+                f'{shape_key}|1|{SLOT_MORNING}': _bin_stats(*SUMMER_BINS[1]),
             },
-        }),
-        encoding='utf-8',
-    )
+            AUTUMN: {
+                f'{shape_key}|0|{SLOT_MORNING}': _bin_stats(*AUTUMN_BINS[0]),
+                f'{shape_key}|0|08:15': _bin_stats(*AUTUMN_BINS[1]),
+            },
+        },
+    }
+    path.write_text(json.dumps(document), encoding=UTF8)
 
 
-def test_load_typical_weekday_bins_keeps_each_period_separate(tmp_path: Path):
+def test_typical_bins_keep_each_period_apart(tmp_path: Path):
+    """Bins of different schedule periods are never pooled."""
     path = tmp_path / 'typical_weekday.json'
     _write_typical_weekday(path, 'abc123')
-    bins_by_period, raw = load_typical_weekday_bins(path)
+    bins_by_period, raw = web.load_typical_weekday_bins(path)
 
-    assert set(bins_by_period) == {'summer00000000', 'autumn00000000'}
-    assert bins_by_period['summer00000000']['abc123', 0, '08:00'] == (10.0, 5)
-    assert bins_by_period['autumn00000000']['abc123', 0, '08:00'] == (4.0, 3)
+    assert set(bins_by_period) == {SUMMER, AUTUMN}
+    assert bins_by_period[SUMMER]['abc123', 0, SLOT_MORNING] == SUMMER_BINS[0]
+    assert bins_by_period[AUTUMN]['abc123', 0, SLOT_MORNING] == AUTUMN_BINS[0]
     assert len(raw['schedule_periods']) == 2
 
 
-def test_current_period_is_the_best_observed_not_the_newest():
+def test_current_period_is_best_observed():
+    """The period with most weekdays wins, not the newest timetable."""
     periods = [
         {
             'period_key': 'old',
@@ -416,22 +510,19 @@ def test_current_period_is_the_best_observed_not_the_newest():
         # Newer, and the timetable actually in force, but one day of samples
         # is not a median over weekdays (D4). It wins once it is observed as
         # widely as the period it replaced, not before.
-        {'period_key': 'new', 'days_in_median_mon_fri': ['2026-09-08']},
+        {'period_key': 'new', 'days_in_median_mon_fri': [DAY]},
         # A weekend-only period is never the current weekday median (D4),
         # even when its dates are the most recent in the archive.
         {'period_key': 'weekend', 'days_in_median_mon_fri': []},
     ]
-    assert current_period_key(periods) == 'old'
-    assert current_period_key([]) is None
-    assert (
-        current_period_key([
-            {'period_key': 'weekend', 'days_in_median_mon_fri': []},
-        ])
-        is None
-    )
+    weekend_only = [{'period_key': 'weekend', 'days_in_median_mon_fri': []}]
+    assert web.current_period_key(periods) == 'old'
+    assert web.current_period_key([]) is None
+    assert web.current_period_key(weekend_only) is None
 
 
-def test_current_period_ties_break_towards_the_newer_timetable():
+def test_current_period_tie_goes_to_newer():
+    """Equal weekday counts resolve to the later period."""
     periods = [
         {
             'period_key': 'old',
@@ -439,13 +530,25 @@ def test_current_period_ties_break_towards_the_newer_timetable():
         },
         {
             'period_key': 'new',
-            'days_in_median_mon_fri': ['2026-09-08', '2026-09-09'],
+            'days_in_median_mon_fri': [DAY, '2026-09-09'],
         },
     ]
-    assert current_period_key(periods) == 'new'
+    assert web.current_period_key(periods) == 'new'
 
 
-def test_period_index_lists_every_period_and_names_the_current_one():
+REQUIRED_INDEX_FIELDS = (
+    'format_version',
+    'generated_at',
+    'mode',
+    'current_period',
+    'period_count',
+    'periods',
+    'days_excluded_from_median',
+)
+
+
+def test_period_index_names_the_current_one():
+    """The index counts the periods, names the current and the excluded days."""
     entries = [
         {'period_key': 'old', 'path': 'old'},
         {'period_key': 'new', 'path': 'new'},
@@ -456,247 +559,203 @@ def test_period_index_lists_every_period_and_names_the_current_one():
         {'date': '2026-09-05', 'reason': 'weekend'},
         {'date': '2026-09-07', 'reason': 'reduced_service'},
     ]
-    index = build_period_index(entries, 'new', excluded)
-    for key in (
-        'format_version',
-        'generated_at',
-        'mode',
-        'current_period',
-        'period_count',
-        'periods',
-        'days_excluded_from_median',
-    ):
-        assert key in index, f'missing required index field: {key}'
-    assert index['mode'] == 'typical_weekday_index'
-    assert index['period_count'] == 2
-    assert index['current_period'] == 'new'
-    assert index['days_excluded_from_median'] == excluded
+    period_index = web.build_period_index(entries, 'new', excluded)
+    for key in REQUIRED_INDEX_FIELDS:
+        assert key in period_index, f'missing required index field: {key}'
+    assert period_index['mode'] == 'typical_weekday_index'
+    assert period_index['period_count'] == len(entries)
+    assert period_index['current_period'] == 'new'
+    assert period_index['days_excluded_from_median'] == excluded
 
 
-def test_export_writes_one_bundle_per_period_plus_an_index(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-):
+def _prepare_export(tmp_path: Path) -> tuple:
+    """Lay out a static dir and a data dir holding the two-period fixture."""
     static_dir = tmp_path / 'static'
     static_dir.mkdir()
-    _write_static_zip(static_dir).rename(static_dir / 'gtfs_2026-09-03.zip')
-
+    _write_static_zip(static_dir).rename(static_dir / GTFS_NAME)
     data_dir = tmp_path / 'data'
-    _, shapes_by_key, _ = load_static(static_dir / 'gtfs_2026-09-03.zip')
+    _, shapes_by_key, _ = load_static(static_dir / GTFS_NAME)
     shape_key = next(iter(shapes_by_key))
     _write_typical_weekday(
         data_dir / 'processed' / 'typical_weekday.json',
         shape_key,
     )
+    return static_dir, data_dir, shape_key
 
-    # A day bundle from an earlier run, which this typical-weekday-only run
-    # is never told about: web/index.json is rebuilt by scanning the output
-    # directory, so it has to keep listing the day anyway.
+
+def _run_export(monkeypatch, *args: str) -> None:
+    monkeypatch.setattr(sys, 'argv', ['export_web.py', *args])
+    web.main()
+
+
+def _bundle_manifest(bundle: Path) -> dict:
+    return _read_json(bundle / 'manifest.json')
+
+
+def _assert_period_bundle(root: Path, period_key: str, by_key: dict):
+    bundle = root / period_key
+    assert (bundle / 'geometry.json').exists()
+    manifest = _bundle_manifest(bundle)
+    assert manifest['mode'] == 'typical_weekday'
+    assert manifest['schedule_period']['period_key'] == period_key
+    assert by_key[period_key]['path'] == period_key
+    slots = sorted(path.stem for path in (bundle / 'timeslots').glob('*.json'))
+    assert slots == [label.replace(':', '') for label in manifest['timeslots']]
+
+
+def _first_speed(root: Path, period_key: str) -> int:
+    slot_file = root / period_key / 'timeslots' / '0800.json'
+    return json.loads(slot_file.read_text())['speed_kmh'][0]
+
+
+def _seed_earlier_day(data_dir: Path) -> None:
+    """Add a day bundle from an earlier run.
+
+    This typical-weekday-only run is never told about it: web/index.json is
+    rebuilt by scanning the output directory, so it has to keep listing the
+    day anyway.
+    """
     earlier_day = data_dir / 'web' / '2026-08-27'
     earlier_day.mkdir(parents=True)
-    (earlier_day / 'manifest.json').write_text('{}', encoding='utf-8')
+    (earlier_day / 'manifest.json').write_text('{}', encoding=UTF8)
 
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['export_web.py', str(static_dir), str(data_dir), '--min-samples', '2'],
-    )
-    main()
 
-    root_index = json.loads(
-        (data_dir / 'web' / 'index.json').read_text(encoding='utf-8'),
-    )
+def _period_entries(root: Path, data_dir: Path) -> dict:
+    root_index = _read_json(data_dir / 'web' / 'index.json')
     assert root_index['days'] == [{'date': '2026-08-27', 'path': '2026-08-27'}]
-    assert root_index['typical_weekday']['current_period'] == 'autumn00000000'
+    assert root_index['typical_weekday']['current_period'] == AUTUMN
+
+    period_index = _bundle_manifest(root)
+    # Both fixture periods hold one weekday, so the tie breaks to the later.
+    assert period_index['current_period'] == AUTUMN
+    return {entry['period_key']: entry for entry in period_index['periods']}
+
+
+def _assert_two_medians(root: Path):
+    # The two periods really are two medians of the same segment, not one.
+    assert _first_speed(root, SUMMER) == SUMMER_KMH  # 10.0 m/s
+    assert _first_speed(root, AUTUMN) == AUTUMN_KMH  # 4.0 m/s
+    # 08:15 exists only under the autumn timetable, so only its bundle has it.
+    assert (root / AUTUMN / 'timeslots' / '0815.json').exists()
+    assert not (root / SUMMER / 'timeslots' / '0815.json').exists()
+
+
+def test_export_writes_bundle_per_period(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    """Each schedule period gets a bundle, and an index lists them all."""
+    static_dir, data_dir, _ = _prepare_export(tmp_path)
+    _seed_earlier_day(data_dir)
+
+    _run_export(
+        monkeypatch,
+        str(static_dir),
+        str(data_dir),
+        '--min-samples',
+        '2',
+    )
 
     root = data_dir / 'web' / 'typical_weekday'
-    index = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
-    # Both fixture periods hold one weekday, so the tie breaks to the later.
-    assert index['current_period'] == 'autumn00000000'
-    assert {p['period_key'] for p in index['periods']} == {
-        'summer00000000',
-        'autumn00000000',
+    by_key = _period_entries(root, data_dir)
+    assert set(by_key) == {SUMMER, AUTUMN}
+    assert by_key[SUMMER]['days_in_median'] == ['2026-09-03']
+    assert by_key[AUTUMN]['route_count'] == AUTUMN_ROUTES
+
+    for period_key in (SUMMER, AUTUMN):
+        _assert_period_bundle(root, period_key, by_key)
+    _assert_two_medians(root)
+
+
+def _autumn_manifest(data_dir: Path) -> dict:
+    return _bundle_manifest(data_dir / 'web' / 'typical_weekday' / AUTUMN)
+
+
+def _assert_sofia_attribution(manifest: dict):
+    attribution = manifest['attribution']
+    assert attribution['licence'] == 'CC BY-SA 4.0'
+    # Only the feeds this export read. The profile also states terms for
+    # trip_updates and alerts, and a manifest carrying those would credit
+    # data no bundle here shows.
+    assert attribution['feed_licences'] == {
+        'vehicle_positions': 'CC BY 4.0',
+        'static': 'CC BY-SA 4.0',
     }
-    by_key = {p['period_key']: p for p in index['periods']}
-    assert by_key['summer00000000']['days_in_median'] == ['2026-09-03']
-    assert by_key['autumn00000000']['route_count'] == 138
-
-    for period_key in ('summer00000000', 'autumn00000000'):
-        bundle = root / period_key
-        assert (bundle / 'geometry.json').exists()
-        manifest = json.loads(
-            (bundle / 'manifest.json').read_text(encoding='utf-8'),
-        )
-        assert manifest['mode'] == 'typical_weekday'
-        assert manifest['schedule_period']['period_key'] == period_key
-        assert by_key[period_key]['path'] == period_key
-        slots = sorted(f.stem for f in (bundle / 'timeslots').glob('*.json'))
-        assert slots == [t.replace(':', '') for t in manifest['timeslots']]
-
-    # The two periods really are two medians of the same segment, not one.
-    summer = json.loads(
-        (root / 'summer00000000' / 'timeslots' / '0800.json').read_text(),
+    assert attribution['source_url'] == 'https://urbandata.sofia.bg'
+    assert any(
+        METRO_LIMITATION in line for line in manifest['known_limitations']
     )
-    autumn = json.loads(
-        (root / 'autumn00000000' / 'timeslots' / '0800.json').read_text(),
-    )
-    assert summer['speed_kmh'][0] == 36  # 10.0 m/s
-    assert autumn['speed_kmh'][0] == 14  # 4.0 m/s
-    # 08:15 exists only under the autumn timetable, so only its bundle has it.
-    assert (root / 'autumn00000000' / 'timeslots' / '0815.json').exists()
-    assert not (root / 'summer00000000' / 'timeslots' / '0815.json').exists()
 
 
-def test_export_carries_the_citys_attribution_and_limitations(
+METRO_LIMITATION = 'no Sofia metro vehicles'
+
+
+def test_export_carries_city_attribution(
     tmp_path: Path,
     monkeypatch,
 ):
-    """
+    """The licence and the operator travel from the profile to the manifest.
+
     The licence and the operator's name travel profile -> manifest -> page, so
     the site credits the feed it is actually showing. An export that cannot
     name its city carries attribution: null instead of someone else's licence.
     """
-    static_dir = tmp_path / 'static'
-    static_dir.mkdir()
-    _write_static_zip(static_dir).rename(static_dir / 'gtfs_2026-09-03.zip')
+    static_dir, data_dir, shape_key = _prepare_export(tmp_path)
 
-    data_dir = tmp_path / 'data'
-    _, shapes_by_key, _ = load_static(static_dir / 'gtfs_2026-09-03.zip')
-    _write_typical_weekday(
-        data_dir / 'processed' / 'typical_weekday.json',
-        next(iter(shapes_by_key)),
-    )
-
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['export_web.py', str(static_dir), str(data_dir), '--city', 'sofia'],
-    )
-    main()
-    bundle = data_dir / 'web' / 'typical_weekday' / 'autumn00000000'
-    manifest = json.loads(
-        (bundle / 'manifest.json').read_text(encoding='utf-8'),
-    )
-    assert manifest['attribution']['licence'] == 'CC BY-SA 4.0'
-    # Only the feeds this export read. The profile also states terms for
-    # trip_updates and alerts, and a manifest carrying those would credit
-    # data no bundle here shows.
-    assert manifest['attribution']['feed_licences'] == {
-        'vehicle_positions': 'CC BY 4.0',
-        'static': 'CC BY-SA 4.0',
-    }
-    assert manifest['attribution']['source_url'] == 'https://urbandata.sofia.bg'
-    assert any(
-        'no Sofia metro vehicles' in line
-        for line in manifest['known_limitations']
-    )
+    _run_export(monkeypatch, str(static_dir), str(data_dir), '--city', 'sofia')
+    _assert_sofia_attribution(_autumn_manifest(data_dir))
 
     # Same export, city unresolved: no attribution rather than a wrong one.
     anon_dir = tmp_path / 'anon'
     _write_typical_weekday(
         anon_dir / 'processed' / 'typical_weekday.json',
-        next(iter(shapes_by_key)),
+        shape_key,
     )
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['export_web.py', str(static_dir), str(anon_dir)],
-    )
-    main()
-    anon = json.loads(
-        (
-            anon_dir
-            / 'web'
-            / 'typical_weekday'
-            / 'autumn00000000'
-            / 'manifest.json'
-        ).read_text(encoding='utf-8'),
-    )
+    _run_export(monkeypatch, str(static_dir), str(anon_dir))
+    anon = _autumn_manifest(anon_dir)
     assert anon['attribution'] is None
     assert not any(
-        'no Sofia metro vehicles' in line for line in anon['known_limitations']
+        METRO_LIMITATION in line for line in anon['known_limitations']
     )
 
 
-def test_export_drops_a_period_directory_that_left_the_archive(
+def test_export_drops_stale_period_directory(
     tmp_path: Path,
     monkeypatch,
 ):
-    """The tree is rebuilt each run, so a stale period bundle cannot survive
-    as a directory the index no longer mentions.
-    """
-    static_dir = tmp_path / 'static'
-    static_dir.mkdir()
-    _write_static_zip(static_dir).rename(static_dir / 'gtfs_2026-09-03.zip')
+    """The tree is rebuilt each run, so a stale bundle cannot survive.
 
-    data_dir = tmp_path / 'data'
-    _, shapes_by_key, _ = load_static(static_dir / 'gtfs_2026-09-03.zip')
-    _write_typical_weekday(
-        data_dir / 'processed' / 'typical_weekday.json',
-        next(iter(shapes_by_key)),
-    )
+    A stale period bundle cannot survive as a directory the index no longer
+    mentions.
+    """
+    static_dir, data_dir, _ = _prepare_export(tmp_path)
     stale = data_dir / 'web' / 'typical_weekday' / 'gone000000000000'
     stale.mkdir(parents=True)
-    (stale / 'manifest.json').write_text('{}', encoding='utf-8')
+    (stale / 'manifest.json').write_text('{}', encoding=UTF8)
 
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['export_web.py', str(static_dir), str(data_dir)],
-    )
-    main()
+    _run_export(monkeypatch, str(static_dir), str(data_dir))
 
     assert not stale.exists()
 
 
-def test_manifest_names_the_schedule_period_as_a_limitation():
+def test_manifest_names_period_as_limitation():
+    """A period export names its weekdays; a day export names no timetable."""
     period = {
         'period_key': 'abc',
-        'first_date': '2026-09-08',
+        'first_date': DAY,
         'last_date': '2026-09-11',
-        'route_count': 138,
-        'trip_count': 15600,
+        'route_count': AUTUMN_ROUTES,
+        'trip_count': AUTUMN_TRIPS,
     }
     # Not contiguous: 09-10 ran another timetable (a returning timetable
     # rejoins its period), so the range alone would overstate it.
-    with_period = build_manifest(
+    with_period = _manifest(
         mode='typical_weekday',
-        min_samples=2,
-        bins_before=10,
-        bins_after=6,
-        pairs_before=4,
-        pairs_after=3,
-        missing_shapes=0,
-        timeslot_labels=['08:00'],
-        source={},
-        days_processed=[],
-        days_in_median=['2026-09-08', '2026-09-09', '2026-09-11'],
-        incomplete_days={},
-        shapes_observed=3,
-        shapes_written=3,
-        total_static_shapes=10,
-        multi_route_shapes=1,
+        days_in_median=[DAY, '2026-09-09', '2026-09-11'],
         schedule_period=period,
     )
-    without = build_manifest(
-        mode='2026-09-08',
-        min_samples=2,
-        bins_before=10,
-        bins_after=6,
-        pairs_before=4,
-        pairs_after=3,
-        missing_shapes=0,
-        timeslot_labels=['08:00'],
-        source={},
-        days_processed=[],
-        days_in_median=[],
-        incomplete_days={},
-        shapes_observed=3,
-        shapes_written=3,
-        total_static_shapes=10,
-        multi_route_shapes=1,
-    )
+    without = _manifest()
     assert with_period['schedule_period'] == period
     assert any(
         '3 weekdays from 2026-09-08 to 2026-09-11' in line
@@ -710,198 +769,154 @@ def test_manifest_names_the_schedule_period_as_a_limitation():
     assert without['schedule_period'] is None
 
 
-def test_manifest_limitation_counts_shapes_written_not_observed():
-    # Observation is counted before the min_samples threshold; geometry.json holds
-    # only what survived it. The sentence must name the file's own count.
-    manifest = build_manifest(
-        mode='2026-09-08',
-        min_samples=2,
-        bins_before=10,
-        bins_after=6,
-        pairs_before=4,
-        pairs_after=3,
-        missing_shapes=0,
-        timeslot_labels=['08:00'],
-        source={},
-        days_processed=[],
-        days_in_median=[],
-        incomplete_days={},
-        shapes_observed=5,
-        shapes_written=3,
-        total_static_shapes=10,
-        multi_route_shapes=1,
+def test_manifest_counts_shapes_written():
+    """The shapes sentence names the count geometry.json holds."""
+    # Observation is counted before the min_samples threshold; geometry.json
+    # holds only what survived it. The sentence must name the file's own count.
+    manifest = _manifest(shapes_observed=5)
+    line = next(
+        text for text in manifest['known_limitations'] if 'appear here' in text
     )
-    line = next(l for l in manifest['known_limitations'] if 'appear here' in l)
     assert "3 of the static feed's 10 shapes" in line
     assert '2 further shapes were observed' in line
 
-    one = build_manifest(
-        mode='2026-09-08',
-        min_samples=2,
-        bins_before=10,
-        bins_after=6,
-        pairs_before=4,
-        pairs_after=3,
-        missing_shapes=0,
-        timeslot_labels=['08:00'],
-        source={},
-        days_processed=[],
-        days_in_median=[],
-        incomplete_days={},
-        shapes_observed=4,
-        shapes_written=3,
-        total_static_shapes=10,
-        multi_route_shapes=1,
-    )
+    one = _manifest(shapes_observed=4)
     assert any(
-        '1 further shape was observed' in l for l in one['known_limitations']
+        '1 further shape was observed' in text
+        for text in one['known_limitations']
     )
 
 
 # ─── typical_kmh: a segment's own baseline, for the slowdown highlight ──────
 
 
+def _slot_label(hour: int) -> str:
+    padded = str(hour).zfill(2)
+    return f'{padded}:00'
+
+
 def _slots(*per_slot: list) -> dict:
-    """timeslot_files shaped like build_timeslot_files() returns them, from
-    a list of (segment_idx, speed_kmh) pairs per slot.
+    """Build timeslot_files as build_timeslot_files() returns them.
+
+    Takes a list of (segment_idx, speed_kmh) pairs per slot.
     """
     return {
-        f'{i:02d}:00': {
-            'timeslot': f'{i:02d}:00',
+        _slot_label(hour): {
+            'timeslot': _slot_label(hour),
             'segment_idx': [pos for pos, _ in pairs],
             'speed_kmh': [kmh for _, kmh in pairs],
-            'n_samples': [5] * len(pairs),
+            'n_samples': list(itertools.repeat(5, len(pairs))),
         }
-        for i, pairs in enumerate(per_slot)
+        for hour, pairs in enumerate(per_slot)
     }
 
 
-def test_typical_kmh_is_the_median_of_a_segments_own_slot_medians():
+def test_typical_kmh_is_median_of_slot_medians():
+    """The baseline is the median of the slot medians, not their mean."""
     # Segment 0 gets 15 slots (the gate exactly) of 10,11,...,24 km/h: the
     # median of those is 17, and it must be that and not the mean (17.0) by
     # accident -- one outlier is added to make the two disagree.
-    speeds = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 90]
-    timeslot_files = _slots(*[[(0, v)] for v in speeds])
-    typical = build_typical_kmh(timeslot_files, segment_count=1)
-    assert typical == [17]
-    assert len(speeds) == TYPICAL_MIN_SLOTS
+    timeslot_files = _slots(*[[(0, kmh)] for kmh in SPEEDS_WITH_OUTLIER])
+    typical = web.build_typical_kmh(timeslot_files, segment_count=1)
+    assert typical == [OUTLIER_MEDIAN]
+    assert len(SPEEDS_WITH_OUTLIER) == web.TYPICAL_MIN_SLOTS
 
 
-def test_typical_kmh_is_null_below_the_filled_slot_gate():
-    """A segment seen in 14 slots gets no baseline: at that fill the baseline
-    is partly night traffic, and marking a daytime slot against it would be
-    marking it for being daytime.
+def test_typical_kmh_is_null_below_slot_gate():
+    """A segment seen in 14 slots gets no baseline.
+
+    At that fill the baseline is partly night traffic, and marking a daytime
+    slot against it would be marking it for being daytime.
     """
-    below = _slots(*[[(0, 20)] for _ in range(TYPICAL_MIN_SLOTS - 1)])
-    assert build_typical_kmh(below, segment_count=1) == [None]
+    gate = web.TYPICAL_MIN_SLOTS
+    short = gate - 1
+    below = _slots(*[[(0, FLAT_KMH)] for _ in range(short)])
+    assert web.build_typical_kmh(below, segment_count=1) == [None]
 
-    at_gate = _slots(*[[(0, 20)] for _ in range(TYPICAL_MIN_SLOTS)])
-    assert build_typical_kmh(at_gate, segment_count=1) == [20]
+    at_gate = _slots(*[[(0, FLAT_KMH)] for _ in range(gate)])
+    assert web.build_typical_kmh(at_gate, segment_count=1) == [FLAT_KMH]
 
 
-def test_typical_kmh_is_parallel_to_the_geometry_arrays():
+def test_typical_kmh_parallels_geometry_arrays():
+    """The array has one entry per geometry segment, in geometry order."""
     # Segment 1 is filled, segments 0 and 2 are not: the array still has one
     # entry per geometry segment, in geometry order, or the frontend would
     # read another segment's baseline.
-    timeslot_files = _slots(*[[(1, 30)] for _ in range(TYPICAL_MIN_SLOTS)])
-    assert build_typical_kmh(timeslot_files, segment_count=3) == [
-        None,
-        30,
-        None,
+    gate = web.TYPICAL_MIN_SLOTS
+    timeslot_files = _slots(*[[(1, SECOND_SEGMENT_KMH)] for _ in range(gate)])
+    typical = web.build_typical_kmh(timeslot_files, segment_count=3)
+    assert typical == [None, SECOND_SEGMENT_KMH, None]
+
+
+def _write_day_speeds(path: Path, shape_key: str) -> None:
+    rows = [
+        json.dumps({
+            'shape_id': SHAPE_ID,
+            'shape_key': shape_key,
+            'segment_index': 0,
+            'timeslot': _slot_label(hour),
+            'speed_ms': SPEED_MS_AT_SLOT,
+        })
+        for hour in range(24)
+        for _ in range(2)
     ]
+    path.write_text('\n'.join([*rows, '']), encoding=UTF8)
 
 
-def test_typical_kmh_ships_only_in_the_typical_weekday_bundle(
-    tmp_path: Path,
-    monkeypatch,
-):
-    """The thresholds it is read against were measured on a period's medians.
-    A day bundle is a different object, so it carries no baseline at all
-    rather than one the rule was never calibrated for.
-    """
-    static_dir = tmp_path / 'static'
-    static_dir.mkdir()
-    _write_static_zip(static_dir).rename(static_dir / 'gtfs_2026-09-03.zip')
+TYPICAL_LIMITATION = (
+    '31 August to 4 September 2026 period (five weekdays) in 36.9% of cases,'
+    ' measured on 2026-09-08 and not re-measured on other periods'
+)
 
-    data_dir = tmp_path / 'data'
-    _, shapes_by_key, _ = load_static(static_dir / 'gtfs_2026-09-03.zip')
-    shape_key = next(iter(shapes_by_key))
-    _write_typical_weekday(
-        data_dir / 'processed' / 'typical_weekday.json',
-        shape_key,
+
+def _assert_highlight(period_manifest: dict):
+    highlight = period_manifest['web_export']['slowdown_highlight']
+    assert highlight['ratio_max'] == web.SLOWDOWN_RATIO_MAX
+    assert highlight['absolute_min_kmh'] == web.SLOWDOWN_ABS_MIN_KMH
+    assert highlight['min_filled_slots'] == web.TYPICAL_MIN_SLOTS
+    assert any(
+        TYPICAL_LIMITATION in line
+        for line in period_manifest['known_limitations']
     )
 
-    speeds_path = data_dir / 'processed' / 'segment_speeds_2026-09-08.jsonl'
-    speeds_path.write_text(
-        '\n'.join(
-            json.dumps({
-                'shape_id': SHAPE_ID,
-                'shape_key': shape_key,
-                'segment_index': 0,
-                'timeslot': f'{h:02d}:00',
-                'speed_ms': 5.0,
-            })
-            for h in range(24)
-            for _ in range(2)
-        )
-        + '\n',
-        encoding='utf-8',
-    )
 
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        ['export_web.py', str(static_dir), str(data_dir)],
-    )
-    main()
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        [
-            'export_web.py',
-            str(static_dir),
-            str(data_dir),
-            '--day',
-            '2026-09-08',
-        ],
-    )
-    main()
-
-    period = data_dir / 'web' / 'typical_weekday' / 'autumn00000000'
-    geometry = json.loads(
-        (period / 'geometry.json').read_text(encoding='utf-8'),
-    )
+def _assert_period_geometry(period: Path):
+    geometry = _read_json(period / 'geometry.json')
     assert 'typical_kmh' in geometry
     assert len(geometry['typical_kmh']) == len(geometry['shape_idx'])
     # That fixture period has two slots, well under the gate.
     assert set(geometry['typical_kmh']) == {None}
 
-    day_geometry = json.loads(
-        (data_dir / 'web' / '2026-09-08' / 'geometry.json').read_text(
-            encoding='utf-8',
-        ),
-    )
-    assert 'typical_kmh' not in day_geometry
 
-    period_manifest = json.loads(
-        (period / 'manifest.json').read_text(encoding='utf-8'),
-    )
-    highlight = period_manifest['web_export']['slowdown_highlight']
-    assert highlight['ratio_max'] == SLOWDOWN_RATIO_MAX
-    assert highlight['absolute_min_kmh'] == SLOWDOWN_ABS_MIN_KMH
-    assert highlight['min_filled_slots'] == TYPICAL_MIN_SLOTS
-    assert any(
-        '31 August to 4 September 2026 period (five weekdays) in 36.9% of cases, measured on '
-        '2026-09-08 and not re-measured on other periods' in line
-        for line in period_manifest['known_limitations']
-    )
-
-    day_manifest = json.loads(
-        (data_dir / 'web' / '2026-09-08' / 'manifest.json').read_text(
-            encoding='utf-8',
-        ),
-    )
+def _assert_day_has_no_baseline(day_dir: Path):
+    assert 'typical_kmh' not in _read_json(day_dir / 'geometry.json')
+    day_manifest = _bundle_manifest(day_dir)
     assert 'slowdown_highlight' not in day_manifest['web_export']
     assert not any(
         'typical_kmh' in line for line in day_manifest['known_limitations']
     )
+
+
+def test_typical_kmh_ships_only_in_period_bundle(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """A day bundle carries no baseline at all.
+
+    The thresholds it is read against were measured on a period's medians.
+    A day bundle is a different object, so it carries no baseline at all
+    rather than one the rule was never calibrated for.
+    """
+    static_dir, data_dir, shape_key = _prepare_export(tmp_path)
+    _write_day_speeds(
+        data_dir / 'processed' / f'segment_speeds_{DAY}.jsonl',
+        shape_key,
+    )
+
+    _run_export(monkeypatch, str(static_dir), str(data_dir))
+    _run_export(monkeypatch, str(static_dir), str(data_dir), '--day', DAY)
+
+    period = data_dir / 'web' / 'typical_weekday' / AUTUMN
+    _assert_period_geometry(period)
+    _assert_highlight(_bundle_manifest(period))
+    _assert_day_has_no_baseline(data_dir / 'web' / DAY)
