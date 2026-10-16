@@ -5,6 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config import date_from_path
+from speeds.constants import MIN_TIME_GAP_CADENCE_FRACTION
 from speeds.dayread import read_groups
 from speeds.models import DayContext, DayStats, Trip
 from speeds.walker import TripWalker
@@ -56,6 +57,7 @@ def process_day(  # noqa: WPS211  # signature fixed by tests and main
     next_trip_map: dict | None = None,
     *,
     feed_speed_unit: str,
+    poll_interval_sec: int,
 ) -> DayStats:
     """Write one day's accepted speed samples and return its counters."""
     stats = DayStats()
@@ -73,6 +75,7 @@ def process_day(  # noqa: WPS211  # signature fixed by tests and main
             stats,
             date_from_path(day_path),
             feed_speed_unit,
+            poll_interval_sec * MIN_TIME_GAP_CADENCE_FRACTION,
         )
         _walk_all(groups, trip_maps, shapes_by_key, ctx)
     return stats

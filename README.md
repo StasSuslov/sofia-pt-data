@@ -128,11 +128,11 @@ GTFS Static shape, turns consecutive same-trip positions into a speed sample
 for a 200 m segment of that shape, and aggregates Monday to Friday samples
 into a per-segment, per-15-minute median (the "typical weekday", see
 METHODOLOGY.md's Aggregation section). Every discarded record moves one of
-six named counters: `trip_not_in_static`, `shape_not_found`,
-`non_positive_time_delta`, `gap_too_large`, `moved_backward`,
-`speed_too_high`. The counters are reported per day and in total, next to
-the thresholds that produced them. METHODOLOGY.md's Preprocessing section
-explains the projection and what each counter means.
+seven named counters: `trip_not_in_static`, `shape_not_found`,
+`non_positive_time_delta`, `gap_too_short`, `gap_too_large`,
+`moved_backward`, `speed_too_high`. The counters are reported per day and
+in total, next to the thresholds that produced them. METHODOLOGY.md's
+Preprocessing section explains the projection and what each counter means.
 
 ```bash
 # one static feed for every day, three specific days

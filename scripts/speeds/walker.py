@@ -42,6 +42,18 @@ def _gap_reason(gap_sec: int) -> str | None:
     return None
 
 
+def _too_soon(gap_sec: int, ctx: DayContext) -> bool:
+    """Count a fix polled too soon after the previous one as skipped.
+
+    See MIN_TIME_GAP_CADENCE_FRACTION for why such a fix is a restart.
+    """
+    if not 0 < gap_sec < ctx.min_gap_sec:
+        return False
+    ctx.stats.total_pairs += 1
+    ctx.stats.reject_counts['gap_too_short'] += 1
+    return True
+
+
 def _feed_kmh(feed_speed: float | None, feed_speed_unit: str) -> float | None:
     """The feed's number in km/h whatever unit it arrived in.
 
@@ -114,6 +126,10 @@ class TripWalker:
             # around, so this is the one full search per group (task step 3
             # only forbids full search *per record*).
             self.last_dist = self._full_search(lat, lon)
+        elif _too_soon(ts - self.prev_ts, self.ctx):
+            # prev_ts and last_dist stay on the earlier fix, so the next hop
+            # spans a full poll interval from it.
+            return
         else:
             self.last_dist = self._pair(ts, lat, lon, feed_speed)
         self.prev_ts = ts

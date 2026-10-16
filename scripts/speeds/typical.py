@@ -12,6 +12,7 @@ def _thresholds() -> dict:
         'segment_length_m': cfg.SEGMENT_LENGTH_M,
         'timeslot_minutes': cfg.TIMESLOT_MINUTES,
         'max_time_gap_sec': cfg.MAX_TIME_GAP_SEC,
+        'min_time_gap_cadence_fraction': cfg.MIN_TIME_GAP_CADENCE_FRACTION,
         'max_speed_kmh': cfg.MAX_SPEED_KMH,
         'backward_tolerance_m': cfg.BACKWARD_TOLERANCE_M,
         'search_margin_m': cfg.SEARCH_MARGIN_M,

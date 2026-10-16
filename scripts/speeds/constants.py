@@ -19,6 +19,19 @@ EARTH_RADIUS_M = 6371000.0
 # (collect.py's cadence is per city now: cities/<slug>.json, poll_interval_sec.)
 MAX_TIME_GAP_SEC = 600
 
+# A poll that lands within half the city's poll interval of the previous one
+# comes from a collector restart, not from the cadence: the feed has not
+# refreshed in between, so a hop across it turns a second or two into a
+# near-zero or inflated speed. On 2026-10-16 a restart put two polls 1 s
+# apart, and 569 of 681 vehicles carried the same vehicle_ts in both. The
+# later fix is skipped and the next hop runs from the earlier one. Over the
+# heartbeat to 2026-10-16 the ordinary gaps are 45 s (94,211) and 46 s (27),
+# one is 41 s, and eight restart gaps run 1-38 s. The raw file of 2026-08-27,
+# which predates the heartbeat, adds a ninth of 12 s at 13:31:05 UTC. Half the
+# cadence catches seven of the nine and no ordinary gap. The interval itself
+# is per city: cities/<slug>.json, poll_interval_sec.
+MIN_TIME_GAP_CADENCE_FRACTION = 0.5
+
 # Task-specified cutoff. Doubles as a wide margin over how fast a bus/tram/
 # trolley actually moves anywhere in the network, even on the ring road.
 MAX_SPEED_KMH = 100.0
@@ -116,6 +129,8 @@ REJECT_REASONS = (
     'shape_not_found',
     # duplicate/out-of-order snapshot_ts within a (vehicle, trip) group
     'non_positive_time_delta',
+    # dt below poll_interval_sec * MIN_TIME_GAP_CADENCE_FRACTION
+    'gap_too_short',
     'gap_too_large',  # dt > MAX_TIME_GAP_SEC
     # along-shape distance dropped by more than BACKWARD_TOLERANCE_M
     'moved_backward',

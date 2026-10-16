@@ -179,7 +179,7 @@ local-time slot of the later timestamp. Every accepted sample is written to
 elapsed time behind it, so you can recompute the number instead of taking
 mine.
 
-**Rejections.** Six named counters, reported per day and in total in
+**Rejections.** Seven named counters, reported per day and in total in
 `typical_weekday.json`. No record is discarded without one of them moving:
 
 | Counter | Meaning |
@@ -187,11 +187,12 @@ mine.
 | `trip_not_in_static` | the record's `trip_id` has no row in the matched snapshot's `trips.txt` |
 | `shape_not_found` | the trip resolves, but its shape has fewer than two usable points |
 | `non_positive_time_delta` | duplicate or out-of-order timestamps inside one group |
+| `gap_too_short` | less than half the city's poll interval between the two positions (22.5 s in Sofia); the later position is skipped |
 | `gap_too_large` | more than 600 s between the two positions |
 | `moved_backward` | along-shape distance fell by more than 50 m |
 | `speed_too_high` | derived speed above 100 km/h |
 
-The first two count records, the other four count consecutive pairs. The
+The first two count records, the other five count consecutive pairs. The
 600 s gap cutoff is several times the 45 s poll interval, far enough out
 that a straight line drawn across it would more likely hide a layover or a
 missed run of polls than describe a slow stretch. The 50 m backward
@@ -199,13 +200,32 @@ tolerance absorbs GPS wobble and a position snapping onto the wrong branch
 near a shape self-crossing, while a larger reversal is treated as a failed
 match. 100 km/h is a wide margin over anything this network runs.
 
-I keep the two denominators apart: totalling the six counters against one of
+The short-gap cutoff catches collector restarts. A restarted collector polls
+the feed at once, seconds after the previous poll and before the feed has
+refreshed: on 2026-10-16 two polls landed 1 s apart, and 569 of 681 vehicles
+carried the same `vehicle_ts` in both. A distance divided by one or two
+seconds gives a zero or an inflated speed, so the pipeline skips the later
+position and measures the next pair from the earlier one, across a full poll
+interval plus the gap. Ordinary gaps in the archive to 2026-10-16 run 41 to
+46 s, and nine restarts left gaps of 1 to 38 s. Half the cadence catches seven
+of the nine. The restarts at 38 s (2026-09-23) and 33 s (2026-09-25) fall
+above the cutoff and stay in as ordinary pairs. Until 2026-10-16 the pipeline
+had no such cutoff. Re-running the archive with it changed five of 50 days
+(27 August, 5, 8, 11 and 30 September), removed 2,582 samples and changed
+3,026 typical-weekday bins in three of the six schedule periods, with a
+median shift of 0.3 to 1.6 km/h per period among the bins that moved. No
+number quoted in a published report moved.
+
+I keep the two denominators apart: totalling the seven counters against one of
 them would misstate every rate in the table. The run on record covers seven
 days and 4,273,952 records, of which 2,578 (0.060%) were rejected as
 `trip_not_in_static` and none as `shape_not_found`. It yielded 4,189,084
-consecutive pairs, of which 4,179,545 became samples and 9,539 (0.228%) were
+consecutive pairs, of which 4,179,036 became samples and 10,048 (0.240%) were
 rejected: `moved_backward` 8,014, `speed_too_high` 989, `gap_too_large` 536,
-`non_positive_time_delta` none.
+`gap_too_short` 509, `non_positive_time_delta` none. All 509 short gaps come
+from one restart on 2026-08-27 at 13:31 UTC. Before the short-gap cutoff
+(2026-10-16) the same seven days gave 4,179,545 samples and 9,539 (0.228%)
+rejections.
 
 The distribution matters more than the total. All 2,578 unmatched trips fall
 on 2026-08-29, 2026-08-30 and 2026-08-31, and every one of them belongs to a

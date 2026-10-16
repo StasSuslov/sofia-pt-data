@@ -49,6 +49,8 @@ DEGREE_LAT_M = 111_320
 DEGREE_LAT_TOLERANCE_M = 200
 KMH_PER_MS = 3.6
 POLL_SEC = 45
+# Past the restart cutoff of half a poll interval, short of a full one.
+SHORT_GAP_SEC = 30
 FIRST_TS = 1000
 SECOND_TS = FIRST_TS + POLL_SEC
 # 1787864432 == 2026-08-27 21:00:32 UTC
@@ -251,6 +253,7 @@ def _run_day(
         [] if diffs is None else diffs,
         next_map,
         feed_speed_unit=unit,
+        poll_interval_sec=POLL_SEC,
     )
     return stats, _read_samples(out_path)
 
@@ -315,12 +318,52 @@ def test_rejects_moved_backward_beyond_tolerance(tmp_path: Path):
 
 def test_rejects_speed_too_high(tmp_path: Path):
     """A hop that implies over 100 km/h is rejected."""
-    # 10 hops (~1113m) in 1 second => way over 100 km/h
+    # 10 hops (~1113m) in 30 seconds => about 134 km/h
     records = [
         _rec(FIRST_TS, *STRAIGHT_LINE[0]),
-        _rec(FIRST_TS + 1, *STRAIGHT_LINE[10]),
+        _rec(FIRST_TS + SHORT_GAP_SEC, *STRAIGHT_LINE[10]),
     ]
     _assert_rejected(tmp_path, records, 'speed_too_high')
+
+
+def test_rejects_gap_too_short(tmp_path: Path):
+    """A fix within half a poll interval is skipped, not paired."""
+    records = [
+        _rec(FIRST_TS, *STRAIGHT_LINE[1]),
+        _rec(FIRST_TS + 1, *STRAIGHT_LINE[1]),
+    ]
+    _assert_rejected(tmp_path, records, 'gap_too_short')
+
+
+def test_gap_too_short_hop_runs_from_earlier_fix(tmp_path: Path):
+    """After a skipped restart poll the next hop starts at the earlier one."""
+    records = [
+        _rec(FIRST_TS, *STRAIGHT_LINE[1]),
+        _rec(FIRST_TS + 1, *STRAIGHT_LINE[1]),
+        _rec(FIRST_TS + 1 + POLL_SEC, *STRAIGHT_LINE[2]),
+    ]
+    stats, samples = _run_day(tmp_path, records)
+    assert stats.reject_counts['gap_too_short'] == 1
+    assert stats.total_pairs == 2
+    assert [(row['from_ts'], row['dt_sec']) for row in samples] == [
+        (FIRST_TS, POLL_SEC + 1),
+    ]
+
+
+def test_gap_cutoff_sits_at_half_the_cadence(tmp_path: Path):
+    """22 s is skipped and 23 s is kept at a 45 s poll interval."""
+    below = int(POLL_SEC * seg.MIN_TIME_GAP_CADENCE_FRACTION)
+    for gap, skipped in ((below, 1), (below + 1, 0)):
+        stats, samples = _run_day(
+            tmp_path,
+            [
+                _rec(FIRST_TS, *STRAIGHT_LINE[1]),
+                _rec(FIRST_TS + gap, *STRAIGHT_LINE[2]),
+            ],
+            out=f'out_{gap}.jsonl',
+        )
+        assert stats.reject_counts['gap_too_short'] == skipped
+        assert len(samples) == 1 - skipped
 
 
 def test_backward_tolerance_allows_gps_jitter(tmp_path: Path):

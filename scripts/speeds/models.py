@@ -56,6 +56,9 @@ class DayContext:
     two readings differ by a factor of 3.6 and both look plausible. The raw
     archive keeps the field under the name the feed gave it (`speed_ms`);
     everything written from here on is km/h.
+
+    `min_gap_sec` is the shortest hop a walker accepts, derived from the
+    city's poll interval for the same reason.
     """
 
     tz: ZoneInfo
@@ -65,3 +68,4 @@ class DayContext:
     stats: DayStats
     date_str: str
     feed_speed_unit: str
+    min_gap_sec: float

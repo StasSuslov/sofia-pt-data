@@ -42,6 +42,7 @@ def _process(
         state.diff_kmh_all,
         next_trip_map,
         feed_speed_unit=setup.city['speed_field_unit'],
+        poll_interval_sec=setup.city['poll_interval_sec'],
     )
 
 
