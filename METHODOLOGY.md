@@ -49,6 +49,17 @@ second city without a rewrite.
   refused. A run log beside the files records every attempt, so a stretch
   with no new file can be told from a stretch with no runs. The alerts
   archive is not part of the published dataset record yet.
+- **GTFS-RT trip updates.** Fetched every 45 seconds since 2026-10-17 15:06
+  UTC, on a fixed grid of the clock, and kept as served. One test fetch at
+  13:54 UTC that day precedes the series. A response is refused, and the
+  refusal logged, only when the request fails or the body is not a feed with
+  a header. ЦГМ builds the feed on every request, so no two responses match
+  and none is skipped as a duplicate. The responses of each UTC hour are
+  bundled into one `tar.xz`, every member named by its fetch time, so a
+  missed poll shows as a missing member; a refused one also leaves a line in
+  the `runs.ndjson` beside them. The feed's licence is CC BY-SA 4.0, see the
+  table below. I do not analyse trip updates yet, and they are not part of
+  the published dataset record yet.
 - **GTFS Static.** Routes, stops, schedules and shapes, from the same
   portal. It gives me the collection bounding box and everything that works
   without real-time data (route and stop coverage, accessibility). Unlike the

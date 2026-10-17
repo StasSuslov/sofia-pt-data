@@ -46,6 +46,10 @@ limitations I know about.
   minutes and keeps the response when the alerts in it changed, compared
   without the entity ids the feed regenerates on every request. Every run
   goes into a log next to the files, so a gap in runs shows as one.
+- `scripts/archive_trip_updates.py` saves the GTFS-RT trip updates every 45
+  seconds as served, and `scripts/pack_trip_updates.py` bundles each closed
+  UTC hour into one `tar.xz`. A snapshot leaves the collector's disk only
+  once the archive, read back, holds the same bytes under its name.
 - `scripts/segment_speeds.py` projects raw GTFS-RT positions onto GTFS
   Static shapes and derives one speed sample per 200 m segment. Monday to
   Friday samples become a "typical weekday" median per segment and
