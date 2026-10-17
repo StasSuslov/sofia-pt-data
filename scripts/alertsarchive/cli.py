@@ -1,4 +1,4 @@
-"""Command line of scripts/archive_alerts.py."""
+"""Command line shared by archive_alerts.py and archive_trip_updates.py."""
 
 import argparse
 from pathlib import Path
@@ -27,8 +27,8 @@ def build_parser(
     parser.add_argument(
         'output_dir',
         type=Path,
-        help='Directory for alerts_<UTC>.pb.gz files and runs.ndjson '
-        '(e.g. data/sofia/alerts)',
+        help='Directory for the saved responses and runs.ndjson '
+        '(e.g. data/sofia/alerts, data/sofia/tripupdates)',
     )
     parser.add_argument(
         '--city',
@@ -36,13 +36,13 @@ def build_parser(
         default=None,
         help='City profile supplying the feed URL '
         f'(cities/<slug>.json; have: {have}). '
-        'Default: read from output_dir, laid out as .../data/<city>/alerts',
+        'Default: read from output_dir, laid out as .../data/<city>/<feed>',
     )
     parser.add_argument(
         '--url',
         type=str,
         default=None,
-        help="GTFS-RT alerts feed URL (default: the city profile's)",
+        help="GTFS-RT feed URL (default: the city profile's)",
     )
     parser.add_argument(
         '--timeout',
