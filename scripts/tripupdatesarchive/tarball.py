@@ -6,8 +6,9 @@ import os
 import tarfile
 from pathlib import Path
 
-# xz -6 took a snapshot from ~560 KB to 20,504 B and used 90 MB of RAM on
-# the VPS (2026-10-17). Preset 3 is the fallback if memory runs short.
+# xz -6 packed an hour of ~560 KB snapshots at 20,504 B a snapshot and used
+# 90 MB of RAM on the VPS (2026-10-17). Preset 3 is the fallback if memory
+# runs short.
 XZ_PRESET = 6
 
 

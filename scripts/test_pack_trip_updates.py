@@ -13,9 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from tripupdatesarchive import pack, snapshot, tarball
+from tripupdatesarchive import health, pack, snapshot, tarball
 
 NOW = dt.datetime.fromisoformat('2026-10-18T10:07:00+00:00')
+HOUR_START = dt.datetime.fromisoformat('2026-10-18T09:00:00+00:00')
 ARCHIVE = 'tu_2026-10-18T09Z.tar.xz'
 FIRST = '2026-10-18T090015'
 FIRST_NAME = f'tu_{FIRST}Z.pb'
@@ -28,6 +29,10 @@ PENDING_BODY = os.urandom(INCOMPRESSIBLE_BYTES)
 DAMAGE_ERRORS = (tarfile.TarError, lzma.LZMAError, EOFError)
 # The exit code and incoming/ of a run that packed every closed hour.
 ALL_PACKED = (0, [])
+URL = 'https://hc-ping.example/check'
+FAIL = f'{URL}/fail'
+CADENCE_SEC = 45
+HALF_HOUR_OF_POLLS = 40
 
 
 @pytest.fixture
@@ -83,6 +88,14 @@ def _runs(directory: Path) -> list[dict]:
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def _hour_of_polls(directory: Path, count: int) -> None:
+    """Pack `count` snapshots of 09Z, one a second from 09:00:00."""
+    for index in range(count):
+        polled = HOUR_START + dt.timedelta(seconds=index)
+        snapshot.save_snapshot(directory, b'poll', polled)
+    pack.pack_closed_hours(directory, NOW)
 
 
 def _truncated(archive: Path) -> None:
@@ -269,3 +282,35 @@ def test_rerun_leaves_the_archive_alone(packed):
     assert _run(packed) == ALL_PACKED
     assert archive.stat().st_mtime_ns == packed_at
     assert _runs(packed) == []
+
+
+@pytest.mark.parametrize(
+    ('count', 'expected'),
+    [(HALF_HOUR_OF_POLLS, URL), (HALF_HOUR_OF_POLLS - 1, FAIL)],
+)
+def test_ping_needs_half_the_hours_snapshots(tmp_path, count, expected):
+    """40 of the 80 snapshots 45 s allows make a good hour, 39 do not."""
+    _hour_of_polls(tmp_path, count)
+    target = health.ping_target(URL, tmp_path, NOW, CADENCE_SEC, failed=False)
+    assert target == expected
+
+
+def test_ping_fails_without_a_good_hour(tmp_path):
+    """A failed hour, or no archive for the last closed hour, sends /fail."""
+    _hour_of_polls(tmp_path, HALF_HOUR_OF_POLLS)
+    later = NOW + dt.timedelta(hours=1)
+    assert (
+        health.ping_target(URL, tmp_path, NOW, CADENCE_SEC, failed=True) == FAIL
+    )
+    assert (
+        health.ping_target(URL, tmp_path, later, CADENCE_SEC, failed=False)
+        == FAIL
+    )
+
+
+@pytest.mark.parametrize('url', ['', None])
+def test_no_url_means_no_ping(tmp_path, url):
+    """Without HEALTHCHECK_URL the packer pings nothing."""
+    assert (
+        health.ping_target(url, tmp_path, NOW, CADENCE_SEC, failed=True) is None
+    )
