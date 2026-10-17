@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from tripupdatesarchive import health, pack, snapshot, tarball
+from tripupdatesarchive import health, lock, pack, snapshot, tarball
 
 NOW = dt.datetime.fromisoformat('2026-10-18T10:07:00+00:00')
 HOUR_START = dt.datetime.fromisoformat('2026-10-18T09:00:00+00:00')
@@ -314,3 +314,11 @@ def test_no_url_means_no_ping(tmp_path, url):
     assert (
         health.ping_target(url, tmp_path, NOW, CADENCE_SEC, failed=True) is None
     )
+
+
+def test_overlapping_run_touches_nothing(pending):
+    """A run started while another holds the directory raises and keeps all."""
+    with lock.exclusive(pending), pytest.raises(lock.PackerBusyError):
+        pack.pack_closed_hours(pending, NOW)
+    assert _incoming(pending) == [FIRST_NAME]
+    assert not (pending / ARCHIVE).exists()

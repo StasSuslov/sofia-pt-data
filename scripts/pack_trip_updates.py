@@ -22,6 +22,10 @@ A failed hour gets a line in runs.ndjson with stage "pack" and makes the
 exit code 1. An unexpected exception (disk full, a corrupt archive) ends
 the run with a traceback and no ping.
 
+A run takes a flock on the directory first. One started while another
+holds it, a run by hand during the timer's, warns, touches nothing and
+exits 0 without a ping: the run that holds the lock reports.
+
 With HEALTHCHECK_URL set, the run ends with one ping: success when nothing
 failed and the last closed hour's archive holds at least half the
 snapshots poll_interval_sec allows, <URL>/fail otherwise. A failed ping is
@@ -39,8 +43,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from tripupdatesarchive.health import ping_target
+from tripupdatesarchive.lock import PackerBusyError
 from tripupdatesarchive.pack import pack_closed_hours
 
+from collector.console import warn
 from collector.loop import ping_healthcheck
 from config import CityProfileError, city_slugs, load_city_for_path
 
@@ -94,7 +100,11 @@ def main() -> None:
     args = parser.parse_args()
     interval = _poll_interval(parser, args)
     now = dt.datetime.now(dt.UTC)
-    failed = pack_closed_hours(args.output_dir, now)
+    try:
+        failed = pack_closed_hours(args.output_dir, now)
+    except PackerBusyError as busy:
+        warn(f'{busy}, nothing done')
+        sys.exit(0)
     _report(args.output_dir, now, interval, failed=failed > 0)
     sys.exit(1 if failed else 0)
 

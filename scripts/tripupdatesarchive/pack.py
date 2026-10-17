@@ -7,6 +7,7 @@ from pathlib import Path
 
 from alertsarchive.runlog import log_run
 
+from tripupdatesarchive.lock import exclusive
 from tripupdatesarchive.names import INCOMING, archive_name, hour_key, hour_of
 from tripupdatesarchive.tarball import (
     file_digest,
@@ -25,15 +26,19 @@ def pack_closed_hours(output_dir: Path, now: dt.datetime) -> int:
 
     Returns:
         How many hours failed; each has a line in runs.ndjson.
+
+    Raises:
+        PackerBusyError: another run holds output_dir; nothing was touched.
     """
     incoming = output_dir / INCOMING
     current = hour_key(now)
-    _drop_stale_tmp(incoming, current)
-    hours = _closed(incoming.glob('tu_*.pb'), current)
-    return sum(
-        _pack_and_log(output_dir, now, hour, snapshots)
-        for hour, snapshots in hours.items()
-    )
+    with exclusive(output_dir):
+        _drop_stale_tmp(incoming, current)
+        hours = _closed(incoming.glob('tu_*.pb'), current)
+        return sum(
+            _pack_and_log(output_dir, now, hour, snapshots)
+            for hour, snapshots in hours.items()
+        )
 
 
 def _pack_and_log(output_dir, now, hour: str, snapshots: list[Path]) -> int:
