@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Sofia PT trip updates packing hourly at :07
+
+[Timer]
+# :07 leaves the hour's last poll (started at :59:15, killed by :59:55 at
+# the latest) well behind, and stays clear of sofia-static-archive at :05
+# and the alerts capture at :05 and :10. Persistent=true: an hour missed
+# while the box was down is still waiting in incoming/, and packing it
+# right after boot costs nothing a later run would not.
+OnCalendar=*:07
+Persistent=true
+
+[Install]
+WantedBy=timers.target

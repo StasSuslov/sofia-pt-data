@@ -61,7 +61,11 @@ CHECKSUM_MISMATCH_EXIT_CODE=43
 # shared while debugging. Defeats the point of keeping the address out of
 # git if it leaks back out through the log instead.
 echo "Fetching ${VPS_HOST%%@*}@<vps>:${REMOTE_DIR} → ${LOCAL_DIR}"
-rsync -avz --progress -e "ssh -i ${VPS_KEY}" "${VPS_HOST}:${REMOTE_DIR}" "${LOCAL_DIR}"
+# tripupdates/incoming/ holds raw trip-updates snapshots for under an hour,
+# ~1 GB a day, until sofia-tripupdates-pack.service folds them into hourly
+# tar.xz files a level up. Only those come down; the packer's .part files
+# sit in incoming/ for the same reason.
+rsync -avz --progress --exclude 'tripupdates/incoming/' -e "ssh -i ${VPS_KEY}" "${VPS_HOST}:${REMOTE_DIR}" "${LOCAL_DIR}"
 
 # A plain <day>.jsonl lingers here once the VPS has gzipped that day, and it
 # may be a pull taken before the day closed. The script drops it when its .gz

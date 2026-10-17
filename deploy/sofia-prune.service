@@ -1,5 +1,5 @@
 [Unit]
-Description=Sofia PT archive retention (drop day files and static snapshots older than the publication window)
+Description=Sofia PT archive retention (drop day files, static snapshots and trip updates archives past their windows)
 
 [Service]
 Type=oneshot
@@ -44,5 +44,17 @@ Type=oneshot
 # -mtime +45 means at least 46 whole days: GNU find truncates the age to
 # whole days, the same off-by-a-day-in-the-safe-direction as
 # sofia-compress.service.
+#
+# Trip updates (sofia-tripupdates-pack.service) get a window of their own,
+# 30 days, on disk grounds: ~39 MB a day of hourly archives, measured on a
+# Saturday. This breaks the rule above on purpose. From December, days 1
+# to 15 of each month live only on the laptop between leaving this box and
+# reaching Zenodo. -mtime +30 is at least 31 whole days, aged from packing,
+# which is within the hour of the snapshots inside. The second find stays
+# at -maxdepth 1 in tripupdates/: runs.ndjson and incoming/ are not this
+# unit's business, and a walk into incoming/ could meet a .tmp that the
+# poller renames mid-walk. If the first ExecStart fails, systemd skips the
+# second; the archives then wait a day, and nothing is lost.
 ExecStart=/usr/bin/find /opt/sofia-pt/data -type f ( -name '????-??-??.jsonl' -o -name '????-??-??.jsonl.gz' -o -name 'gtfs_*.zip' ) -mtime +45 -delete
+ExecStart=/usr/bin/find /opt/sofia-pt/data/sofia/tripupdates -maxdepth 1 -type f -name 'tu_*.tar.xz' -mtime +30 -delete
 User=root

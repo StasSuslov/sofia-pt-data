@@ -1,0 +1,30 @@
+[Unit]
+Description=Sofia PT GTFS-RT trip updates capture
+
+[Service]
+Type=oneshot
+# The collector's venv, not system python3: the script parses each response
+# to refuse a body that is not a feed, and parsing needs protobuf. See the
+# module docstring of scripts/archive_trip_updates.py.
+#
+# Every response is saved as served into
+# /opt/sofia-pt/data/sofia/tripupdates/incoming/, and
+# sofia-tripupdates-pack.service folds each closed UTC hour into one tar.xz
+# a level up. scripts/fetch_data.sh skips incoming/, so the laptop only
+# ever gets whole hours.
+#
+# 40 s is under the timer's 45 s step: a request that hangs is killed
+# before the next slot instead of running into it. A killed run can leave a
+# .tmp behind, and the packer deletes it once its hour is closed.
+#
+# The timer starts this unit 1,920 times a day, and systemd's own start and
+# finish lines would put ~7,700 lines a day into the journal with nothing
+# in them. LogLevelMax=notice drops those. It would drop the script's
+# output too, which goes to the journal at info by default, so
+# SyslogLevel=warning lifts stdout and stderr above the filter. A good run
+# prints nothing; a failed one prints why, and a traceback gets through.
+TimeoutStartSec=40
+LogLevelMax=notice
+SyslogLevel=warning
+ExecStart=/opt/sofia-pt/venv/bin/python3 /opt/sofia-pt/scripts/archive_trip_updates.py /opt/sofia-pt/data/sofia/tripupdates
+User=root

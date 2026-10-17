@@ -1,0 +1,32 @@
+[Unit]
+Description=Sofia PT trip updates packing (one tar.xz per closed UTC hour)
+
+[Service]
+Type=oneshot
+# Folds every closed UTC hour of tripupdates/incoming/ into
+# tripupdates/tu_<date>T<HH>Z.tar.xz, and deletes a snapshot only after the
+# archive, read back, holds the same bytes under its name and both the
+# archive and its directory are fsynced. See the module docstring of
+# scripts/pack_trip_updates.py.
+#
+# Memory: xz -6 took 90 MB on this box (2026-10-17), plus ~31 MB of
+# Python, against ~173 MB available and no swap. MemoryMax=160M and
+# OOMScoreAdjust=500 make the kernel kill this unit, not the collector,
+# when memory runs out. The hour then stays in incoming/ for the next run,
+# and the missing ping trips the healthchecks.io grace period. Preset 3 is
+# the fallback, at ~14 MB a day more archive.
+#
+# A oneshot has no start timeout by default, and a hung packer would hold
+# every later :07. An hour takes about half a minute; 20 minutes is slack.
+#
+# HEALTHCHECK_URL stays an empty placeholder in git, as in
+# sofia-collector.service. The live URL goes into a drop-in
+# (systemctl edit sofia-tripupdates-pack.service), so copying this file
+# over the live unit keeps it.
+Environment=HEALTHCHECK_URL=
+TimeoutStartSec=20min
+Nice=10
+OOMScoreAdjust=500
+MemoryMax=160M
+ExecStart=/opt/sofia-pt/venv/bin/python3 /opt/sofia-pt/scripts/pack_trip_updates.py /opt/sofia-pt/data/sofia/tripupdates
+User=root
